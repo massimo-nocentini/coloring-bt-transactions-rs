@@ -290,7 +290,7 @@ mod tests {
         for _ in 0..3000 {
             // A small universe makes collisions -- and so the dedup path --
             // common; a large one makes them rare.  Both matter.
-            let universe = if rng.next() % 2 == 0 { 32 } else { 100_000 };
+            let universe = if rng.next().is_multiple_of(2) { 32 } else { 100_000 };
             let (na, nb) = (rng.next() % 60, rng.next() % 60);
             let a = rng.set(na, universe);
             let b = rng.set(nb, universe);

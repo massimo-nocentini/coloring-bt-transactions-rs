@@ -31,6 +31,7 @@ use poly::Coeff;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::time::Instant;
 use store::{ColorStore, RingStore};
 
 /// The Scheme stops at `(> i 1000000)`, i.e. after 1,000,001 records.  Kept as
@@ -94,6 +95,12 @@ fn run<S: ColorStore>(limit: usize, stats: bool) -> io::Result<()> {
     let mut colors: HashMap<usize, (S::Color, usize)> = HashMap::new();
     let mut inputs: Vec<usize> = Vec::new();
     let mut line: Vec<u8> = Vec::new();
+
+    // Only read when `--stats` is on, but started unconditionally: the clock has
+    // to be running before the first record, and one `Instant::now()` per
+    // process is not worth branching over.
+    let started = Instant::now();
+    let mut since_report = started;
 
     let mut records: usize = 0;
     while records < limit {
@@ -192,26 +199,60 @@ fn run<S: ColorStore>(limit: usize, stats: bool) -> io::Result<()> {
         }
 
         records += 1;
-        if stats && records % STATS_EVERY == 0 {
+        if stats && records.is_multiple_of(STATS_EVERY) {
+            let now = Instant::now();
             let (live, committed) = store.usage();
             let (live_label, committed_label) = store.usage_labels();
             eprintln!(
-                "{:>10} records  {:>12} {}  {:>12} {}  {:>10} colored txs",
+                "{:>10.2}s {:>10} records {:>11}  {:>12} {}  {:>12} {}  {:>10} colored txs",
+                started.elapsed().as_secs_f64(),
                 records,
+                // Rate over this interval rather than the whole run so far.  A
+                // cumulative average is smoother but hides the thing worth
+                // watching: colors grow as the chain does, so the merge gets
+                // slower as the run goes on, and only the interval rate shows it.
+                rate(STATS_EVERY, now.duration_since(since_report).as_secs_f64()),
                 live,
                 live_label,
                 committed,
                 committed_label,
                 colors.len()
             );
+            since_report = now;
         }
     }
 
     if stats {
+        let elapsed = started.elapsed().as_secs_f64();
+        eprintln!(
+            "{:>10.2}s {:>10} records {:>11}  total",
+            elapsed,
+            records,
+            rate(records, elapsed)
+        );
         eprintln!("{}", store.audit(&mut colors.values().map(|(c, _)| c)));
     }
 
     out.flush()
+}
+
+/// `records` over `seconds`, short enough to hold a fixed column.
+///
+/// Answers `--` rather than an infinity when no time has passed, which happens
+/// for real: a short run under `--stats` can reach its first checkpoint inside
+/// the clock's resolution.
+fn rate(records: usize, seconds: f64) -> String {
+    if seconds <= 0.0 {
+        return "-- rec/s".to_string();
+    }
+    let per_second = records as f64 / seconds;
+    if per_second >= 1e6 {
+        format!("{:.1}M rec/s", per_second / 1e6)
+    } else if per_second >= 1e3 {
+        format!("{:.0}k rec/s", per_second / 1e3)
+    } else {
+        format!("{:.0} rec/s", per_second)
+    }
 }
 
 /// Decimal, straight into the line buffer.  `write!` would do it too, but its
