@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["digit_run","digit_run_neon","digit_run_scalar","eight_digits"]};
+window.SIDEBAR_ITEMS = {"fn":["digit_run","digit_run_neon","digit_run_scalar","eight_digits","scale_add_into","scale_into"]};

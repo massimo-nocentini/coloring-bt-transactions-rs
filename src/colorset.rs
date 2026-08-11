@@ -25,7 +25,7 @@
 //!
 //! ## The merge itself is the smallest of the three
 //!
-//! And before the merge runs at all, [`SetStore::union`] tries to avoid it:
+//! And before the merge runs at all, [`SetStore::combine`] tries to avoid it:
 //! two handles on one allocation, an empty side, or two ranges that do not
 //! overlap are each answered without comparing a single pair of elements.  The
 //! last of those is common in this workload — a transaction's ancestry often
@@ -99,6 +99,11 @@ fn merge_into(out: &mut Vec<u32>, a: &[u32], b: &[u32]) {
 impl ColorStore for SetStore {
     type Color = Set;
 
+    /// This backend stores no coefficients at all -- a block is in the set or it
+    /// is not -- so there is nothing for a weight to multiply.  See
+    /// [`crate::weighted`] for the one that does carry them.
+    const WEIGHTED: bool = false;
+
     fn new() -> Self {
         SetStore {
             scratch: Vec::new(),
@@ -114,7 +119,7 @@ impl ColorStore for SetStore {
         self.track(set)
     }
 
-    fn union(&mut self, a: &Set, b: &Set) -> Set {
+    fn combine(&mut self, a: &Set, _wa: f64, b: &Set, _wb: f64) -> Set {
         // Two handles on one allocation.  Common: several inputs of one
         // transaction often trace back to a single ancestor.
         if Rc::ptr_eq(a, b) {
@@ -148,6 +153,10 @@ impl ColorStore for SetStore {
         self.intern(len)
     }
 
+    fn scale(&mut self, color: &Set, _w: f64) -> Set {
+        self.share(color)
+    }
+
     fn share(&mut self, color: &Set) -> Set {
         Rc::clone(color)
     }
@@ -159,12 +168,12 @@ impl ColorStore for SetStore {
         }
     }
 
-    fn for_each_term(&self, color: &Set, mut f: impl FnMut(usize, usize)) {
+    fn for_each_term(&self, color: &Set, mut f: impl FnMut(usize, f64)) {
         // Stored ascending because that is what a merge wants; the output format
         // is decreasing exponents, so it is read back the other way.  Every
         // coefficient is 1 by construction.
         for &block in color.iter().rev() {
-            f(block as usize, 1);
+            f(block as usize, 1.0);
         }
     }
 
@@ -306,7 +315,7 @@ mod tests {
         let mut store = SetStore::new();
         let a = store.singleton(3);
         let b = store.singleton(9);
-        let c = store.union(&a, &b);
+        let c = store.combine(&a, 1.0, &b, 1.0);
         let shared = store.share(&c);
 
         assert_eq!(store.usage().0, 1 + 1 + 2);
@@ -325,10 +334,10 @@ mod tests {
         let mut store = SetStore::new();
         let a = store.singleton(2);
         let b = store.singleton(7);
-        let c = store.union(&a, &b);
+        let c = store.combine(&a, 1.0, &b, 1.0);
         let mut seen = Vec::new();
         store.for_each_term(&c, |exp, coeff| seen.push((exp, coeff)));
-        assert_eq!(seen, vec![(7, 1), (2, 1)]);
+        assert_eq!(seen, vec![(7, 1.0), (2, 1.0)]);
     }
 
     #[test]

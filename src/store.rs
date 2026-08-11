@@ -26,7 +26,7 @@
 //!
 //! ## Why the trait is shaped this way
 //!
-//! [`ColorStore::union`] takes its operands **by reference** and neither is
+//! [`ColorStore::combine`] takes its operands **by reference** and neither is
 //! consumed, which is already [`crate::poly::Arena::op`]'s contract.  What the
 //! driver must be explicit about instead is wanting a *second handle* on a
 //! color, [`ColorStore::share`], because that is a ring copy for one backend and
@@ -48,13 +48,33 @@ use crate::poly::{Arena, Idx};
 pub trait ColorStore {
     type Color;
 
+    /// Whether [`ColorStore::combine`] and [`ColorStore::scale`] do anything
+    /// with the weights they are handed.
+    ///
+    /// A constant rather than a method so the driver can skip working the
+    /// weights out at all for stores that ignore them: `run` is instantiated per
+    /// backend, so `if S::WEIGHTED` folds away at compile time and the
+    /// unweighted path costs exactly what it did before weights existed.
+    const WEIGHTED: bool;
+
     fn new() -> Self;
 
-    /// The color of a coinbase transaction: the one block that minted it.
+    /// The color of a coinbase transaction: the one block that minted it, with
+    /// all of the weight on it.
     fn singleton(&mut self, block: usize) -> Self::Color;
 
-    /// Set union.  Borrows both operands and leaves them untouched.
-    fn union(&mut self, a: &Self::Color, b: &Self::Color) -> Self::Color;
+    /// `wa * a + wb * b`: union of the two supports, with the weights of each
+    /// side scaled on the way through and matching blocks summed.
+    ///
+    /// Borrows both operands and leaves them untouched.  Stores with
+    /// [`ColorStore::WEIGHTED`] false ignore `wa` and `wb` and answer the plain
+    /// union, which is the same thing when every weight is 1 and the driver only
+    /// ever asks for `ior`.
+    fn combine(&mut self, a: &Self::Color, wa: f64, b: &Self::Color, wb: f64) -> Self::Color;
+
+    /// Every weight multiplied by `w`.  Ignored, and equivalent to
+    /// [`ColorStore::share`], when [`ColorStore::WEIGHTED`] is false.
+    fn scale(&mut self, color: &Self::Color, w: f64) -> Self::Color;
 
     /// A second owned handle on the same color.  A copy for [`RingStore`], a
     /// refcount bump for a sharing store; callers should assume it is expensive.
@@ -64,9 +84,19 @@ pub trait ColorStore {
     fn release(&mut self, color: Self::Color);
 
     /// Visit the blocks in decreasing order as `(exponent, coefficient)` pairs.
-    /// The coefficient is always 1; it survives because the output format is the
-    /// polynomial one and has to stay byte for byte what it was.
-    fn for_each_term(&self, color: &Self::Color, f: impl FnMut(usize, usize));
+    ///
+    /// The coefficient is an `f64` whichever store this is.  For the unweighted
+    /// ones it is always exactly `1.0` and the driver prints it as the integer
+    /// the Scheme prints; carrying it as a float costs nothing there and saves
+    /// the trait an associated type that only one backend would use.
+    fn for_each_term(&self, color: &Self::Color, f: impl FnMut(usize, f64));
+
+    /// Offered each finished color, so a store with an invariant can watch it.
+    ///
+    /// Only called under `--stats`, because checking one generally means a pass
+    /// over the color and that is not worth doing on every record of a real run.
+    /// The default does nothing.
+    fn observe(&mut self, _color: &Self::Color) {}
 
     /// `(live, committed)` in whatever unit the store counts, for `--stats`,
     /// with [`ColorStore::usage_labels`] naming them.  The backends count
@@ -98,6 +128,13 @@ pub struct RingStore {
 impl ColorStore for RingStore {
     type Color = Idx;
 
+    /// The exercise's `ior` has no room for a weight: `poly::op` copies a
+    /// coefficient straight across whenever only one side carries the term, so a
+    /// weight would reach the shared blocks and miss all the others.  Saying so
+    /// here is what keeps the driver from computing weights this backend would
+    /// quietly drop.
+    const WEIGHTED: bool = false;
+
     fn new() -> Self {
         let mut arena = Arena::new();
         let empty = arena.make(&[]);
@@ -108,8 +145,12 @@ impl ColorStore for RingStore {
         self.arena.make(&[(block, 1)])
     }
 
-    fn union(&mut self, a: &Idx, b: &Idx) -> Idx {
+    fn combine(&mut self, a: &Idx, _wa: f64, b: &Idx, _wb: f64) -> Idx {
         self.arena.ior(*a, *b)
+    }
+
+    fn scale(&mut self, color: &Idx, _w: f64) -> Idx {
+        self.share(color)
     }
 
     fn share(&mut self, color: &Idx) -> Idx {
@@ -122,8 +163,13 @@ impl ColorStore for RingStore {
         self.arena.free_ring(color);
     }
 
-    fn for_each_term(&self, color: &Idx, f: impl FnMut(usize, usize)) {
-        self.arena.for_each_term(*color, f);
+    fn for_each_term(&self, color: &Idx, mut f: impl FnMut(usize, f64)) {
+        // `poly` counts in integers and always hands back 1 here, since the
+        // driver only ever asks it for `ior`.  The widening is exact.
+        self.arena
+            .for_each_term(*color, |exponent, coefficient| {
+                f(exponent, coefficient as f64)
+            });
     }
 
     fn usage(&self) -> (usize, usize) {

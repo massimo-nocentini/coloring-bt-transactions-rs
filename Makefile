@@ -8,6 +8,7 @@ CRATE      := coloring-bt-transactions
 CRATE_DIR  := $(subst -,_,$(CRATE))
 DOC_OUT    := target/doc
 DOCS       := docs
+BIN        := target/release/$(CRATE)
 
 .DEFAULT_GOAL := help
 
@@ -61,6 +62,23 @@ docs-open: docs ## Publish the docs and open them in a browser
 .PHONY: build
 build: ## Release build
 	cargo build --release
+
+.PHONY: asm-check
+asm-check: build ## Check the weight-scaling loops still vectorise
+#	`simd::scale_into` and `simd::scale_add_into` are plain loops that the
+#	compiler is *expected* to vectorise -- nothing in the source says it must, so
+#	nothing but the disassembly can confirm it did.  A refactor that quietly
+#	stops it would cost speed silently, which is what this guards.
+#
+#	Two operand syntaxes are accepted: LLVM's Mach-O output writes the lane
+#	arrangement on the mnemonic (`fmul.2d v0, v1, v2`), GNU's writes it on the
+#	registers (`fmul v0.2d, v1.2d, v2.2d`).
+	@count=$$(objdump -d $(BIN) \
+		| grep -cE '(\bfmul\.2d\b|\bfmul[[:space:]]+v[0-9]+\.2d)' || true); \
+	echo "vector f64 multiplies (2 lanes each): $$count"; \
+	if [ "$$count" -eq 0 ]; then \
+		echo "FAIL: the weight scaling is running one lane at a time"; exit 1; \
+	fi
 
 .PHONY: test
 test: ## Run the test suite

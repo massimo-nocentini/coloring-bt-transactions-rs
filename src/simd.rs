@@ -158,6 +158,38 @@ pub fn eight_digits(chunk: u64) -> u64 {
     (value & 0x0000_FFFF_0000_FFFF).wrapping_mul(42_949_672_960_001) >> 32
 }
 
+/// `dst[k] = src[k] * factor`, for as many elements as both slices hold.
+///
+/// This is the piece of the weighted merge that vectorises, and it is left to
+/// the compiler rather than written by hand.  A flat elementwise multiply over
+/// two non-overlapping slices is exactly the shape LLVM's loop vectoriser is
+/// built for: `zip` gives it the length up front and rules out the aliasing
+/// question, so it emits `fmul` over two `f64` lanes on NEON and four on AVX
+/// without being asked.  The tests below check the arithmetic; the disassembly
+/// is what checks the vectorisation, and there is a `make asm-check` for it.
+///
+/// Hand-written intrinsics were tried for the *merge* itself and lost — see
+/// [`digit_run`] for the shape that does pay off, and the merge in
+/// [`crate::weighted`] for why the comparison loop does not.
+#[inline]
+pub fn scale_into(dst: &mut [f64], src: &[f64], factor: f64) {
+    for (out, &value) in dst.iter_mut().zip(src) {
+        *out = value * factor;
+    }
+}
+
+/// `dst[k] = a[k] * fa + b[k] * fb`, for as many elements as all three hold.
+///
+/// The blocks that both colors carry, once the merge has lined them up.  Same
+/// reasoning as [`scale_into`]: written plainly so the vectoriser can take it,
+/// and it fuses into a multiply-add on targets that have one.
+#[inline]
+pub fn scale_add_into(dst: &mut [f64], a: &[f64], fa: f64, b: &[f64], fb: f64) {
+    for ((out, &x), &y) in dst.iter_mut().zip(a).zip(b) {
+        *out = x * fa + y * fb;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

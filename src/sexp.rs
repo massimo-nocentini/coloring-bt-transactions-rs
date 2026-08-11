@@ -12,11 +12,14 @@
 //! output = (addr-id amount _)
 //! ```
 //!
-//! Only four things are ever used: the header's `block-id` and `tx-id`, each
-//! input's `prev-tx-id`, and how many outputs there are.  Fields are picked out
-//! by position and the rest of each list is skipped, so a record with extra
-//! trailing fields still reads — unlike the Scheme's fixed-arity `match/first`.
-//! Nothing is allocated per record.
+//! Only five things are ever used: the header's `block-id` and `tx-id`, each
+//! input's `amount` and `prev-tx-id`, and how many outputs there are.  Fields
+//! are picked out by position and the rest of each list is skipped, so a record
+//! with extra trailing fields still reads — unlike the Scheme's fixed-arity
+//! `match/first`.  Nothing is allocated per record.
+//!
+//! The `amount` is there for `--weighted`, which shares each input's color out
+//! in proportion to it; the unweighted driver reads it and ignores it.
 //!
 //! The buffer is ours rather than a `BufReader`, because at 149 GB the hot path
 //! is "look at one byte" and it needs to inline down to a bounds check.
@@ -24,7 +27,7 @@
 //! ## Skipped means skipped
 //!
 //! Those four values are a small minority of what a record spells out: the
-//! header gives 2 of its 7 fields to the driver, an input 1 of its 4, an output
+//! header gives 2 of its 7 fields to the driver, an input 2 of its 4, an output
 //! none of its 3 — an output is read only for existing.  So the wanted
 //! positions are named in a bitmask ([`HEADER_FIELDS`] and friends) and
 //! everything else goes through [`Reader::skip_int`], which walks the digits
@@ -51,8 +54,14 @@ const BUF_SIZE: usize = 1 << 20;
 /// Positions the record header is read for: the block id at 1, the tx id at 2.
 const HEADER_FIELDS: u32 = (1 << 1) | (1 << 2);
 
-/// Position an input is read for: the previous tx id at 2.
-const INPUT_FIELDS: u32 = 1 << 2;
+/// Positions an input is read for: the amount at 1 and the previous tx id at 2.
+///
+/// The amount is only wanted by `--weighted`, but it is read either way. Making
+/// the mask depend on the mode would push a branch into the innermost parsing
+/// loop to save one field of four on runs that do not use it, and the
+/// measurement that matters here is that reading a field costs a `digit_run` and
+/// eight-digit folding, not a per-field decision.
+const INPUT_FIELDS: u32 = (1 << 1) | (1 << 2);
 
 /// An output is read for nothing at all — only for there being one.
 const OUTPUT_FIELDS: u32 = 0;
@@ -61,6 +70,16 @@ pub struct Record {
     pub block_id: usize,
     pub tx_id: usize,
     pub outputs: usize,
+}
+
+/// One input of a record: the transaction it spends, and for how much.
+///
+/// The amount is what `--weighted` shares a color out in proportion to; the
+/// unweighted driver ignores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Input {
+    pub prev_tx_id: usize,
+    pub amount: usize,
 }
 
 pub struct Reader<R: Read> {
@@ -298,9 +317,9 @@ impl<R: Read> Reader<R> {
     }
 
     /// The next record, or `None` at end of input.  `inputs` is cleared and
-    /// refilled with the previous-transaction id of each input; pass the same
-    /// vector every time to keep this allocation-free.
-    pub fn next_record(&mut self, inputs: &mut Vec<usize>) -> io::Result<Option<Record>> {
+    /// refilled with one [`Input`] per input of the record; pass the same vector
+    /// every time to keep this allocation-free.
+    pub fn next_record(&mut self, inputs: &mut Vec<Input>) -> io::Result<Option<Record>> {
         inputs.clear();
 
         if self.skip_ws()?.is_none() {
@@ -332,17 +351,21 @@ impl<R: Read> Reader<R> {
                     break;
                 }
                 Some(b'(') => {
-                    let mut prev_tx_id = None;
-                    let fields = self.read_flat_list(INPUT_FIELDS, |i, v| {
-                        if i == 2 {
-                            prev_tx_id = Some(v)
-                        }
+                    let (mut amount, mut prev_tx_id) = (None, None);
+                    let fields = self.read_flat_list(INPUT_FIELDS, |i, v| match i {
+                        1 => amount = Some(v),
+                        2 => prev_tx_id = Some(v),
+                        _ => {}
                     })?;
-                    match prev_tx_id {
-                        Some(p) => inputs.push(p),
-                        None => {
+                    match (amount, prev_tx_id) {
+                        (Some(amount), Some(prev_tx_id)) => inputs.push(Input {
+                            prev_tx_id,
+                            amount,
+                        }),
+                        _ => {
                             return self.err(format!(
-                                "input has {} fields, expected the previous tx id at position 2",
+                                "input has {} fields, expected the amount at position 1 and \
+                                 the previous tx id at position 2",
                                 fields
                             ))
                         }
@@ -382,7 +405,14 @@ mod tests {
     use super::*;
 
     /// What a record boils down to, for comparing two reads of the same bytes.
-    type Parsed = (usize, usize, Vec<usize>, usize);
+    type Parsed = (usize, usize, Vec<Input>, usize);
+
+    fn inp(prev_tx_id: usize, amount: usize) -> Input {
+        Input {
+            prev_tx_id,
+            amount,
+        }
+    }
 
     /// A `Read` that hands back one byte per call, so the reader refills its
     /// window at every single position in the stream.
@@ -441,7 +471,7 @@ mod tests {
     fn reads_the_four_fields_the_driver_wants() {
         assert_eq!(
             parse(SAMPLE).unwrap(),
-            vec![(0, 9, vec![], 1), (1, 10, vec![9], 2)]
+            vec![(0, 9, vec![], 1), (1, 10, vec![inp(9, 12)], 2)]
         );
     }
 
@@ -495,7 +525,7 @@ mod tests {
     #[test]
     fn a_record_may_be_split_across_lines() {
         let text = "((1231006506\n  1 10\n  1 2 3 4)\n ((11 12 9 0))\n ((5 6 7)\n  (8 9 10)))\n";
-        assert_eq!(parse(text).unwrap(), vec![(1, 10, vec![9], 2)]);
+        assert_eq!(parse(text).unwrap(), vec![(1, 10, vec![inp(9, 12)], 2)]);
     }
 
     /// Fields past the ones named are skipped, and the bitmask stops at 32
@@ -511,13 +541,13 @@ mod tests {
     #[test]
     fn several_inputs_arrive_in_order() {
         let text = "((1 2 3 0 0 0 0) ((0 0 40 0) (0 0 41 1) (0 0 42 2)) ((1 2 3)))";
-        assert_eq!(parse(text).unwrap(), vec![(2, 3, vec![40, 41, 42], 1)]);
+        assert_eq!(parse(text).unwrap(), vec![(2, 3, vec![inp(40, 0), inp(41, 0), inp(42, 0)], 1)]);
     }
 
     #[test]
     fn no_outputs_is_a_record_too() {
         let text = "((1 2 3 0 0 0 0) ((0 0 40 0)) ())";
-        assert_eq!(parse(text).unwrap(), vec![(2, 3, vec![40], 0)]);
+        assert_eq!(parse(text).unwrap(), vec![(2, 3, vec![inp(40, 0)], 0)]);
     }
 
     #[test]
@@ -596,7 +626,8 @@ mod tests {
                 "(({} {} {} {} 0 {} 0) ((3 {} {} 0) (4 {} {} 1)) ((1 {} 2) (2 {} 3)))\n",
                 i, block, tx, amount, amount, amount, prev, amount, prev, amount, amount
             ));
-            expected.push((block, tx, vec![prev, prev], 2));
+            let paid: usize = amount.parse().unwrap();
+            expected.push((block, tx, vec![inp(prev, paid), inp(prev, paid)], 2));
         }
         assert_eq!(parse(&text).unwrap(), expected);
     }
