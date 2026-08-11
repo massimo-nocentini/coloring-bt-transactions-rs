@@ -21,13 +21,17 @@
 //! That is byte for byte what Chicken's `(print* (car p*) " ")` produces, which
 //! is the point — the reference output can be diffed against.
 
+mod colorset;
 mod poly;
 mod sexp;
+mod simd;
+mod store;
 
-use poly::{Arena, Coeff, Idx};
+use poly::Coeff;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::process::ExitCode;
+use store::{ColorStore, RingStore};
 
 /// The Scheme stops at `(> i 1000000)`, i.e. after 1,000,001 records.  Kept as
 /// the default so a run reproduces the recorded output; override with argv[1],
@@ -40,16 +44,22 @@ const STATS_EVERY: usize = 100_000;
 fn main() -> ExitCode {
     let mut limit = DEFAULT_LIMIT;
     let mut stats = false;
+    // The circular list is the exercise, so it is what runs unless asked
+    // otherwise: a plain run of this program is still the Knuth port.
+    let mut rings = true;
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--stats" => stats = true,
+            "--rings" => rings = true,
+            "--sets" => rings = false,
             "all" => limit = usize::MAX,
             _ => match arg.parse::<usize>() {
                 Ok(n) => limit = n,
                 Err(_) => {
                     eprintln!(
-                        "usage: circular-polynomial [<record-limit>|all] [--stats] < records"
+                        "usage: circular-polynomial [<record-limit>|all] [--stats] \
+                         [--rings|--sets] < records"
                     );
                     return ExitCode::FAILURE;
                 }
@@ -57,7 +67,15 @@ fn main() -> ExitCode {
         }
     }
 
-    match run(limit, stats) {
+    // Two instantiations of the same loop, so neither backend pays for the
+    // other's existence at run time.
+    let outcome = if rings {
+        run::<RingStore>(limit, stats)
+    } else {
+        run::<colorset::SetStore>(limit, stats)
+    };
+
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
         // Downstream went away (`| head`); that is not our failure.
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
@@ -68,17 +86,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(limit: usize, stats: bool) -> io::Result<()> {
+fn run<S: ColorStore>(limit: usize, stats: bool) -> io::Result<()> {
     let mut reader = sexp::Reader::new(io::stdin().lock());
     let mut out = io::BufWriter::with_capacity(1 << 20, io::stdout().lock());
 
-    let mut arena = Arena::new();
-    // The fold seed, shared by every transaction and never freed, exactly as the
-    // Scheme's `0/polynomial` is.  `op` never mutates its operands, so sharing
-    // it is safe.
-    let zero = arena.make(&[]);
-
-    let mut colors: HashMap<usize, (Idx, usize)> = HashMap::new();
+    let mut store = S::new();
+    let mut colors: HashMap<usize, (S::Color, usize)> = HashMap::new();
     let mut inputs: Vec<usize> = Vec::new();
     let mut line: Vec<u8> = Vec::new();
 
@@ -91,13 +104,20 @@ fn run(limit: usize, stats: bool) -> io::Result<()> {
 
         let color = if inputs.is_empty() {
             // Coinbase: the block that minted it is the whole color.
-            arena.make(&[(record.block_id, 1)])
+            store.singleton(record.block_id)
         } else {
             // `foldr` over the inputs, so right to left.  The order does not
-            // change the result — `ior` is commutative and the merge is sorted —
+            // change the result — union is commutative and the merge is sorted —
             // but it decides which input hits an entry's last unspent output,
             // and the Scheme's order is the one to match.
-            let mut accumulator = zero;
+            //
+            // `None` is the seed.  The Scheme folds from `0/polynomial` and so
+            // did this until the backends were split, but an empty operand is
+            // something every union has to carry through the merge, and the
+            // whole first step of the fold is then a copy of one input for no
+            // reason.  Not having a seed says the same thing and does no work.
+            let mut accumulator: Option<S::Color> = None;
+
             for i in (0..inputs.len()).rev() {
                 let previous = inputs[i];
                 let entry = match colors.get_mut(&previous) {
@@ -112,26 +132,47 @@ fn run(limit: usize, stats: bool) -> io::Result<()> {
                         ))
                     }
                 };
-                let (previous_root, unspent) = *entry;
+                let unspent = entry.1;
 
-                let combined = arena.ior(previous_root, accumulator);
-                if accumulator != zero {
-                    arena.free_ring(accumulator);
-                }
-                if unspent == 1 {
-                    // Last unspent output: nobody can reach this ring again.
-                    colors.remove(&previous);
-                    arena.free_ring(previous_root);
-                } else {
+                if unspent > 1 {
+                    // Others can still reach this color, so it has to survive
+                    // the fold: merge from a borrow, and on the first step take
+                    // a second handle rather than the color itself.
                     entry.1 = unspent - 1;
+                    let held = &entry.0;
+                    accumulator = Some(match accumulator.take() {
+                        None => store.share(held),
+                        Some(acc) => {
+                            let combined = store.union(held, &acc);
+                            store.release(acc);
+                            combined
+                        }
+                    });
+                } else {
+                    // The last unspent output is being spent right now, so
+                    // nobody can reach this color again and the driver may take
+                    // it outright.  This is the case that used to cost a full
+                    // copy: `union(previous, empty)` followed by freeing the
+                    // original on the very next line.  It is the driver's UTXO
+                    // bookkeeping that makes the move safe, not anything a store
+                    // could work out for itself, which is why it lives here.
+                    let (root, _) = colors.remove(&previous).expect("just looked it up");
+                    accumulator = Some(match accumulator.take() {
+                        None => root,
+                        Some(acc) => {
+                            let combined = store.union(&root, &acc);
+                            store.release(acc);
+                            store.release(root);
+                            combined
+                        }
+                    });
                 }
-                accumulator = combined;
             }
-            accumulator
+            accumulator.expect("inputs is non-empty, so the fold ran at least once")
         };
 
         line.clear();
-        arena.for_each_term(color, |exponent, coefficient| {
+        store.for_each_term(&color, |exponent, coefficient| {
             line.push(b'(');
             push_int(&mut line, exponent);
             line.extend_from_slice(b" . ");
@@ -143,53 +184,34 @@ fn run(limit: usize, stats: bool) -> io::Result<()> {
 
         if record.outputs > 0 {
             if let Some((displaced, _)) = colors.insert(record.tx_id, (color, record.outputs)) {
-                // The Scheme leaks the displaced ring; we can afford not to.
-                arena.free_ring(displaced);
+                // The Scheme leaks the displaced color; we can afford not to.
+                store.release(displaced);
             }
         } else {
-            arena.free_ring(color);
+            store.release(color);
         }
 
         records += 1;
         if stats && records % STATS_EVERY == 0 {
+            let (live, committed) = store.usage();
+            let (live_label, committed_label) = store.usage_labels();
             eprintln!(
-                "{:>10} records  {:>12} live nodes  {:>12} arena nodes  {:>10} colored txs",
+                "{:>10} records  {:>12} {}  {:>12} {}  {:>10} colored txs",
                 records,
-                arena.live(),
-                arena.capacity(),
+                live,
+                live_label,
+                committed,
+                committed_label,
                 colors.len()
             );
         }
     }
 
     if stats {
-        audit(&arena, &colors, zero);
+        eprintln!("{}", store.audit(&mut colors.values().map(|(c, _)| c)));
     }
 
     out.flush()
-}
-
-/// Every node the arena thinks is live must be reachable from a ring someone
-/// still holds: the rings in `colors`, plus the shared zero.  A mismatch means a
-/// ring was dropped without [`Arena::free_ring`] — a leak the output diff would
-/// never show, since a leaked ring is still a *correct* ring.
-fn audit(arena: &Arena, colors: &HashMap<usize, (Idx, usize)>, zero: Idx) {
-    let reachable: usize = arena.ring_len(zero)
-        + colors
-            .values()
-            .map(|&(root, _)| arena.ring_len(root))
-            .sum::<usize>();
-    let live = arena.live();
-    if reachable == live {
-        eprintln!("audit: {} live nodes, all reachable", live);
-    } else {
-        eprintln!(
-            "audit: LEAK -- {} live nodes but only {} reachable ({} lost)",
-            live,
-            reachable,
-            live - reachable
-        );
-    }
 }
 
 /// Decimal, straight into the line buffer.  `write!` would do it too, but its
