@@ -21,6 +21,15 @@
 //! That is byte for byte what Chicken's `(print* (car p*) " ")` produces, which
 //! is the point — the reference output can be diffed against.
 //!
+//! # A picture instead
+//!
+//! That output is enormous — a color of a thousand blocks is fourteen thousand
+//! bytes of `(block . 1)` — and most of every line is punctuation.  `--pbm
+//! <file>` draws the same answer instead: one row per record in the order the
+//! records arrive, one column per block id counting up from 0, black where the
+//! block is in the color.  See [`pbm`] for the format and for why the width has
+//! to be given up front with `--blocks`.
+//!
 //! # Backends
 //!
 //! Three representations of a color, chosen at the command line, all driven by
@@ -55,6 +64,7 @@
 //! be read off the output.  See [`push_weight`].
 
 mod colorset;
+mod pbm;
 mod poly;
 mod sexp;
 mod simd;
@@ -63,6 +73,7 @@ mod weighted;
 
 use poly::Coeff;
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -88,6 +99,82 @@ enum Backend {
     Weighted,
 }
 
+/// Where a finished color goes.
+///
+/// An enum rather than a trait because the choice is made once and the match is
+/// per *record*: inside each arm the walk over the color's terms is still a
+/// monomorphic closure, which is the loop that has to stay cheap.
+enum Output {
+    /// A line of `(block . coefficient)` pairs per record, on stdout.  The
+    /// buffer is reused across records; `line` is a field rather than a local
+    /// for that reason alone.
+    Text {
+        out: io::BufWriter<io::StdoutLock<'static>>,
+        line: Vec<u8>,
+    },
+    /// A row of pixels per record, in a file.  See [`pbm`].
+    Bitmap(pbm::Writer<File>),
+}
+
+impl Output {
+    fn emit<S: ColorStore>(&mut self, store: &S, color: &S::Color) -> io::Result<()> {
+        match self {
+            Output::Text { out, line } => {
+                line.clear();
+                store.for_each_term(color, |exponent, coefficient| {
+                    line.push(b'(');
+                    push_int(line, exponent);
+                    line.extend_from_slice(b" . ");
+                    if S::WEIGHTED {
+                        push_weight(line, coefficient);
+                    } else {
+                        // Always exactly 1 here, and printed as the integer the
+                        // Scheme prints, so an unweighted run stays byte for
+                        // byte comparable.
+                        push_int(line, coefficient as usize);
+                    }
+                    line.extend_from_slice(b") ");
+                });
+                line.push(b'\n');
+                out.write_all(line)
+            }
+            // The coefficient is dropped: a pixel says the block is in the
+            // color, which under the unweighted backends is everything the term
+            // had to say.
+            Output::Bitmap(bitmap) => {
+                store.for_each_term(color, |exponent, _| bitmap.set(exponent));
+                bitmap.end_row()
+            }
+        }
+    }
+
+    /// Close the output.  For the bitmap this is not a formality — the height
+    /// only goes into the header here.
+    fn finish(self) -> io::Result<()> {
+        match self {
+            Output::Text { mut out, .. } => out.flush(),
+            Output::Bitmap(bitmap) => bitmap.finish().map(|_| ()),
+        }
+    }
+}
+
+const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
+                     [--rings|--sets|--weighted] [--pbm <file> --blocks <n>] < records";
+
+/// The value of a `--name <value>` or `--name=<value>` option at `args[i]`, with
+/// how many arguments it took.
+///
+/// Both spellings, because one of these options is a path and the other a count
+/// and neither reads well glued to its name.  A prefix match alone would accept
+/// `--blocksy`, so the character after the name has to be an `=` or nothing.
+fn option<'a>(args: &'a [String], i: usize, name: &str) -> Option<(&'a str, usize)> {
+    let rest = args[i].strip_prefix(name)?;
+    if rest.is_empty() {
+        return args.get(i + 1).map(|v| (v.as_str(), 2));
+    }
+    rest.strip_prefix('=').map(|v| (v, 1))
+}
+
 fn main() -> ExitCode {
     let mut limit = DEFAULT_LIMIT;
     let mut stats = false;
@@ -95,9 +182,13 @@ fn main() -> ExitCode {
     // otherwise: a plain run of this program is still the Knuth port.
     let mut backend = Backend::Rings;
     let mut chose_backend = false;
+    let mut bitmap: Option<String> = None;
+    let mut blocks: Option<usize> = None;
 
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
             "--stats" => stats = true,
             "--rings" => {
                 backend = Backend::Rings;
@@ -123,25 +214,74 @@ fn main() -> ExitCode {
                 chose_backend = true;
             }
             "all" => limit = usize::MAX,
-            _ => match arg.parse::<usize>() {
-                Ok(n) => limit = n,
-                Err(_) => {
-                    eprintln!(
-                        "usage: circular-polynomial [<record-limit>|all] [--stats] \
-                         [--rings|--sets|--weighted] < records"
-                    );
+            _ => {
+                if let Some((path, used)) = option(&args, i, "--pbm") {
+                    bitmap = Some(path.to_string());
+                    i += used;
+                    continue;
+                }
+                if let Some((n, used)) = option(&args, i, "--blocks") {
+                    match n.parse::<usize>() {
+                        Ok(n) => blocks = Some(n),
+                        Err(_) => {
+                            eprintln!("circular-polynomial: --blocks wants a count, got {:?}", n);
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    i += used;
+                    continue;
+                }
+                match args[i].parse::<usize>() {
+                    Ok(n) => limit = n,
+                    Err(_) => {
+                        eprintln!("{}", USAGE);
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // The width fixes the distance from one row to the next, so it cannot be
+    // discovered along the way the height can — see `pbm`.
+    let output = match (bitmap, blocks) {
+        (Some(path), Some(0)) | (Some(path), None) => {
+            eprintln!(
+                "circular-polynomial: --pbm {} needs --blocks <n>, one column per \
+                 block id, and n must be greater than the largest block id in the \
+                 records",
+                path
+            );
+            return ExitCode::FAILURE;
+        }
+        (None, Some(_)) => {
+            eprintln!(
+                "circular-polynomial: --blocks says how wide the bitmap is, so it needs --pbm"
+            );
+            return ExitCode::FAILURE;
+        }
+        (Some(path), Some(width)) => {
+            match File::create(&path).and_then(|f| pbm::Writer::new(f, width)) {
+                Ok(w) => Output::Bitmap(w),
+                Err(e) => {
+                    eprintln!("circular-polynomial: {}: {}", path, e);
                     return ExitCode::FAILURE;
                 }
-            },
+            }
         }
-    }
+        (None, None) => Output::Text {
+            out: io::BufWriter::with_capacity(1 << 20, io::stdout().lock()),
+            line: Vec::new(),
+        },
+    };
 
     // One instantiation of the loop per backend, so none of them pays for the
     // others existing.
     let outcome = match backend {
-        Backend::Rings => run::<RingStore>(limit, stats),
-        Backend::Sets => run::<colorset::SetStore>(limit, stats),
-        Backend::Weighted => run::<weighted::WeightedSets>(limit, stats),
+        Backend::Rings => run::<RingStore>(limit, stats, output),
+        Backend::Sets => run::<colorset::SetStore>(limit, stats, output),
+        Backend::Weighted => run::<weighted::WeightedSets>(limit, stats, output),
     };
 
     match outcome {
@@ -155,14 +295,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run<S: ColorStore>(limit: usize, stats: bool) -> io::Result<()> {
+fn run<S: ColorStore>(limit: usize, stats: bool, mut out: Output) -> io::Result<()> {
     let mut reader = sexp::Reader::new(io::stdin().lock());
-    let mut out = io::BufWriter::with_capacity(1 << 20, io::stdout().lock());
 
     let mut store = S::new();
     let mut colors: HashMap<usize, (S::Color, usize)> = HashMap::new();
     let mut inputs: Vec<sexp::Input> = Vec::new();
-    let mut line: Vec<u8> = Vec::new();
 
     // Only read when `--stats` is on, but started unconditionally: the clock has
     // to be running before the first record, and one `Instant::now()` per
@@ -293,22 +431,7 @@ fn run<S: ColorStore>(limit: usize, stats: bool) -> io::Result<()> {
             store.observe(&color);
         }
 
-        line.clear();
-        store.for_each_term(&color, |exponent, coefficient| {
-            line.push(b'(');
-            push_int(&mut line, exponent);
-            line.extend_from_slice(b" . ");
-            if S::WEIGHTED {
-                push_weight(&mut line, coefficient);
-            } else {
-                // Always exactly 1 here, and printed as the integer the Scheme
-                // prints, so an unweighted run stays byte for byte comparable.
-                push_int(&mut line, coefficient as usize);
-            }
-            line.extend_from_slice(b") ");
-        });
-        line.push(b'\n');
-        out.write_all(&line)?;
+        out.emit::<S>(&store, &color)?;
 
         if record.outputs > 0 {
             if let Some((displaced, _)) = colors.insert(record.tx_id, (color, record.outputs)) {
@@ -352,9 +475,20 @@ fn run<S: ColorStore>(limit: usize, stats: bool) -> io::Result<()> {
             rate(records, elapsed)
         );
         eprintln!("{}", store.audit(&mut colors.values().map(|(c, _)| c)));
+        // Worth saying out loud in a bitmap run, where stdout stays empty and
+        // the header is the only other place the size is written down.
+        if let Output::Bitmap(bitmap) = &out {
+            let (columns, rows) = bitmap.dimensions();
+            eprintln!(
+                "bitmap: {} columns x {} rows, {} bytes of raster",
+                columns,
+                rows,
+                columns.div_ceil(8) * rows
+            );
+        }
     }
 
-    out.flush()
+    out.finish()
 }
 
 /// `records` over `seconds`, short enough to hold a fixed column.
