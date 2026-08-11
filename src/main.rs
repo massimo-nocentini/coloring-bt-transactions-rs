@@ -27,8 +27,17 @@
 //! bytes of `(block . 1)` — and most of every line is punctuation.  `--pbm
 //! <file>` draws the same answer instead: one row per record in the order the
 //! records arrive, one column per block id counting up from 0, black where the
-//! block is in the color.  See [`pbm`] for the format and for why the width has
-//! to be given up front with `--blocks`.
+//! block is in the color.  See [`pbm`] for the format.
+//!
+//! Two knobs, both about size:
+//!
+//! - `--bin <n>` puts `n` consecutive transactions on one row, black where any
+//!   of them reaches that block.  A million rows is a picture nothing will show
+//!   you whole; binning is how it becomes one that will.
+//! - `--blocks <n>` says how many columns to draw, which is the one thing the
+//!   image cannot discover as it goes — it is the distance from one row to the
+//!   next.  Left out, [`survey`] reads the records once to count the blocks
+//!   before drawing them, which needs an input that can be rewound.
 //!
 //! # Backends
 //!
@@ -74,7 +83,7 @@ mod weighted;
 use poly::Coeff;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 use store::{ColorStore, RingStore};
@@ -143,7 +152,7 @@ impl Output {
             // had to say.
             Output::Bitmap(bitmap) => {
                 store.for_each_term(color, |exponent, _| bitmap.set(exponent));
-                bitmap.end_row()
+                bitmap.end_transaction()
             }
         }
     }
@@ -159,7 +168,158 @@ impl Output {
 }
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
-                     [--rings|--sets|--weighted] [--pbm <file> --blocks <n>] < records";
+                     [--rings|--sets|--weighted] \
+                     [--pbm <file> [--blocks <n>] [--bin <n>]] < records";
+
+/// Standard input, as something that can be read a second time — when the
+/// platform and the shell allow it.
+///
+/// A `dup` of the descriptor rather than the descriptor itself, because a `File`
+/// closes what it holds when it drops and standard input is not ours to close.
+/// The copy shares its file offset with the original, which is what a program
+/// that reads the records and then puts them back should do.
+///
+/// Asking where we are is the question a pipe refuses, and refusing is how it
+/// says it cannot be rewound.
+#[cfg(unix)]
+fn rewindable_stdin() -> Option<File> {
+    use std::mem::ManuallyDrop;
+    use std::os::fd::FromRawFd;
+
+    let borrowed = unsafe { ManuallyDrop::new(File::from_raw_fd(0)) };
+    let mut own = borrowed.try_clone().ok()?;
+    own.stream_position().ok()?;
+    Some(own)
+}
+
+#[cfg(not(unix))]
+fn rewindable_stdin() -> Option<File> {
+    None
+}
+
+/// Read the records once without coloring them, for the number the bitmap has
+/// to know before it can write anything.
+///
+/// Answers `(blocks, records)` — one past the largest block id the records
+/// carry, which is how many columns the image needs, and how many records there
+/// were, which is only for saying so out loud.
+///
+/// One pass is enough because a color is a set of the blocks its transaction's
+/// coins *descend* from, and an ancestor cannot be mined later than its
+/// descendant: no color names a block beyond the one its own record sits in, so
+/// the largest block id in the records bounds every pixel in the picture.
+///
+/// Only the records the run will actually reach are looked at, so a record limit
+/// narrows the image rather than padding it out to a chain the run stops short
+/// of.
+fn survey(input: impl io::Read, limit: usize) -> io::Result<(usize, usize)> {
+    let mut reader = sexp::Reader::new(input);
+    let mut inputs: Vec<sexp::Input> = Vec::new();
+    let (mut blocks, mut records) = (0, 0);
+
+    while records < limit {
+        match reader.next_record(&mut inputs)? {
+            Some(record) => blocks = blocks.max(record.block_id + 1),
+            None => break,
+        }
+        records += 1;
+    }
+    Ok((blocks, records))
+}
+
+/// Work out where the records come from and where the colors go.
+///
+/// The two are settled together because the bitmap's width may have to be read
+/// off the records before the first row can be written, and that costs the input
+/// a rewind.  The error is the message to print, since every one of these is a
+/// complaint about the command line rather than something to recover from.
+fn plan(
+    bitmap: Option<String>,
+    blocks: Option<usize>,
+    bin: Option<usize>,
+    limit: usize,
+) -> Result<(Output, Box<dyn io::Read>), String> {
+    // Held as a file when standard input is one, so that `survey` can read the
+    // records and put them back.
+    let mut source = rewindable_stdin();
+
+    let path = match bitmap {
+        Some(path) => path,
+        None => {
+            if let Some(name) = blocks.map(|_| "--blocks").or(bin.map(|_| "--bin")) {
+                return Err(format!(
+                    "{} describes the bitmap, so it needs --pbm <file>",
+                    name
+                ));
+            }
+            return Ok((
+                Output::Text {
+                    out: io::BufWriter::with_capacity(1 << 20, io::stdout().lock()),
+                    line: Vec::new(),
+                },
+                records_from(source),
+            ));
+        }
+    };
+
+    let bin = match bin {
+        Some(0) => return Err("--bin 0 asks a row to stand for no transactions".into()),
+        Some(n) => n,
+        None => 1,
+    };
+
+    let width = match blocks {
+        Some(0) => return Err("--blocks 0 leaves the bitmap no columns to draw in".into()),
+        Some(n) => n,
+        None => {
+            let file = source.as_mut().ok_or_else(|| {
+                "standard input cannot be rewound, so the blocks cannot be counted before \
+                 the rows are written: redirect the records from a file (`< records`) \
+                 rather than through a pipe, or say how many there are with --blocks <n>"
+                    .to_string()
+            })?;
+            let start = file.stream_position().map_err(|e| e.to_string())?;
+            let (blocks, records) = survey(&*file, limit).map_err(|e| e.to_string())?;
+            file.seek(SeekFrom::Start(start))
+                .map_err(|e| e.to_string())?;
+            // Worth a line on stderr: it is a whole pass over the input, so a
+            // long run is otherwise silent for a while before anything happens.
+            if records == 0 {
+                // Every record carries a block, so no blocks means no records.
+                // The image is then 0 x 0, which is a header a reader will
+                // parse and an image no reader will show.
+                eprintln!("circular-polynomial: no records, so {} is empty", path);
+            } else {
+                eprintln!(
+                    "circular-polynomial: {} records over {} blocks, so a {} x {} bitmap",
+                    records,
+                    blocks,
+                    blocks,
+                    records.div_ceil(bin)
+                );
+            }
+            blocks
+        }
+    };
+
+    let writer = File::create(&path)
+        .and_then(|f| pbm::Writer::new(f, width, bin))
+        .map_err(|e| format!("{}: {}", path, e))?;
+    Ok((Output::Bitmap(writer), records_from(source)))
+}
+
+/// The records, from the rewindable handle if there is one and from standard
+/// input as it comes otherwise.
+///
+/// Boxed rather than made another type parameter of [`run`]: this is read a
+/// megabyte at a time, so a virtual call per refill is nothing, where another
+/// parameter would be another copy of the driver per backend.
+fn records_from(source: Option<File>) -> Box<dyn io::Read> {
+    match source {
+        Some(file) => Box::new(file),
+        None => Box::new(io::stdin().lock()),
+    }
+}
 
 /// The value of a `--name <value>` or `--name=<value>` option at `args[i]`, with
 /// how many arguments it took.
@@ -167,10 +327,18 @@ const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
 /// Both spellings, because one of these options is a path and the other a count
 /// and neither reads well glued to its name.  A prefix match alone would accept
 /// `--blocksy`, so the character after the name has to be an `=` or nothing.
+///
+/// The separate word is not taken if it looks like another option, so `--pbm
+/// --stats` is a missing filename rather than a file called `--stats`.  Nothing
+/// here wants a value of that shape, and swallowing the next flag would leave a
+/// run silently doing something else.
 fn option<'a>(args: &'a [String], i: usize, name: &str) -> Option<(&'a str, usize)> {
     let rest = args[i].strip_prefix(name)?;
     if rest.is_empty() {
-        return args.get(i + 1).map(|v| (v.as_str(), 2));
+        return args
+            .get(i + 1)
+            .filter(|v| !v.starts_with("--"))
+            .map(|v| (v.as_str(), 2));
     }
     rest.strip_prefix('=').map(|v| (v, 1))
 }
@@ -184,6 +352,7 @@ fn main() -> ExitCode {
     let mut chose_backend = false;
     let mut bitmap: Option<String> = None;
     let mut blocks: Option<usize> = None;
+    let mut bin: Option<usize> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -220,15 +389,26 @@ fn main() -> ExitCode {
                     i += used;
                     continue;
                 }
-                if let Some((n, used)) = option(&args, i, "--blocks") {
-                    match n.parse::<usize>() {
-                        Ok(n) => blocks = Some(n),
-                        Err(_) => {
-                            eprintln!("circular-polynomial: --blocks wants a count, got {:?}", n);
-                            return ExitCode::FAILURE;
+                let counts = [("--blocks", &mut blocks), ("--bin", &mut bin)];
+                let mut taken = 0;
+                for (name, slot) in counts {
+                    if let Some((n, used)) = option(&args, i, name) {
+                        match n.parse::<usize>() {
+                            Ok(n) => *slot = Some(n),
+                            Err(_) => {
+                                eprintln!(
+                                    "circular-polynomial: {} wants a count, got {:?}",
+                                    name, n
+                                );
+                                return ExitCode::FAILURE;
+                            }
                         }
+                        taken = used;
+                        break;
                     }
-                    i += used;
+                }
+                if taken > 0 {
+                    i += taken;
                     continue;
                 }
                 match args[i].parse::<usize>() {
@@ -243,45 +423,20 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    // The width fixes the distance from one row to the next, so it cannot be
-    // discovered along the way the height can — see `pbm`.
-    let output = match (bitmap, blocks) {
-        (Some(path), Some(0)) | (Some(path), None) => {
-            eprintln!(
-                "circular-polynomial: --pbm {} needs --blocks <n>, one column per \
-                 block id, and n must be greater than the largest block id in the \
-                 records",
-                path
-            );
+    let (output, input) = match plan(bitmap, blocks, bin, limit) {
+        Ok(plan) => plan,
+        Err(message) => {
+            eprintln!("circular-polynomial: {}", message);
             return ExitCode::FAILURE;
         }
-        (None, Some(_)) => {
-            eprintln!(
-                "circular-polynomial: --blocks says how wide the bitmap is, so it needs --pbm"
-            );
-            return ExitCode::FAILURE;
-        }
-        (Some(path), Some(width)) => {
-            match File::create(&path).and_then(|f| pbm::Writer::new(f, width)) {
-                Ok(w) => Output::Bitmap(w),
-                Err(e) => {
-                    eprintln!("circular-polynomial: {}: {}", path, e);
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        (None, None) => Output::Text {
-            out: io::BufWriter::with_capacity(1 << 20, io::stdout().lock()),
-            line: Vec::new(),
-        },
     };
 
     // One instantiation of the loop per backend, so none of them pays for the
     // others existing.
     let outcome = match backend {
-        Backend::Rings => run::<RingStore>(limit, stats, output),
-        Backend::Sets => run::<colorset::SetStore>(limit, stats, output),
-        Backend::Weighted => run::<weighted::WeightedSets>(limit, stats, output),
+        Backend::Rings => run::<RingStore>(limit, stats, output, input),
+        Backend::Sets => run::<colorset::SetStore>(limit, stats, output, input),
+        Backend::Weighted => run::<weighted::WeightedSets>(limit, stats, output, input),
     };
 
     match outcome {
@@ -295,8 +450,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn run<S: ColorStore>(limit: usize, stats: bool, mut out: Output) -> io::Result<()> {
-    let mut reader = sexp::Reader::new(io::stdin().lock());
+fn run<S: ColorStore>(
+    limit: usize,
+    stats: bool,
+    mut out: Output,
+    input: Box<dyn io::Read>,
+) -> io::Result<()> {
+    let mut reader = sexp::Reader::new(input);
 
     let mut store = S::new();
     let mut colors: HashMap<usize, (S::Color, usize)> = HashMap::new();

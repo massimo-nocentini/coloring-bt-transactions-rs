@@ -23,6 +23,18 @@
 //! "the ones in the output" and "the black pixels" the same statement.  Every
 //! image tool reads it.
 //!
+//! ## Folding transactions together
+//!
+//! A row per transaction is a row per record, and a real run has more records
+//! than any screen has pixels — a million rows is already a picture nothing will
+//! show you whole.  So a row may stand for more than one transaction:
+//! [`Writer::new`]'s `bin` is how many consecutive transactions share a row, and
+//! the row they share is the union of their colors, black where *any* of them
+//! reaches that block.  Union is what the driver is computing anyway, so a
+//! binned picture is the same picture at a coarser scale rather than a sampled
+//! or averaged one, and nothing that was black can go white.  The last bin is
+//! whatever is left over, and it is written like any other.
+//!
 //! ## Why the header is padded, and why this wants a file
 //!
 //! `P4` puts the width and the height in front of the raster, but the height is
@@ -36,8 +48,10 @@
 //!
 //! That seek is why this writes to a file rather than to stdout: a pipe cannot
 //! be rewound.  The width has no such escape — it fixes the distance from one
-//! row to the next, so it has to be known before the first row is written, which
-//! is what `--blocks` is for.
+//! row to the next, so it cannot be discovered along the way the height can, and
+//! has to be settled before the first row is written.  `--blocks` says it
+//! outright; without it the driver counts the blocks first, by reading the
+//! records twice — see `main`'s `survey`.
 
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 
@@ -56,18 +70,23 @@ fn header(width: usize, rows: usize) -> String {
 
 /// A bitmap being written a row at a time.
 ///
-/// One row is built up by [`Writer::set`], one call per block in the color, and
-/// closed by [`Writer::end_row`].  The rows are streamed out as they are
-/// finished, so the memory here is one row's worth however tall the image gets.
+/// A transaction is drawn by [`Writer::set`], once per block in its color, and
+/// closed by [`Writer::end_transaction`]; every `bin` of those makes a row.  The
+/// rows are streamed out as they are finished, so the memory here is one row's
+/// worth however tall the image gets.
 pub struct Writer<W: Write + Seek> {
     out: BufWriter<W>,
     /// Columns, i.e. how many block ids the image has room for.
     width: usize,
+    /// Transactions to a row.  One is a row each, which is the plain picture.
+    bin: usize,
     /// The row being built, eight pixels to the byte and rounded up to a whole
-    /// one.  Zero outside `..dirty` at all times, which is the
-    /// invariant that lets [`Writer::end_row`] clear only a prefix.
+    /// one.  Zero outside `..dirty` at all times, which is the invariant that
+    /// lets [`Writer::flush_row`] clear only a prefix.
     row: Vec<u8>,
     dirty: usize,
+    /// Transactions drawn into the row so far, always below `bin`.
+    pending: usize,
     rows: usize,
     /// The first block id seen that the image has no column for, if any.
     escaped: Option<usize>,
@@ -76,16 +95,20 @@ pub struct Writer<W: Write + Seek> {
 }
 
 impl<W: Write + Seek> Writer<W> {
-    /// Start a bitmap `width` columns wide, writing the placeholder header.
-    pub fn new(inner: W, width: usize) -> io::Result<Self> {
+    /// Start a bitmap `width` columns wide with `bin` transactions to the row,
+    /// writing the placeholder header.
+    pub fn new(inner: W, width: usize, bin: usize) -> io::Result<Self> {
+        assert!(bin > 0, "a row has to stand for at least one transaction");
         let mut out = BufWriter::with_capacity(1 << 20, inner);
         let placeholder = header(width, 0);
         out.write_all(placeholder.as_bytes())?;
         Ok(Writer {
             out,
             width,
+            bin,
             row: vec![0u8; width.div_ceil(8)],
             dirty: 0,
+            pending: 0,
             rows: 0,
             escaped: None,
             header_len: placeholder.len(),
@@ -96,9 +119,9 @@ impl<W: Write + Seek> Writer<W> {
     ///
     /// A block the image has no column for is remembered rather than reported:
     /// this runs inside the store's walk over the color's terms, which has
-    /// nowhere to put an error.  [`Writer::end_row`] raises it, naming the first
-    /// one — the first is the informative one, since the rest are whatever the
-    /// run went on to see afterwards.
+    /// nowhere to put an error.  [`Writer::end_transaction`] raises it, naming
+    /// the first one — the first is the informative one, since the rest are
+    /// whatever the run went on to see afterwards.
     #[inline]
     pub fn set(&mut self, block: usize) {
         if block >= self.width {
@@ -113,8 +136,8 @@ impl<W: Write + Seek> Writer<W> {
         }
     }
 
-    /// Emit the row being built and start the next one.
-    pub fn end_row(&mut self) -> io::Result<()> {
+    /// Finish one transaction, emitting the row if it completes a bin.
+    pub fn end_transaction(&mut self) -> io::Result<()> {
         if let Some(block) = self.escaped {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -127,6 +150,18 @@ impl<W: Write + Seek> Writer<W> {
                 ),
             ));
         }
+        self.pending += 1;
+        if self.pending == self.bin {
+            // Nothing is cleared until here, so a bin's transactions have been
+            // drawing into the same row all along: the row is their union
+            // without any of them being asked to compute one.
+            self.flush_row()?;
+        }
+        Ok(())
+    }
+
+    /// Write the row being built and start the next one.
+    fn flush_row(&mut self) -> io::Result<()> {
         self.out.write_all(&self.row)?;
         // Bits are only ever set below `dirty`, so that prefix is the only part
         // that can be non-zero and the rest is still the zeroes it started as.
@@ -135,18 +170,25 @@ impl<W: Write + Seek> Writer<W> {
         // difference between clearing the row and clearing the image.
         self.row[..self.dirty].fill(0);
         self.dirty = 0;
+        self.pending = 0;
         self.rows += 1;
         Ok(())
     }
 
-    /// `(columns, rows)` as the header will end up reading.
+    /// `(columns, rows)` as the header will end up reading, counting the bin in
+    /// progress as the row it is going to become.
     pub fn dimensions(&self) -> (usize, usize) {
-        (self.width, self.rows)
+        (self.width, self.rows + usize::from(self.pending > 0))
     }
 
     /// Stamp the real height into the header, and answer the writer it was
     /// stamped into.
     pub fn finish(mut self) -> io::Result<W> {
+        // A bin that never filled up is still a row: the run does not owe the
+        // image a whole bin's worth of transactions at the end of the records.
+        if self.pending > 0 {
+            self.flush_row()?;
+        }
         self.out.flush()?;
         let final_header = header(self.width, self.rows);
         // The padding exists precisely so this holds; if it ever did not, the
@@ -173,15 +215,20 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    /// Drive a writer over a `Cursor` and answer the finished image, header
+    /// Draw one transaction per row and answer the finished image, header
     /// stamping and all.
-    fn draw(width: usize, rows: &[&[usize]]) -> io::Result<Vec<u8>> {
-        let mut w = Writer::new(Cursor::new(Vec::new()), width)?;
-        for row in rows {
-            for &block in *row {
+    fn draw(width: usize, transactions: &[&[usize]]) -> io::Result<Vec<u8>> {
+        binned(width, 1, transactions)
+    }
+
+    /// The same, with `bin` transactions to the row.
+    fn binned(width: usize, bin: usize, transactions: &[&[usize]]) -> io::Result<Vec<u8>> {
+        let mut w = Writer::new(Cursor::new(Vec::new()), width, bin)?;
+        for color in transactions {
+            for &block in *color {
                 w.set(block);
             }
-            w.end_row()?;
+            w.end_transaction()?;
         }
         Ok(w.finish()?.into_inner())
     }
@@ -241,15 +288,60 @@ mod tests {
         );
     }
 
+    /// A bin's row is the union of its transactions' colors, which is the one
+    /// thing that makes a compacted picture a coarser picture rather than a
+    /// sampled one: a block black at bin `n` is black at every coarser bin too.
+    #[test]
+    fn a_binned_row_is_the_union_of_the_transactions_in_it() {
+        let image = binned(24, 3, &[&[0], &[9], &[23], &[1], &[2], &[3]]).unwrap();
+        let (header, raster) = split(&image);
+        assert_eq!(
+            std::str::from_utf8(header).unwrap(),
+            format!("P4\n24 {:>20}\n", 2)
+        );
+        assert_eq!(
+            raster,
+            &[0x80, 0x40, 0x01, /* {0,9,23} */ 0x70, 0x00, 0x00 /* {1,2,3} */]
+        );
+    }
+
+    /// The records do not owe the image a whole bin at the end of the run.
+    #[test]
+    fn a_bin_left_part_full_is_still_a_row() {
+        let image = binned(8, 4, &[&[0], &[1], &[2], &[3], &[6], &[7]]).unwrap();
+        let (header, raster) = split(&image);
+        assert_eq!(
+            std::str::from_utf8(header).unwrap(),
+            format!("P4\n8 {:>20}\n", 2)
+        );
+        assert_eq!(raster, &[0b1111_0000, 0b0000_0011]);
+    }
+
+    /// Binning must not turn a picture into a smeared one: what a bin
+    /// accumulates has to stop at the bin's edge.
+    #[test]
+    fn a_bin_does_not_leak_into_the_next_one() {
+        let image = binned(16, 2, &[&[0, 15], &[1], &[8], &[]]).unwrap();
+        let (_, raster) = split(&image);
+        assert_eq!(raster, &[0xC0, 0x01, 0x00, 0x80]);
+    }
+
+    /// Binning by one is the plain picture, not a special case of it.
+    #[test]
+    fn binning_by_one_draws_what_no_binning_draws() {
+        let colors: &[&[usize]] = &[&[0, 5], &[3], &[], &[7]];
+        assert_eq!(binned(8, 1, colors).unwrap(), draw(8, colors).unwrap());
+    }
+
     /// The bitmap cannot silently drop a block: an image too narrow for the run
     /// is a truncated answer that looks like a whole one.
     #[test]
     fn a_block_past_the_last_column_is_an_error_naming_it() {
-        let mut w = Writer::new(Cursor::new(Vec::new()), 10).unwrap();
+        let mut w = Writer::new(Cursor::new(Vec::new()), 10, 1).unwrap();
         w.set(3);
         w.set(64);
         w.set(70);
-        let e = w.end_row().unwrap_err();
+        let e = w.end_transaction().unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidData);
         // The first one over the edge, not the largest and not the last.
         assert!(e.to_string().contains("block 64"), "{}", e);
