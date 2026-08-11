@@ -35,7 +35,7 @@ use std::time::Instant;
 use store::{ColorStore, RingStore};
 
 /// The Scheme stops at `(> i 1000000)`, i.e. after 1,000,001 records.  Kept as
-/// the default so a run reproduces the recorded output; override with argv[1],
+/// the default so a run reproduces the recorded output; override with `argv[1]`,
 /// or pass `all` for no limit.
 const DEFAULT_LIMIT: usize = 1_000_001;
 
