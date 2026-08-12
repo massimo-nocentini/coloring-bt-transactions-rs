@@ -25,11 +25,14 @@
 //!
 //! That output is enormous — a color of a thousand blocks is fourteen thousand
 //! bytes of `(block . 1)` — and most of every line is punctuation.  `--pbm
-//! <file>` draws the same answer instead: one row per record in the order the
-//! records arrive, one column per block id counting up from 0, black where the
-//! block is in the color.  See [`pbm`] for the format.
+//! <file>` and `--svg <file>` draw the same answer instead: one row per record
+//! in the order the records arrive, one column per block id counting up from 0,
+//! black where the block is in the color.  The bitmap packs the pixels; the SVG
+//! strokes a line per run of adjacent blocks and pays nothing for the white.
+//! Which comes out smaller depends on the records, and `--stats` measures it —
+//! see [`image`].
 //!
-//! Two knobs, both about size:
+//! Two more knobs, both about size:
 //!
 //! - `--bin <n>` puts `n` consecutive transactions on one row, black where any
 //!   of them reaches that block.  A million rows is a picture nothing will show
@@ -73,7 +76,7 @@
 //! be read off the output.  See [`push_weight`].
 
 mod colorset;
-mod pbm;
+mod image;
 mod poly;
 mod sexp;
 mod simd;
@@ -121,8 +124,8 @@ enum Output {
         out: io::BufWriter<io::StdoutLock<'static>>,
         line: Vec<u8>,
     },
-    /// A row of pixels per record, in a file.  See [`pbm`].
-    Bitmap(pbm::Writer<File>),
+    /// A row of pixels per record, in a file.  See [`image`].
+    Picture(image::Writer<File>),
 }
 
 impl Output {
@@ -150,9 +153,9 @@ impl Output {
             // The coefficient is dropped: a pixel says the block is in the
             // color, which under the unweighted backends is everything the term
             // had to say.
-            Output::Bitmap(bitmap) => {
-                store.for_each_term(color, |exponent, _| bitmap.set(exponent));
-                bitmap.end_transaction()
+            Output::Picture(picture) => {
+                store.for_each_term(color, |exponent, _| picture.set(exponent));
+                picture.end_transaction()
             }
         }
     }
@@ -162,14 +165,14 @@ impl Output {
     fn finish(self) -> io::Result<()> {
         match self {
             Output::Text { mut out, .. } => out.flush(),
-            Output::Bitmap(bitmap) => bitmap.finish().map(|_| ()),
+            Output::Picture(picture) => picture.finish().map(|_| ()),
         }
     }
 }
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
                      [--rings|--sets|--weighted] \
-                     [--pbm <file> [--blocks <n>] [--bin <n>]] < records";
+                     [--pbm <file>|--svg <file> [--blocks <n>] [--bin <n>]] < records";
 
 /// Standard input, as something that can be read a second time — when the
 /// platform and the shell allow it.
@@ -234,21 +237,22 @@ fn survey(input: impl io::Read, limit: usize) -> io::Result<(usize, usize)> {
 /// a rewind.  The error is the message to print, since every one of these is a
 /// complaint about the command line rather than something to recover from.
 fn plan(
-    bitmap: Option<String>,
+    bitmap: Option<(image::Format, String)>,
     blocks: Option<usize>,
     bin: Option<usize>,
     limit: usize,
+    stats: bool,
 ) -> Result<(Output, Box<dyn io::Read>), String> {
     // Held as a file when standard input is one, so that `survey` can read the
     // records and put them back.
     let mut source = rewindable_stdin();
 
-    let path = match bitmap {
-        Some(path) => path,
+    let (format, path) = match bitmap {
+        Some(picture) => picture,
         None => {
             if let Some(name) = blocks.map(|_| "--blocks").or(bin.map(|_| "--bin")) {
                 return Err(format!(
-                    "{} describes the bitmap, so it needs --pbm <file>",
+                    "{} describes the picture, so it needs --pbm <file> or --svg <file>",
                     name
                 ));
             }
@@ -269,7 +273,7 @@ fn plan(
     };
 
     let width = match blocks {
-        Some(0) => return Err("--blocks 0 leaves the bitmap no columns to draw in".into()),
+        Some(0) => return Err("--blocks 0 leaves the picture no columns to draw in".into()),
         Some(n) => n,
         None => {
             let file = source.as_mut().ok_or_else(|| {
@@ -291,7 +295,7 @@ fn plan(
                 eprintln!("circular-polynomial: no records, so {} is empty", path);
             } else {
                 eprintln!(
-                    "circular-polynomial: {} records over {} blocks, so a {} x {} bitmap",
+                    "circular-polynomial: {} records over {} blocks, so a {} x {} picture",
                     records,
                     blocks,
                     blocks,
@@ -303,9 +307,9 @@ fn plan(
     };
 
     let writer = File::create(&path)
-        .and_then(|f| pbm::Writer::new(f, width, bin))
+        .and_then(|f| image::Writer::new(f, format, width, bin, stats))
         .map_err(|e| format!("{}: {}", path, e))?;
-    Ok((Output::Bitmap(writer), records_from(source)))
+    Ok((Output::Picture(writer), records_from(source)))
 }
 
 /// The records, from the rewindable handle if there is one and from standard
@@ -350,7 +354,7 @@ fn main() -> ExitCode {
     // otherwise: a plain run of this program is still the Knuth port.
     let mut backend = Backend::Rings;
     let mut chose_backend = false;
-    let mut bitmap: Option<String> = None;
+    let mut bitmap: Option<(image::Format, String)> = None;
     let mut blocks: Option<usize> = None;
     let mut bin: Option<usize> = None;
 
@@ -384,9 +388,19 @@ fn main() -> ExitCode {
             }
             "all" => limit = usize::MAX,
             _ => {
-                if let Some((path, used)) = option(&args, i, "--pbm") {
-                    bitmap = Some(path.to_string());
-                    i += used;
+                // Two spellings of one picture; the last one asked for wins,
+                // rather than one silently drawing over the other's file.
+                let formats = [("--pbm", image::Format::Pbm), ("--svg", image::Format::Svg)];
+                let mut drawn = 0;
+                for (name, format) in formats {
+                    if let Some((path, used)) = option(&args, i, name) {
+                        bitmap = Some((format, path.to_string()));
+                        drawn = used;
+                        break;
+                    }
+                }
+                if drawn > 0 {
+                    i += drawn;
                     continue;
                 }
                 let counts = [("--blocks", &mut blocks), ("--bin", &mut bin)];
@@ -423,7 +437,7 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    let (output, input) = match plan(bitmap, blocks, bin, limit) {
+    let (output, input) = match plan(bitmap, blocks, bin, limit, stats) {
         Ok(plan) => plan,
         Err(message) => {
             eprintln!("circular-polynomial: {}", message);
@@ -637,13 +651,20 @@ fn run<S: ColorStore>(
         eprintln!("{}", store.audit(&mut colors.values().map(|(c, _)| c)));
         // Worth saying out loud in a bitmap run, where stdout stays empty and
         // the header is the only other place the size is written down.
-        if let Output::Bitmap(bitmap) = &out {
-            let (columns, rows) = bitmap.dimensions();
+        if let Output::Picture(picture) = &out {
+            let (columns, rows) = picture.dimensions();
+            let (runs, pbm_row, svg_row) = picture.runs();
+            eprintln!("picture: {} columns x {} rows", columns, rows);
+            // Which format is smaller is a question about the records rather
+            // than about the formats — see `image` — so it is answered here,
+            // from the run count the run actually produced, rather than guessed
+            // at in advance.
             eprintln!(
-                "bitmap: {} columns x {} rows, {} bytes of raster",
-                columns,
-                rows,
-                columns.div_ceil(8) * rows
+                "picture: {} runs, {} a row: {} bytes a row as --pbm, {} as --svg",
+                runs,
+                runs / rows.max(1) as u64,
+                pbm_row,
+                svg_row
             );
         }
     }
