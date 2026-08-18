@@ -3,8 +3,9 @@ name = "coloring-bt-transactions"
 version = "0.1.0"
 edition = "2021"
 
-# std only, on purpose: this is a port of a Scheme exercise, not a dependency showcase.
 [dependencies]
+webgraph = { git = "https://github.com/vigna/webgraph-rs.git" }
+non-layered-tidy-trees = { git = "https://github.com/massimo-nocentini/non-layered-tidy-trees-rs.git" }
 
 [profile.release]
 lto = true
