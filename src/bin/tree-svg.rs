@@ -166,7 +166,7 @@ fn run() -> Result<(), String> {
 
     eprintln!("{}", built.summary(graph.num_nodes()));
 
-    let arena = forest::lay_out(arena, built.root)?;
+    let arena = forest::lay_out(arena, built.root);
 
     let drawn = match out_path {
         Some(path) => {
@@ -213,7 +213,7 @@ mod tests {
         let built = forest::build(&g, &t, &mut arena).unwrap();
         assert!(built.synthetic_root);
 
-        let arena = forest::lay_out(arena, built.root).unwrap();
+        let arena = forest::lay_out(arena, built.root);
 
         let mut svg = Vec::new();
         let drawn = write_svg(&arena, &mut svg, 10.0).unwrap();

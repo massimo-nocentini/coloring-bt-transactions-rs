@@ -1071,7 +1071,7 @@ checksum = "01cbf4066e7bfadb46dff685e296194ebc5e7e9324b7105bf066ca757220204c"
 [[package]]
 name = "non-layered-tidy-trees"
 version = "0.1.0"
-source = "git+https://github.com/massimo-nocentini/non-layered-tidy-trees-rs.git#6b382b217803e6cef82fdca94f20fe0a6ad35238"
+source = "git+https://github.com/massimo-nocentini/non-layered-tidy-trees-rs.git#0a33b09d324729a3d69efc5030e8cc8b798a6991"
 
 [[package]]
 name = "nonmax"

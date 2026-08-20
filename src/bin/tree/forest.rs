@@ -74,8 +74,23 @@
 //! Two consequences the drawing code leans on: a node's `x` *is* its depth, and
 //! two nodes at the same depth have centres at least `DIAMETER + SUBTREE_MARGIN`
 //! apart along the breadth axis.  Coordinates come back as top-left corners.
+//!
+//! # Why the flat entry point
+//!
+//! The crate offers the same layout twice: [`non_layered_tidy_trees::layout`],
+//! whose three walks recurse once per level, and
+//! [`non_layered_tidy_trees::flat::layout_flat`], which mirrors the tree into
+//! arrays and sweeps over them.  They compute the same coordinates — the crate
+//! checks that bit for bit — and the difference that matters here is the stack:
+//! a chain of transactions can be a million nodes long, and a walk that recurses
+//! once per level overflows on it, where a sweep has no such ceiling.  So the
+//! sweeps are what this module asks for.
+//!
+//! The one thing the flat path cannot do is report itself node by node, because
+//! it visits independent subtrees in a different order; it takes no callbacks.
+//! Nothing here wants any.
 
-use non_layered_tidy_trees::{layout, Arena, LayoutInput, NodeId};
+use non_layered_tidy_trees::{flat::layout_flat, Arena, LayoutInput, NodeId};
 use webgraph::prelude::RandomAccessGraph;
 
 /// The side of a node's box, and so the unit the whole drawing is measured in.
@@ -83,14 +98,6 @@ pub const DIAMETER: f64 = 1.0;
 
 /// Separation kept between neighbouring sibling subtrees.
 pub const SUBTREE_MARGIN: f64 = 1.0;
-
-/// Stack for the thread the layout runs on.
-///
-/// The three walks of the algorithm recurse once per level, and a graph of
-/// transactions is deep — the crate's own depth test gives a 10 000-level chain a
-/// 64 MiB stack.  This is virtual address space and only the pages actually
-/// touched are ever committed, so a shallow tree pays nothing for the headroom.
-const LAYOUT_STACK: usize = 1 << 30;
 
 /// What the walk over the graph produced, beyond the arena itself.
 pub struct Forest {
@@ -252,22 +259,15 @@ pub fn build<G: RandomAccessGraph, T: RandomAccessGraph>(
 /// Places every node of `arena`, depth running left to right.
 ///
 /// The layout is what the module's last section describes; this is only where it
-/// is asked for, and it is asked for on a thread of its own because of
-/// [`LAYOUT_STACK`].  The arena goes over and comes back rather than being
-/// borrowed, so nothing here is shared.
-pub fn lay_out(mut arena: Arena, root: NodeId) -> Result<Arena, String> {
-    std::thread::Builder::new()
-        .stack_size(LAYOUT_STACK)
-        .spawn(move || {
-            let mut input = LayoutInput::new(root);
-            // Depth left to right, which is what makes the drawing horizontal.
-            input.vertically = false;
-            layout(&mut arena, &input);
-            arena
-        })
-        .map_err(|e| format!("could not start the layout thread: {e}"))?
-        .join()
-        .map_err(|_| "the layout thread panicked".to_string())
+/// is asked for.  The arena goes over and comes back rather than being borrowed,
+/// so a caller cannot look at it half laid out: the arena it had is gone, and the
+/// one it gets back is finished.
+pub fn lay_out(mut arena: Arena, root: NodeId) -> Arena {
+    let mut input = LayoutInput::new(root);
+    // Depth left to right, which is what makes the drawing horizontal.
+    input.vertically = false;
+    layout_flat(&mut arena, &input);
+    arena
 }
 
 /// The two graphs a run is given, built by hand so that the shape under test is
@@ -336,7 +336,7 @@ mod tests {
         assert!(forest.synthetic_root, "three roots need a node to hang from");
 
         let root = forest.root;
-        let arena = lay_out(arena, root).unwrap();
+        let arena = lay_out(arena, root);
 
         // The depth coordinate is the level, exactly: unit boxes and a root of
         // zero width leave level d at x = d, which is what "no margin between
@@ -371,7 +371,7 @@ mod tests {
         assert!(!forest.synthetic_root);
         assert!(!arena[forest.root].isdummy, "the root stands for node 0");
 
-        let arena = lay_out(arena, forest.root).unwrap();
+        let arena = lay_out(arena, forest.root);
 
         assert_eq!(
             drawing(&arena),
@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(forest.promoted, 1, "node 0 is promoted, and reaches the rest");
         assert!(!forest.synthetic_root, "one root needs no help");
 
-        let arena = lay_out(arena, forest.root).unwrap();
+        let arena = lay_out(arena, forest.root);
 
         assert_eq!(
             drawing(&arena),
@@ -429,6 +429,40 @@ mod tests {
             forest.summary(3),
             "3 nodes, 1 sources\n\
              1 arc(s) not drawn: they would have given a node a second parent"
+        );
+    }
+
+    /// A chain of 200 000 nodes, laid out on an ordinary stack.
+    ///
+    /// The reason the module asks the crate for its flat entry point: this is
+    /// 200 000 levels, the recursive walks take one frame per level, and this very
+    /// test aborts with a stack overflow when `lay_out` calls them instead.  A
+    /// chain is what a run of transactions spending each other's output *is*, so
+    /// the depth is the shape of the input rather than a pathological case.
+    #[test]
+    fn a_chain_deeper_than_any_stack() {
+        let n = 200_000;
+        let arcs: Vec<(usize, usize)> = (0..n - 1).map(|v| (v, v + 1)).collect();
+        let (g, t) = pair(n, &arcs);
+
+        let mut arena = Arena::with_capacity(n);
+        let forest = build(&g, &t, &mut arena).unwrap();
+
+        assert_eq!(forest.sources, 1, "node 0 is the only one nothing points at");
+        assert!(!forest.synthetic_root);
+
+        let arena = lay_out(arena, forest.root);
+
+        // One node per level and nothing to sit beside: the chain is a straight
+        // line along the depth axis, from the origin.
+        assert_eq!(arena.len(), n);
+        assert_eq!((arena[forest.root].x, arena[forest.root].y), (0.0, 0.0));
+
+        let deepest = arena.iter().map(|node| node.x).fold(0.0f64, f64::max);
+        assert_eq!(deepest, (n - 1) as f64, "level d sits at x = d");
+        assert!(
+            arena.iter().all(|node| node.y == 0.0),
+            "a chain never has to step aside"
         );
     }
 }

@@ -352,7 +352,7 @@ fn run() -> Result<(), String> {
 
     eprintln!("{}", built.summary(graph.num_nodes()));
 
-    let arena = forest::lay_out(arena, built.root)?;
+    let arena = forest::lay_out(arena, built.root);
     let picture = plot(&arena)?;
 
     let (width, height) = (picture.width * zoom, picture.height * zoom);
@@ -422,7 +422,7 @@ mod tests {
 
         let mut arena = Arena::new();
         let built = forest::build(&g, &t, &mut arena).unwrap();
-        let arena = forest::lay_out(arena, built.root).unwrap();
+        let arena = forest::lay_out(arena, built.root);
         plot(&arena).unwrap()
     }
 
@@ -522,7 +522,7 @@ mod tests {
 
         let mut arena = Arena::new();
         let built = forest::build(&g, &t, &mut arena).unwrap();
-        let arena = forest::lay_out(arena, built.root).unwrap();
+        let arena = forest::lay_out(arena, built.root);
         let picture = plot(&arena).unwrap();
 
         // A chain is one row deep and as wide as it is long.
@@ -531,7 +531,7 @@ mod tests {
         let (g, t) = forest::pair(4, &[(0, 1), (0, 2), (0, 3)]);
         let mut arena = Arena::new();
         let built = forest::build(&g, &t, &mut arena).unwrap();
-        let arena = forest::lay_out(arena, built.root).unwrap();
+        let arena = forest::lay_out(arena, built.root);
         let picture = plot(&arena).unwrap();
 
         assert_eq!(
@@ -556,7 +556,7 @@ mod tests {
         let built = forest::build(&g, &t, &mut arena).unwrap();
         assert!(built.synthetic_root);
 
-        let arena = forest::lay_out(arena, built.root).unwrap();
+        let arena = forest::lay_out(arena, built.root);
         let picture = plot(&arena).unwrap();
 
         assert_eq!(picture.dots.len(), 2, "two nodes, two pixels");
