@@ -11,53 +11,59 @@
 //! to the main binary; the two drawing binaries reach it by `#[path]` instead,
 //! which is why it lives under `src/bin/` next to the only things that use it.
 //!
-//! # Why the transpose is a second argument
+//! # Where the roots come from
 //!
-//! A root is a node nothing points at, and a `RandomAccessGraph` can only be asked
-//! what a node points *to*.  Answering "is this a source?" from the graph alone
-//! means a pass over every arc to build the in-degrees; the transpose has them
-//! already, as its out-degrees, and `webgraph` builds one with a single command.
-//! So the transpose is asked instead: `transpose.outdegree(v) == 0` is the whole
-//! test, and it costs one lookup per node rather than one per arc.
+//! A root is a node the walk has not already reached.  Node order is swept once
+//! and every node still unvisited when its turn comes starts a walk of its own;
+//! marking as we go is what makes that enough, since a node reached from an
+//! earlier root is already in the forest and is passed over.
 //!
-//! Both graphs are taken as `impl RandomAccessGraph`, so anything with random
-//! access to successors will do — the BvGraph loaded from disk is only what the
-//! callers' `main` happens to supply.
+//! That is *nearly* the graph's sources, and it costs nothing.  Asking a
+//! `RandomAccessGraph` "does anything point at this?" means a pass over every arc
+//! to build the in-degrees, or a second graph — the transpose, whose out-degrees
+//! are the in-degrees — loaded and carried beside the first.  Sweeping asks
+//! nothing the walk was not going to do anyway, and every true source is still a
+//! root: nothing points at one, so no walk can reach it.
+//!
+//! Where the two differ is a node that comes *before* its parent in node order:
+//! given `1 -> 0`, the sweep makes 0 a root of its own and drops the arc, where
+//! in-degrees would have rooted both at 1.  On a graph whose node order follows
+//! its arcs — transactions numbered as they are spent, which is the input this
+//! draws — the two agree.
 //!
 //! # The node the graph does not have
 //!
-//! A graph of transactions has many sources, and the layout algorithm lays out
-//! one tree.  So when there is more than one source, a node that stands for
-//! nothing is made the parent of all of them, purely to give the algorithm its
-//! root.  It is marked `isdummy` and never drawn.
+//! A graph of transactions has many roots, and the layout algorithm lays out one
+//! tree.  So when there is more than one root, a node that stands for nothing is
+//! made the parent of all of them, purely to give the algorithm its root.  It is
+//! marked `isdummy` and never drawn.
 //!
 //! It is also given **zero width and zero height**, which is what keeps it from
 //! showing up in the drawing anyway: the depth coordinate of a child is the far
-//! edge of its parent, so a root of zero width leaves the real sources at depth
+//! edge of its parent, so a root of zero width leaves the real roots at depth
 //! 0 where they would have been, and a box of zero height takes no room along the
 //! breadth axis for the layout to route around.  A one-by-one invisible root
 //! would push the whole picture over by one column and open a gap its own size in
-//! the middle of the fringe; this way the drawing is the same one a single-source
+//! the middle of the fringe; this way the drawing is the same one a single-rooted
 //! graph would have produced.
 //!
-//! When the graph has exactly one source there is no such node — that source is
-//! the root, and it is drawn like any other.
+//! When the sweep finds exactly one root there is no such node — that node is the
+//! root, and it is drawn like any other.
 //!
 //! # From a graph to a tree
 //!
 //! Nothing says the input is a tree.  A node reachable along two different paths
 //! has two parents, which the algorithm has no way to draw, so what is laid out
-//! is a *spanning* forest: a breadth-first walk from each source in turn, where
+//! is a *spanning* forest: a breadth-first walk from each root in turn, where
 //! the first arc to reach a node is the one that becomes its edge and every later
 //! arc into it is dropped.  How many were dropped is in [`Forest::dropped_arcs`],
 //! and the callers report it on stderr, because a picture that quietly stands for
 //! two thirds of the arcs is a lie the file itself cannot tell you about.
 //!
-//! Nodes on a cycle are reached by no source at all.  Rather than drop them —
-//! they are nodes, and leaving them out would make the drawing silently smaller
-//! than the graph — each one left over after the sources are exhausted is
-//! promoted to a root of its own, in node order, and its walk runs like any
-//! other.  That count is reported too.
+//! Nodes on a cycle need no special handling: no walk from outside reaches one, so
+//! the first of them in node order is still unvisited when the sweep arrives, and
+//! becomes a root like any other node the sweep finds.  Nothing goes undrawn, and
+//! the arc that closes the cycle is dropped like any other second parent.
 //!
 //! # The shape the layout is asked for
 //!
@@ -102,10 +108,8 @@ pub const SUBTREE_MARGIN: f64 = 1.0;
 /// What the walk over the graph produced, beyond the arena itself.
 pub struct Forest {
     pub root: NodeId,
-    /// Sources of the graph — nodes the transpose says nothing points at.
-    pub sources: usize,
-    /// Nodes no source could reach, each promoted to a root of its own.
-    pub promoted: usize,
+    /// Nodes that started a walk of their own: those no earlier walk had reached.
+    pub roots: usize,
     /// Arcs that would have given a node a second parent, and were dropped.
     pub dropped_arcs: u64,
     /// Whether a root standing for no node of the graph was added.
@@ -120,14 +124,9 @@ impl Forest {
     /// something the file itself cannot tell you about.
     pub fn summary(&self, nodes: usize) -> String {
         let mut out = format!(
-            "{} nodes, {} sources{}{}",
+            "{} nodes, {} root(s){}",
             nodes,
-            self.sources,
-            if self.promoted > 0 {
-                format!(", {} node(s) on cycles promoted to roots", self.promoted)
-            } else {
-                String::new()
-            },
+            self.roots,
             if self.synthetic_root {
                 ", one added root standing for no node"
             } else {
@@ -146,21 +145,10 @@ impl Forest {
 
 /// Builds the spanning forest of `graph` into an arena, rooted at a single node.
 ///
-/// `transpose` is consulted only for `outdegree`, which is `graph`'s in-degree
-/// and so the test for a source.
-pub fn build<G: RandomAccessGraph, T: RandomAccessGraph>(
-    graph: &G,
-    transpose: &T,
-    arena: &mut Arena,
-) -> Result<Forest, String> {
+/// One sweep over node order: whatever is unvisited when its turn comes is a
+/// root, which is why nothing but `graph` is needed to find them.
+pub fn build<G: RandomAccessGraph>(graph: &G, arena: &mut Arena) -> Result<Forest, String> {
     let n = graph.num_nodes();
-
-    if n != transpose.num_nodes() {
-        return Err(format!(
-            "the graph has {n} nodes and the transpose {}; they are not a pair",
-            transpose.num_nodes()
-        ));
-    }
 
     if n == 0 {
         return Err("the graph has no nodes to draw".to_string());
@@ -170,8 +158,6 @@ pub fn build<G: RandomAccessGraph, T: RandomAccessGraph>(
     // been visited: the arena node is created exactly when the first arc arrives.
     let mut ids: Vec<Option<NodeId>> = vec![None; n];
 
-    let mut sources = 0;
-    let mut promoted = 0;
     let mut dropped_arcs = 0u64;
     let mut roots: Vec<NodeId> = Vec::new();
 
@@ -180,27 +166,31 @@ pub fn build<G: RandomAccessGraph, T: RandomAccessGraph>(
     // queue holds one frontier instead of one frame per level.
     let mut queue: Vec<usize> = Vec::new();
 
-    let grow = |arena: &mut Arena,
-                    ids: &mut Vec<Option<NodeId>>,
-                    queue: &mut Vec<usize>,
-                    dropped: &mut u64,
-                    root: usize| {
-        let id = arena.add_node(root + 1, DIAMETER, DIAMETER, SUBTREE_MARGIN, false);
-        ids[root] = Some(id);
+    for v in 0..n {
+        if ids[v].is_some() {
+            // Reached from an earlier root, and so already in the forest under a
+            // parent of its own: not a root.
+            continue;
+        }
+
+        let id = arena.add_node(v + 1, DIAMETER, DIAMETER, SUBTREE_MARGIN, false);
+        ids[v] = Some(id);
+        roots.push(id);
+
         queue.clear();
-        queue.push(root);
+        queue.push(v);
 
         let mut head = 0;
         while head < queue.len() {
-            let v = queue[head];
+            let u = queue[head];
             head += 1;
-            let parent = ids[v].expect("queued nodes have been given an arena node");
+            let parent = ids[u].expect("queued nodes have been given an arena node");
 
-            for w in graph.successors(v) {
+            for w in graph.successors(u) {
                 if ids[w].is_some() {
                     // Already has a parent — a second one is what a tree cannot
                     // hold, so this arc is not drawn.
-                    *dropped += 1;
+                    dropped_arcs += 1;
                     continue;
                 }
                 let child = arena.add_node(w + 1, DIAMETER, DIAMETER, SUBTREE_MARGIN, false);
@@ -209,36 +199,13 @@ pub fn build<G: RandomAccessGraph, T: RandomAccessGraph>(
                 queue.push(w);
             }
         }
-        id
-    };
-
-    for v in 0..n {
-        if transpose.outdegree(v) != 0 {
-            continue;
-        }
-        sources += 1;
-        if ids[v].is_some() {
-            // A source reached from an earlier source: the graph has an arc into
-            // it after all, and it is already in the forest under that parent.
-            continue;
-        }
-        roots.push(grow(arena, &mut ids, &mut queue, &mut dropped_arcs, v));
-    }
-
-    // Whatever is left lies on a cycle, where every node has a parent and none has
-    // one outside the cycle.  Each becomes a root, so that nothing goes undrawn.
-    for v in 0..n {
-        if ids[v].is_none() {
-            promoted += 1;
-            roots.push(grow(arena, &mut ids, &mut queue, &mut dropped_arcs, v));
-        }
     }
 
     let synthetic_root = roots.len() > 1;
 
     let root = if synthetic_root {
         // Zero by zero, so that it occupies neither a column of depth nor a slot
-        // of breadth: the real sources land where they would have landed on their
+        // of breadth: the real roots land where they would have landed on their
         // own.  `idx` 0 is outside the one-based labels the real nodes carry.
         let r = arena.add_node(0, 0.0, 0.0, 0.0, true);
         arena.set_children(r, &roots);
@@ -249,8 +216,7 @@ pub fn build<G: RandomAccessGraph, T: RandomAccessGraph>(
 
     Ok(Forest {
         root,
-        sources,
-        promoted,
+        roots: roots.len(),
         dropped_arcs,
         synthetic_root,
     })
@@ -270,29 +236,23 @@ pub fn lay_out(mut arena: Arena, root: NodeId) -> Arena {
     arena
 }
 
-/// The two graphs a run is given, built by hand so that the shape under test is
-/// the one written in the test rather than one a fixture file happens to hold.
+/// The graph a run is given, built by hand so that the shape under test is the
+/// one written in the test rather than one a fixture file happens to hold.
 ///
 /// Here rather than in either binary's tests because both draw the same forests.
 #[cfg(test)]
-pub fn pair(
-    n: usize,
-    arcs: &[(usize, usize)],
-) -> (webgraph::prelude::VecGraph, webgraph::prelude::VecGraph) {
+pub fn graph_of(n: usize, arcs: &[(usize, usize)]) -> webgraph::prelude::VecGraph {
     use webgraph::prelude::VecGraph;
     let mut g = VecGraph::empty(n);
-    let mut t = VecGraph::empty(n);
     for &(u, v) in arcs {
         g.add_arc(u, v);
-        t.add_arc(v, u);
     }
-    (g, t)
+    g
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use webgraph::prelude::VecGraph;
 
     /// `(node, x, y, leaf)` per drawn node — `idx` is one-based, and the added
     /// root carries 0.
@@ -310,7 +270,7 @@ mod tests {
     /// two-node cycle no source reaches.
     #[test]
     fn a_forest_with_everything_in_it() {
-        let (g, t) = pair(
+        let g = graph_of(
             10,
             &[
                 (0, 1),
@@ -328,10 +288,11 @@ mod tests {
         );
 
         let mut arena = Arena::new();
-        let forest = build(&g, &t, &mut arena).unwrap();
+        let forest = build(&g, &mut arena).unwrap();
 
-        assert_eq!(forest.sources, 2, "0 and 6 are pointed at by nothing");
-        assert_eq!(forest.promoted, 1, "the 8-9 cycle contributes one root");
+        // 0 and 6 are pointed at by nothing; 8 lies on a cycle and is the first
+        // of it the sweep reaches.
+        assert_eq!(forest.roots, 3);
         assert_eq!(forest.dropped_arcs, 2, "7->5 and 9->8");
         assert!(forest.synthetic_root, "three roots need a node to hang from");
 
@@ -359,15 +320,16 @@ mod tests {
         assert!(arena[root].isdummy, "the root stands for no node");
     }
 
-    /// One source and no added root: that source is the root and is drawn.
+    /// One root and no added node: that root is the whole tree's root and is
+    /// drawn.
     #[test]
-    fn a_single_source_is_the_root_itself() {
-        let (g, t) = pair(3, &[(0, 1), (0, 2)]);
+    fn a_single_root_is_the_root_itself() {
+        let g = graph_of(3, &[(0, 1), (0, 2)]);
 
         let mut arena = Arena::new();
-        let forest = build(&g, &t, &mut arena).unwrap();
+        let forest = build(&g, &mut arena).unwrap();
 
-        assert_eq!(forest.sources, 1);
+        assert_eq!(forest.roots, 1);
         assert!(!forest.synthetic_root);
         assert!(!arena[forest.root].isdummy, "the root stands for node 0");
 
@@ -379,16 +341,17 @@ mod tests {
         );
     }
 
-    /// A graph that is one cycle has no source at all, and still gets drawn.
+    /// A graph that is one cycle has no source at all, and still gets drawn: the
+    /// first node of it in node order is unvisited when the sweep arrives.
     #[test]
     fn a_graph_of_only_cycles_still_has_roots() {
-        let (g, t) = pair(3, &[(0, 1), (1, 2), (2, 0)]);
+        let g = graph_of(3, &[(0, 1), (1, 2), (2, 0)]);
 
         let mut arena = Arena::new();
-        let forest = build(&g, &t, &mut arena).unwrap();
+        let forest = build(&g, &mut arena).unwrap();
 
-        assert_eq!(forest.sources, 0);
-        assert_eq!(forest.promoted, 1, "node 0 is promoted, and reaches the rest");
+        assert_eq!(forest.roots, 1, "node 0 starts the walk, and reaches the rest");
+        assert_eq!(forest.dropped_arcs, 1, "2->0 closes the cycle");
         assert!(!forest.synthetic_root, "one root needs no help");
 
         let arena = lay_out(arena, forest.root);
@@ -399,35 +362,53 @@ mod tests {
         );
     }
 
+    /// What the sweep costs, in the one place it differs from the in-degrees: a
+    /// node ahead of its parent in node order is a root, and the arc into it goes
+    /// undrawn.  See the module's first section.
     #[test]
-    fn a_graph_and_a_transpose_of_different_sizes_are_refused() {
-        let mut g = VecGraph::empty(3);
-        g.add_arc(0, 1);
-        let t = VecGraph::empty(2);
+    fn a_node_before_its_parent_is_a_root_of_its_own() {
+        let g = graph_of(2, &[(1, 0)]);
 
         let mut arena = Arena::new();
-        assert!(build(&g, &t, &mut arena).is_err());
+        let forest = build(&g, &mut arena).unwrap();
+
+        assert_eq!(forest.roots, 2, "0 is swept up before 1 can claim it");
+        assert_eq!(forest.dropped_arcs, 1, "1->0");
+        assert!(forest.synthetic_root);
+
+        let arena = lay_out(arena, forest.root);
+
+        // Two roots side by side, a clear node apart, rather than a chain.
+        assert_eq!(drawing(&arena), [(0, 0.0, 0.0, true), (1, 0.0, 2.0, true)]);
+    }
+
+    #[test]
+    fn a_graph_without_nodes_is_refused() {
+        let g = graph_of(0, &[]);
+
+        let mut arena = Arena::new();
+        assert!(build(&g, &mut arena).is_err());
     }
 
     /// The summary is one line, and a second only when arcs went undrawn.
     #[test]
     fn what_a_run_reports() {
-        let (g, t) = pair(2, &[]);
+        let g = graph_of(2, &[]);
         let mut arena = Arena::new();
-        let forest = build(&g, &t, &mut arena).unwrap();
+        let forest = build(&g, &mut arena).unwrap();
 
         assert_eq!(
             forest.summary(2),
-            "2 nodes, 2 sources, one added root standing for no node"
+            "2 nodes, 2 root(s), one added root standing for no node"
         );
 
-        let (g, t) = pair(3, &[(0, 1), (0, 2), (1, 2)]);
+        let g = graph_of(3, &[(0, 1), (0, 2), (1, 2)]);
         let mut arena = Arena::new();
-        let forest = build(&g, &t, &mut arena).unwrap();
+        let forest = build(&g, &mut arena).unwrap();
 
         assert_eq!(
             forest.summary(3),
-            "3 nodes, 1 sources\n\
+            "3 nodes, 1 root(s)\n\
              1 arc(s) not drawn: they would have given a node a second parent"
         );
     }
@@ -443,12 +424,12 @@ mod tests {
     fn a_chain_deeper_than_any_stack() {
         let n = 200_000;
         let arcs: Vec<(usize, usize)> = (0..n - 1).map(|v| (v, v + 1)).collect();
-        let (g, t) = pair(n, &arcs);
+        let g = graph_of(n, &arcs);
 
         let mut arena = Arena::with_capacity(n);
-        let forest = build(&g, &t, &mut arena).unwrap();
+        let forest = build(&g, &mut arena).unwrap();
 
-        assert_eq!(forest.sources, 1, "node 0 is the only one nothing points at");
+        assert_eq!(forest.roots, 1, "node 0 reaches every other");
         assert!(!forest.synthetic_root);
 
         let arena = lay_out(arena, forest.root);

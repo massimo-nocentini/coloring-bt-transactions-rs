@@ -7,8 +7,7 @@
 //! is only about turning coordinates into a raster.
 //!
 //! ```text
-//! tree-bitmap <graph-basename> <transpose-basename> [-o <file>]
-//!             [--format pbm|pgm] [--zoom <n>]
+//! tree-bitmap <graph-basename> [-o <file>] [--format pbm|pgm] [--zoom <n>]
 //! ```
 //!
 //! # A pixel per node, and not a pixel more
@@ -96,7 +95,7 @@ const PAPER: u8 = 0xff;
 /// How many pixels a node pixel becomes on a side, when the caller does not say.
 const DEFAULT_ZOOM: usize = 1;
 
-const USAGE: &str = "usage: tree-bitmap <graph-basename> <transpose-basename> \
+const USAGE: &str = "usage: tree-bitmap <graph-basename> \
                      [-o <file>] [--format pbm|pgm] [--zoom <n>]";
 
 /// Which of the two pictures to draw.  The module docs say what each costs.
@@ -331,9 +330,9 @@ fn run() -> Result<(), String> {
         i += 1;
     }
 
-    let [graph_name, transpose_name] = basenames.as_slice() else {
+    let [graph_name] = basenames.as_slice() else {
         return Err(format!(
-            "expected a graph and its transpose, got {} basename(s)\n{USAGE}",
+            "expected one graph basename, got {}\n{USAGE}",
             basenames.len()
         ));
     };
@@ -343,12 +342,9 @@ fn run() -> Result<(), String> {
     let graph = BvGraph::with_basename(graph_name)
         .load()
         .map_err(|e| format!("{graph_name}: {e:#}"))?;
-    let transpose = BvGraph::with_basename(transpose_name)
-        .load()
-        .map_err(|e| format!("{transpose_name}: {e:#}"))?;
 
     let mut arena = Arena::with_capacity(graph.num_nodes() + 1);
-    let built = forest::build(&graph, &transpose, &mut arena)?;
+    let built = forest::build(&graph, &mut arena)?;
 
     eprintln!("{}", built.summary(graph.num_nodes()));
 
@@ -403,9 +399,9 @@ mod tests {
     use super::*;
 
     /// The forest of [`forest`]'s own test, whose coordinates are asserted there:
-    /// two sources, a dropped arc, and a cycle promoted to a root.
+    /// three roots, two dropped arcs, and a cycle among them.
     fn everything() -> Picture {
-        let (g, t) = forest::pair(
+        let g = forest::graph_of(
             10,
             &[
                 (0, 1),
@@ -421,7 +417,7 @@ mod tests {
         );
 
         let mut arena = Arena::new();
-        let built = forest::build(&g, &t, &mut arena).unwrap();
+        let built = forest::build(&g, &mut arena).unwrap();
         let arena = forest::lay_out(arena, built.root);
         plot(&arena).unwrap()
     }
@@ -518,19 +514,19 @@ mod tests {
     /// cannot smear down the picture.
     #[test]
     fn a_row_does_not_leak_into_the_next() {
-        let (g, t) = forest::pair(3, &[(0, 1), (1, 2)]);
+        let g = forest::graph_of(3, &[(0, 1), (1, 2)]);
 
         let mut arena = Arena::new();
-        let built = forest::build(&g, &t, &mut arena).unwrap();
+        let built = forest::build(&g, &mut arena).unwrap();
         let arena = forest::lay_out(arena, built.root);
         let picture = plot(&arena).unwrap();
 
         // A chain is one row deep and as wide as it is long.
         assert_eq!((picture.width, picture.height), (3, 1));
 
-        let (g, t) = forest::pair(4, &[(0, 1), (0, 2), (0, 3)]);
+        let g = forest::graph_of(4, &[(0, 1), (0, 2), (0, 3)]);
         let mut arena = Arena::new();
-        let built = forest::build(&g, &t, &mut arena).unwrap();
+        let built = forest::build(&g, &mut arena).unwrap();
         let arena = forest::lay_out(arena, built.root);
         let picture = plot(&arena).unwrap();
 
@@ -550,10 +546,10 @@ mod tests {
     /// The added root is not a node and gets no pixel.
     #[test]
     fn the_added_root_is_not_in_the_picture() {
-        let (g, t) = forest::pair(2, &[]);
+        let g = forest::graph_of(2, &[]);
 
         let mut arena = Arena::new();
-        let built = forest::build(&g, &t, &mut arena).unwrap();
+        let built = forest::build(&g, &mut arena).unwrap();
         assert!(built.synthetic_root);
 
         let arena = forest::lay_out(arena, built.root);

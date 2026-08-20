@@ -7,11 +7,11 @@
 //! ink than the nodes they connect.
 //!
 //! ```text
-//! tree-svg <graph-basename> <transpose-basename> [-o <file>] [--scale <px>]
+//! tree-svg <graph-basename> [-o <file>] [--scale <px>]
 //! ```
 //!
-//! How the graph becomes a tree, why the transpose is a second argument, and what
-//! the layout is asked for are all in [`forest`]; this file is only the ink.
+//! How the graph becomes a tree, where its roots come from, and what the layout
+//! is asked for are all in [`forest`]; this file is only the ink.
 //! `tree-bitmap` draws the same layout as pixels.
 //!
 //! # The shape of the drawing
@@ -52,8 +52,7 @@ const DEFAULT_SCALE: f64 = 10.0;
 const INNER_FILL: &str = "#000000";
 const LEAF_FILL: &str = "#808080";
 
-const USAGE: &str = "usage: tree-svg <graph-basename> <transpose-basename> \
-                     [-o <file>] [--scale <px-per-node>]";
+const USAGE: &str = "usage: tree-svg <graph-basename> [-o <file>] [--scale <px-per-node>]";
 
 /// Writes the arena as circles, `w` having been sized by the caller.
 fn write_svg(arena: &Arena, out: &mut impl Write, scale: f64) -> io::Result<usize> {
@@ -145,9 +144,9 @@ fn run() -> Result<(), String> {
         i += 1;
     }
 
-    let [graph_name, transpose_name] = basenames.as_slice() else {
+    let [graph_name] = basenames.as_slice() else {
         return Err(format!(
-            "expected a graph and its transpose, got {} basename(s)\n{USAGE}",
+            "expected one graph basename, got {}\n{USAGE}",
             basenames.len()
         ));
     };
@@ -157,12 +156,9 @@ fn run() -> Result<(), String> {
     let graph = BvGraph::with_basename(graph_name)
         .load()
         .map_err(|e| format!("{graph_name}: {e:#}"))?;
-    let transpose = BvGraph::with_basename(transpose_name)
-        .load()
-        .map_err(|e| format!("{transpose_name}: {e:#}"))?;
 
     let mut arena = Arena::with_capacity(graph.num_nodes() + 1);
-    let built = forest::build(&graph, &transpose, &mut arena)?;
+    let built = forest::build(&graph, &mut arena)?;
 
     eprintln!("{}", built.summary(graph.num_nodes()));
 
@@ -207,10 +203,10 @@ mod tests {
     /// root neither shows up nor moves anything.
     #[test]
     fn the_added_root_is_not_in_the_picture() {
-        let (g, t) = forest::pair(2, &[]);
+        let g = forest::graph_of(2, &[]);
 
         let mut arena = Arena::new();
-        let built = forest::build(&g, &t, &mut arena).unwrap();
+        let built = forest::build(&g, &mut arena).unwrap();
         assert!(built.synthetic_root);
 
         let arena = forest::lay_out(arena, built.root);
