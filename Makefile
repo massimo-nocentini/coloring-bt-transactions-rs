@@ -63,6 +63,22 @@ docs-open: docs ## Publish the docs and open them in a browser
 build: ## Release build
 	cargo build --release
 
+.PHONY: view
+view: ## Open GRAPH=<basename> in the windowed viewer
+#	`tree-view` is the one target here that needs something installed beyond a
+#	Rust toolchain: GTK 4 and its development headers, which the `gui` feature
+#	exists to keep out of every other build.  On Debian and Ubuntu that is
+#	`libgtk-4-dev`; on Fedora `gtk4-devel`; on macOS `brew install gtk4`.
+	@test -n "$(GRAPH)" || { echo "usage: make view GRAPH=<graph-basename>"; exit 1; }
+	cargo run --release --features gui --bin tree-view -- $(GRAPH)
+
+.PHONY: test-gui
+test-gui: ## Run the test suite including the viewer's, which needs GTK
+#	The viewer's own tests draw frames onto an image surface and look at the
+#	pixels, so they want Cairo but never a screen; `make test` runs everything
+#	else, including the camera and the quadtree, with no toolkit at all.
+	cargo test --features gui
+
 .PHONY: asm-check
 asm-check: build ## Check the weight-scaling loops still vectorise
 #	`simd::scale_into` and `simd::scale_add_into` are plain loops that the

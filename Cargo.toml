@@ -6,6 +6,23 @@ edition = "2021"
 [dependencies]
 webgraph = { git = "https://github.com/vigna/webgraph-rs.git" }
 non-layered-tidy-trees = { git = "https://github.com/massimo-nocentini/non-layered-tidy-trees-rs.git" }
+# Only `tree-view` wants a windowing toolkit, and GTK is a C library: building
+# against it needs its headers and pkg-config on the machine, which the rest of
+# this crate has no reason to require.  Optional, so that `cargo test` and
+# `cargo doc` keep working where they are not installed -- see the `gui` feature.
+gtk4 = { version = "0.11", optional = true }
+
+[features]
+# The windowed viewer.  `cargo run --features gui --bin tree-view -- <graph>`,
+# or `make view GRAPH=<graph>`.
+gui = ["dep:gtk4"]
+
+# Named here only to say that it does not build without GTK; the rest of the
+# binaries under src/bin/ are found by cargo on its own.
+[[bin]]
+name = "tree-view"
+path = "src/bin/tree-view.rs"
+required-features = ["gui"]
 
 [profile.release]
 lto = true
