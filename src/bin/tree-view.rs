@@ -31,6 +31,7 @@
 //! | `f` | fill the window with the selection, or with everything |
 //! | `a`, `Home` | back to the whole drawing |
 //! | `p` | select the parent of the selection |
+//! | arrow keys | move the camera a tenth of the window |
 //! | `+`, `-` | zoom about the middle of the window |
 //! | `Escape` | select nothing |
 //! | `q` | close |
@@ -384,7 +385,9 @@ fn panel(view: &View, cr: &cairo::Context, width: f64, height: f64) {
         }
         None => "nothing selected — click a node".to_string(),
     });
-    lines.push("wheel zoom · drag move · f fit · a all · p parent · esc clear · q quit".into());
+    lines.push(
+        "wheel zoom · drag/arrows move · f fit · a all · p parent · esc clear · q quit".into(),
+    );
 
     let leading = 16.0;
     let top = height - leading * lines.len() as f64 - 12.0;
@@ -506,6 +509,9 @@ fn open(app: &Application, view: &Rc<RefCell<View>>, width: i32, height: i32, ti
             {
                 let view = &mut *view.borrow_mut();
                 let middle = (view.camera.width() / 2.0, view.camera.height() / 2.0);
+                // An arrow moves the camera a tenth of the window, whatever the
+                // zoom; holding one down repeats, which is the glide.
+                let step = (view.camera.width() / 10.0, view.camera.height() / 10.0);
                 match key {
                     gdk::Key::f => {
                         let subject = view.chosen_bounds();
@@ -531,6 +537,13 @@ fn open(app: &Application, view: &Rc<RefCell<View>>, width: i32, height: i32, ti
                     gdk::Key::minus | gdk::Key::KP_Subtract => {
                         view.camera.zoom_notches(1.0, middle.0, middle.1)
                     }
+                    // The camera goes where the arrow points, so the drawing
+                    // slides the other way: right brings in what was off the
+                    // right edge, which is [`Camera::pan`] of a negative dx.
+                    gdk::Key::Left | gdk::Key::KP_Left => view.camera.pan(step.0, 0.0),
+                    gdk::Key::Right | gdk::Key::KP_Right => view.camera.pan(-step.0, 0.0),
+                    gdk::Key::Up | gdk::Key::KP_Up => view.camera.pan(0.0, step.1),
+                    gdk::Key::Down | gdk::Key::KP_Down => view.camera.pan(0.0, -step.1),
                     gdk::Key::Escape => view.chosen = None,
                     gdk::Key::q => {
                         window.close();
