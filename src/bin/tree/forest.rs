@@ -3,12 +3,12 @@
 //! The part of a drawing that is about the *graph* rather than about the ink:
 //! turning a `BvGraph` into an arena of the non-layered tidy trees crate
 //! (van der Ploeg 2014), and running the layout over it.  What the coordinates
-//! it produces are then drawn *with* is the caller's business — `tree-svg`
-//! makes them circles, `tree-bitmap` makes them pixels — and the two agree
-//! about the picture because they agree about this file.
+//! it produces are then drawn *with* is the caller's business — `tree-jp2`
+//! makes them pixels, `tree-view` makes them circles in a window — and the two
+//! agree about the picture because they agree about this file.
 //!
 //! It is a module rather than a library because this crate's `src/*.rs` belong
-//! to the main binary; the two drawing binaries reach it by `#[path]` instead,
+//! to the main binary; the drawing binaries reach it by `#[path]` instead,
 //! which is why it lives under `src/bin/` next to the only things that use it.
 //!
 //! # Where the roots come from

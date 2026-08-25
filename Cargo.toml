@@ -11,6 +11,10 @@ non-layered-tidy-trees = { git = "https://github.com/massimo-nocentini/non-layer
 # this crate has no reason to require.  Optional, so that `cargo test` and
 # `cargo doc` keep working where they are not installed -- see the `gui` feature.
 gtk4 = { version = "0.11", optional = true }
+# `tree-jp2`'s codec.  This is the Rust port of OpenJPEG rather than a binding to
+# it, so unlike GTK it needs nothing installed on the machine and can be an
+# ordinary dependency.
+openjp2 = "0.6"
 
 [features]
 # The windowed viewer.  `cargo run --features gui --bin tree-view -- <graph>`,
@@ -23,6 +27,21 @@ gui = ["dep:gtk4"]
 name = "tree-view"
 path = "src/bin/tree-view.rs"
 required-features = ["gui"]
+
+# openjp2 0.6.1's *decoder* hands `dealloc` a code block's `decoded_data`
+# without checking whether it is null, twice, and Rust's UB preconditions abort
+# the process on it -- so `tree-jp2`'s round-trip assertions cannot run in a test
+# build without this.  The upstream repository has neither fixed it nor released
+# anything since, so there is no version to move to.
+#
+# This silences the check rather than the bug, which is worth being plain about.
+# What makes it tolerable is where the bug is: `free(NULL)` is a no-op on every
+# allocator this runs on, which is why release builds have always been fine, and
+# nothing this crate *writes* reaches the code at all -- the encoder guards the
+# same frees, and only the tests ever decode.  Naming the package keeps the
+# checks on everywhere else, our own code included.
+[profile.dev.package.openjp2]
+debug-assertions = false
 
 [profile.release]
 lto = true

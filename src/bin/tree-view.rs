@@ -1,7 +1,7 @@
 //! # A webgraph, looked at
 //!
-//! The same drawing `tree-svg` and `tree-bitmap` write to a file, in a window
-//! one can move around in.  A `BvGraph` is read as a forest, the non-layered
+//! The same drawing `tree-jp2` writes to a file, in a window one can move
+//! around in.  A `BvGraph` is read as a forest, the non-layered
 //! tidy trees algorithm (van der Ploeg 2014) places every node, and what is on
 //! the screen is drawn with Cairo — but only what is on the screen, which is the
 //! whole point of the thing.  How the graph becomes a tree is in [`forest`], and
@@ -56,8 +56,8 @@
 //! Which one is showing depends on one number: how many pixels a node's circle
 //! is across, which is [`Scene::radius`] times the camera's scale.
 //!
-//! - **Circles**, once a radius is [`MIN_CIRCLE_PX`] or more.  The tree as
-//!   `tree-svg` draws it: a filled circle a node, leaves in [`LEAF`] against
+//! - **Circles**, once a radius is [`MIN_CIRCLE_PX`] or more.  A filled circle
+//!   a node, drawn at its full diameter, leaves in [`LEAF`] against
 //!   [`INNER`] ones, and — once there is room for them, at [`MIN_LINK_PX`] —
 //!   the edges to parents, which at this range are worth more than the ink they
 //!   cost.  The quadtree is opened all the way, since at this scale the nodes on
