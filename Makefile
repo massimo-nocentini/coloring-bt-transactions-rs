@@ -72,6 +72,15 @@ view: ## Open GRAPH=<basename> in the windowed viewer
 	@test -n "$(GRAPH)" || { echo "usage: make view GRAPH=<graph-basename>"; exit 1; }
 	cargo run --release --features gui --bin tree-view -- $(GRAPH)
 
+.PHONY: tx-view
+tx-view: ## Open RECORDS=<file> in the transaction viewer
+#	The same window as `view`, over a file of transaction records rather than a
+#	webgraph: each one drawn under the transaction its first input spends, and
+#	coloured by the blocks its coins came from.  Needs GTK 4 exactly as `view`
+#	does -- see the note there.
+	@test -n "$(RECORDS)" || { echo "usage: make tx-view RECORDS=<records-file>"; exit 1; }
+	cargo run --release --features gui --bin tx-view -- $(RECORDS)
+
 .PHONY: test-gui
 test-gui: ## Run the test suite including the viewer's, which needs GTK
 #	The viewer's own tests draw frames onto an image surface and look at the

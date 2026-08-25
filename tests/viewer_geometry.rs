@@ -38,7 +38,7 @@ fn the_three_parts_fit_together() {
     let mut drawn = 0;
     tree.visit(camera.visible(), 1.0 / camera.scale(), &mut |patch| match patch {
         quadtree::Patch::Nodes(indices) => drawn += indices.len() as u32,
-        quadtree::Patch::Cluster { count, .. } => drawn += count,
+        quadtree::Patch::Cluster { nodes, .. } => drawn += nodes.len() as u32,
     });
 
     assert!(drawn > 0, "a camera on the drawing sees some of it");

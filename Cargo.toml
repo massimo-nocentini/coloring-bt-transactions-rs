@@ -17,15 +17,22 @@ gtk4 = { version = "0.11", optional = true }
 openjp2 = "0.6"
 
 [features]
-# The windowed viewer.  `cargo run --features gui --bin tree-view -- <graph>`,
-# or `make view GRAPH=<graph>`.
+# The windowed viewers, `tree-view` and `tx-view`.  `cargo run --features gui
+# --bin tree-view -- <graph>`, or `make view GRAPH=<graph>`.
 gui = ["dep:gtk4"]
 
-# Named here only to say that it does not build without GTK; the rest of the
+# Named here only to say that they do not build without GTK; the rest of the
 # binaries under src/bin/ are found by cargo on its own.
 [[bin]]
 name = "tree-view"
 path = "src/bin/tree-view.rs"
+required-features = ["gui"]
+
+# The same window over transactions rather than over a webgraph, coloured by
+# where each one's coins came from.  `make tx-view RECORDS=<file>`.
+[[bin]]
+name = "tx-view"
+path = "src/bin/tx-view.rs"
 required-features = ["gui"]
 
 # openjp2 0.6.1's *decoder* hands `dealloc` a code block's `decoded_data`

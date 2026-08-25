@@ -33,8 +33,9 @@
 //!   leaves, and every patch is [`Patch::Nodes`]: these particular nodes, draw
 //!   them as circles.
 //! - Zoomed out, `resolution` is a pixel's worth of nodes, the walk stops high,
-//!   and a patch is [`Patch::Cluster`]: *this* many nodes somewhere in this
-//!   square, which is a dot of a shade.
+//!   and a patch is [`Patch::Cluster`]: *these* nodes are somewhere in this
+//!   square, which is a dot of a shade — a shade the count alone can give, or
+//!   that a few of the nodes can be sampled for.
 //!
 //! The second is what makes a drawing of ten million nodes cost a frame rather
 //! than a coffee: the work is bounded by the pixels in the window, not by the
@@ -96,8 +97,18 @@ struct Cell {
 pub enum Patch<'a> {
     /// These nodes, by index into the points the query was given.
     Nodes(&'a [u32]),
-    /// This many nodes, somewhere in this square, not worth naming one by one.
-    Cluster { bounds: Rect, count: u32 },
+    /// The nodes under this square, which is too small to open: `nodes.len()` of
+    /// them, somewhere inside `bounds`, and that count is all most callers want.
+    ///
+    /// They are named all the same, because *which* nodes they are is sometimes
+    /// worth a glance even when it is not worth a circle each: a drawing that
+    /// gives every node a colour of its own can sample a few of them and shade
+    /// the square with what it finds, which is a truer picture than a grey one.
+    ///
+    /// A glance is the contract.  Walking the whole slice is walking the nodes
+    /// the summary exists to avoid walking, and puts the cost of a frame back on
+    /// the size of the drawing — see [`Quadtree::visit`].
+    Cluster { bounds: Rect, nodes: &'a [u32] },
 }
 
 /// The nodes of a drawing, in a tree of squares.
@@ -231,7 +242,8 @@ impl Quadtree {
     /// Hands `patch` every node inside `seen`, at the coarseness asked for.
     ///
     /// A cell no wider than `resolution` is reported whole, as a
-    /// [`Patch::Cluster`] of a count, rather than opened; `resolution` of zero
+    /// [`Patch::Cluster`] naming its nodes without placing them, rather than
+    /// being opened; `resolution` of zero
     /// opens everything and every patch is a [`Patch::Nodes`].  Cells outside
     /// `seen` are not walked at all, which is the point of the whole structure.
     ///
@@ -260,7 +272,7 @@ impl Quadtree {
             if cell.children == NO_CHILDREN {
                 patch(Patch::Nodes(&self.order[range]));
             } else if cell.bounds.width() <= resolution {
-                patch(Patch::Cluster { bounds: cell.bounds, count: cell.len });
+                patch(Patch::Cluster { bounds: cell.bounds, nodes: &self.order[range] });
             } else {
                 for q in 0..4 {
                     stack.push(cell.children + q);
@@ -329,7 +341,7 @@ mod tests {
                 named.extend_from_slice(indices);
                 counted += indices.len() as u32;
             }
-            Patch::Cluster { count, .. } => counted += count,
+            Patch::Cluster { nodes, .. } => counted += nodes.len() as u32,
         });
         named.sort_unstable();
         (named, counted)
