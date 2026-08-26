@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["PLACES","USAGE"],"fn":["main","mean","push_fixed","push_int","run"],"mod":["poly","sexp","simd","store","weighted"]};

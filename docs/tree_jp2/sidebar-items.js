@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BREADTH_PX","DEFAULT_ZOOM","DEPTH_PX","INNER_INK","LEAF_INK","PAPER","RESOLUTIONS","TILE","USAGE"],"fn":["human","main","plot","run","tile_bytes","write_jp2"],"mod":["forest"],"struct":["Picture"]};

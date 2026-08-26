@@ -1,0 +1,72 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="A webgraph, drawn as a JPEG 2000"><title>tree_jp2 - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="tree_jp2" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate tree_jp2</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../tree_jp2/index.html">tree_<wbr>jp2</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#a-webgraph-drawn-as-a-jpeg-2000" title="A webgraph, drawn as a JPEG 2000">A webgraph, drawn as a JPEG 2000</a></li><li><a href="#a-pixel-per-node-and-not-a-pixel-more" title="A pixel per node, and not a pixel more">A pixel per node, and not a pixel more</a></li><li><a href="#why-lossless-and-what-that-costs" title="Why lossless, and what that costs">Why lossless, and what that costs</a></li><li><a href="#why-this-streams-and-why-it-wants-a-file" title="Why this streams, and why it wants a file">Why this streams, and why it wants a file</a></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>tree_<wbr>jp2</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/tree_jp2/tree-jp2.rs.html#1-653">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="a-webgraph-drawn-as-a-jpeg-2000"><a class="doc-anchor" href="#a-webgraph-drawn-as-a-jpeg-2000">§</a>A webgraph, drawn as a JPEG 2000</h2>
+<p>Reads a BvGraph by basename, treats it as a forest, and writes a <strong>lossless</strong>
+JPEG 2000 in which every node is one pixel, placed where the non-layered tidy
+trees algorithm (van der Ploeg 2014) puts it.  How the graph becomes a tree,
+where its roots come from, and what the layout is asked for are all in
+<a href="forest/index.html" title="mod tree_jp2::forest"><code>forest</code></a>; this file is only about turning coordinates into a codestream.</p>
+<div class="example-wrap"><pre class="language-text"><code>tree-jp2 &lt;graph-basename&gt; -o &lt;file&gt; [--zoom &lt;n&gt;]</code></pre></div><h2 id="a-pixel-per-node-and-not-a-pixel-more"><a class="doc-anchor" href="#a-pixel-per-node-and-not-a-pixel-more">§</a>A pixel per node, and not a pixel more</h2>
+<p>The layout’s units are nodes, so a pixel grid is a matter of picking how many
+pixels a unit is worth — and the answer is different on the two axes, because
+the layout treats them differently:</p>
+<ul>
+<li>Along <strong>depth</strong> nothing separates one level from the next: a child’s near
+edge is its parent’s far edge, so level <code>d</code> sits at <code>x = d</code> and
+<a href="constant.DEPTH_PX.html" title="constant tree_jp2::DEPTH_PX"><code>DEPTH_PX</code></a> of 1 makes column <code>d</code> that level, exactly.</li>
+<li>Along <strong>breadth</strong> every node carries <a href="forest/constant.SUBTREE_MARGIN.html" title="constant tree_jp2::forest::SUBTREE_MARGIN"><code>forest::SUBTREE_MARGIN</code></a>, so two
+nodes at the same depth have centres at least two units apart — one for the
+node, one for the clear space beside it.  <a href="constant.BREADTH_PX.html" title="constant tree_jp2::BREADTH_PX"><code>BREADTH_PX</code></a> of 1/2 spends a
+pixel on the pair, which is what closes up the blank row that would
+otherwise sit under every node.</li>
+</ul>
+<p>Together they are the tightest grid the drawing fits in: every node lands on
+its own pixel, no pixel is wasted on the margins, and a picture of <code>n</code> nodes
+is about as many pixels.  Since the separation is a lower bound rather than
+an equality — the algorithm pushes subtrees further apart when their shapes
+demand it — the grid has white in it wherever the tree does, which is the
+shape one wants to see.  Nothing <em>guarantees</em> two nodes cannot round into one
+pixel, so <a href="struct.Picture.html#structfield.collisions" title="field tree_jp2::Picture::collisions"><code>Picture::collisions</code></a> counts the ones that did and the run says
+so rather than quietly drawing <code>n - 1</code> nodes.</p>
+<p><code>--zoom n</code> then repeats every pixel <code>n</code> times on each axis, for the small
+graphs where a picture a few pixels across is not a picture.  It is a whole
+number because a raster has no way to be given a fractional one.</p>
+<p>The picture is one 8-bit greyscale component in three tones: leaves are
+<a href="constant.LEAF_INK.html" title="constant tree_jp2::LEAF_INK"><code>LEAF_INK</code></a> against <a href="constant.INNER_INK.html" title="constant tree_jp2::INNER_INK"><code>INNER_INK</code></a> nodes on <a href="constant.PAPER.html" title="constant tree_jp2::PAPER"><code>PAPER</code></a>, the same three the
+windowed viewer draws.</p>
+<h2 id="why-lossless-and-what-that-costs"><a class="doc-anchor" href="#why-lossless-and-what-that-costs">§</a>Why lossless, and what that costs</h2>
+<p>A lossy JPEG 2000 would be smaller and would be the wrong picture: a node is
+one pixel, so the difference between a node and no node is a single sample,
+and that is exactly what a quantiser spends first.  So the encoder is set up
+for the reversible path — the 5/3 integer wavelet, no quantisation, one
+quality layer at no rate cap — and the bytes that go in are the bytes that
+come back.  The <code>round_trips_losslessly</code> test asserts that against the
+decoder rather than trusting the setting.</p>
+<p>What that buys over a raw raster is the compression a netpbm has no way to
+express.  These pictures are nearly all paper, and the wavelet plus EBCOT
+charges almost nothing for it: <code>cnr-2000</code>, 325 557 nodes on a 37-by-218 886
+grid, comes to 1.1 MB against the 8.1 MB the same pixels are as a <code>P5</code>.  And
+unlike <code>gzip</code> over a raster, the result is still an image every tool can
+open, and one that can be decoded at a reduced resolution — <a href="constant.RESOLUTIONS.html" title="constant tree_jp2::RESOLUTIONS"><code>RESOLUTIONS</code></a>
+of them — without reading it whole.</p>
+<p>What it costs is time.  A raster writer is a memcpy; this runs a wavelet and
+an arithmetic coder over every sample, paper included.</p>
+<h2 id="why-this-streams-and-why-it-wants-a-file"><a class="doc-anchor" href="#why-this-streams-and-why-it-wants-a-file">§</a>Why this streams, and why it wants a file</h2>
+<p>The whole raster is <code>width * height</code> and the nodes are only <code>n</code>, so the
+picture is held as one <code>(row, column, ink)</code> per node — twelve bytes, against
+a byte for every pixel of a picture that is mostly white.  Sorting that list
+puts the nodes in the order the tiles are written, so the raster is built one
+<a href="constant.TILE.html" title="constant tree_jp2::TILE"><code>TILE</code></a>-square tile at a time and never exists whole: the memory here is one
+tile’s worth however big the picture is, which is what lets a drawing far
+past the size of memory be written at all.</p>
+<p>The codestream is not written straight through, though — the encoder goes
+back to stamp lengths into markers it has already emitted — so the output has
+to be a file it can seek in, and <code>-o</code> is required rather than defaulting to
+standard output the way a netpbm writer could.</p>
+</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="forest/index.html" title="mod tree_jp2::forest">forest</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A webgraph, read as a tree</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Picture.html" title="struct tree_jp2::Picture">Picture</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The drawing as pixels: what row and column each node landed on, and how big
+the grid holding them is.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.BREADTH_PX.html" title="constant tree_jp2::BREADTH_PX">BREADTH_<wbr>PX</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Pixels per node unit along the breadth axis: a row is a node and the margin
+beside it.  See the module docs for why the two axes differ.</dd><dt><a class="constant" href="constant.DEFAULT_ZOOM.html" title="constant tree_jp2::DEFAULT_ZOOM">DEFAULT_<wbr>ZOOM</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How many pixels a node pixel becomes on a side, when the caller does not say.</dd><dt><a class="constant" href="constant.DEPTH_PX.html" title="constant tree_jp2::DEPTH_PX">DEPTH_<wbr>PX</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Pixels per node unit along the depth axis: a column is a level.</dd><dt><a class="constant" href="constant.INNER_INK.html" title="constant tree_jp2::INNER_INK">INNER_<wbr>INK</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The three tones, matching the viewer’s <code>#000000</code>, <code>#808080</code>, <code>#ffffff</code>.</dd><dt><a class="constant" href="constant.LEAF_INK.html" title="constant tree_jp2::LEAF_INK">LEAF_<wbr>INK</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="constant" href="constant.PAPER.html" title="constant tree_jp2::PAPER">PAPER</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="constant" href="constant.RESOLUTIONS.html" title="constant tree_jp2::RESOLUTIONS">RESOLUTIONS</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Wavelet decomposition levels.  Six is the encoder’s own default, and it is
+also what lets a viewer open one of these at 1/32 scale without decoding the
+full-size picture.</dd><dt><a class="constant" href="constant.TILE.html" title="constant tree_jp2::TILE">TILE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The side of the square the picture is written in.  This is the working set:
+a tile is built whole in memory and handed to the encoder, so the number is a
+trade of memory against how much context the wavelet has to compress with,
+and 1024 is a mebibyte a tile.</dd><dt><a class="constant" href="constant.USAGE.html" title="constant tree_jp2::USAGE">USAGE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.human.html" title="fn tree_jp2::human">human</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd><code>n</code> bytes as something a person can read at a glance.</dd><dt><a class="fn" href="fn.main.html" title="fn tree_jp2::main">main</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="fn" href="fn.plot.html" title="fn tree_jp2::plot">plot</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Puts every node of a laid-out arena on a pixel.</dd><dt><a class="fn" href="fn.run.html" title="fn tree_jp2::run">run</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="fn" href="fn.tile_bytes.html" title="fn tree_jp2::tile_bytes">tile_<wbr>bytes</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>One tile of the zoomed picture, as the bytes the encoder wants: row-major,
+a byte a pixel, clipped to the image at the far edge.</dd><dt><a class="fn" href="fn.write_jp2.html" title="fn tree_jp2::write_jp2">write_<wbr>jp2</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Writes the picture to <code>path</code> as a lossless JPEG 2000, one tile at a time.</dd></dl></section></div></main></body></html>

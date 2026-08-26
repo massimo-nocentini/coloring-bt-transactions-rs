@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DIAMETER","SUBTREE_MARGIN"],"fn":["build","lay_out"],"struct":["Forest"]};

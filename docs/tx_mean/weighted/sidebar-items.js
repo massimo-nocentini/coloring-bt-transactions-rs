@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["combine_into"],"struct":["Terms","WeightedSets"],"type":["Color"]};

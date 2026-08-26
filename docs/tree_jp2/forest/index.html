@@ -1,0 +1,81 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="A webgraph, read as a tree"><title>tree_jp2::forest - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="tree_jp2" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module forest</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../tree_jp2/index.html">tree_<wbr>jp2</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module forest</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#a-webgraph-read-as-a-tree" title="A webgraph, read as a tree">A webgraph, read as a tree</a></li><li><a href="#where-the-roots-come-from" title="Where the roots come from">Where the roots come from</a></li><li><a href="#the-node-the-graph-does-not-have" title="The node the graph does not have">The node the graph does not have</a></li><li><a href="#from-a-graph-to-a-tree" title="From a graph to a tree">From a graph to a tree</a></li><li><a href="#the-shape-the-layout-is-asked-for" title="The shape the layout is asked for">The shape the layout is asked for</a></li><li><a href="#why-the-flat-entry-point" title="Why the flat entry point">Why the flat entry point</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate tree_<wbr>jp2</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">tree_jp2</a></div><h1>Module <span>forest</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/tree_jp2/tree/forest.rs.html#1-449">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="a-webgraph-read-as-a-tree"><a class="doc-anchor" href="#a-webgraph-read-as-a-tree">§</a>A webgraph, read as a tree</h2>
+<p>The part of a drawing that is about the <em>graph</em> rather than about the ink:
+turning a <code>BvGraph</code> into an arena of the non-layered tidy trees crate
+(van der Ploeg 2014), and running the layout over it.  What the coordinates
+it produces are then drawn <em>with</em> is the caller’s business — <code>tree-jp2</code>
+makes them pixels, <code>tree-view</code> makes them circles in a window — and the two
+agree about the picture because they agree about this file.</p>
+<p>It is a module rather than a library because this crate’s <code>src/*.rs</code> belong
+to the main binary; the drawing binaries reach it by <code>#[path]</code> instead,
+which is why it lives under <code>src/bin/</code> next to the only things that use it.</p>
+<h2 id="where-the-roots-come-from"><a class="doc-anchor" href="#where-the-roots-come-from">§</a>Where the roots come from</h2>
+<p>A root is a node the walk has not already reached.  Node order is swept once
+and every node still unvisited when its turn comes starts a walk of its own;
+marking as we go is what makes that enough, since a node reached from an
+earlier root is already in the forest and is passed over.</p>
+<p>That is <em>nearly</em> the graph’s sources, and it costs nothing.  Asking a
+<code>RandomAccessGraph</code> “does anything point at this?” means a pass over every arc
+to build the in-degrees, or a second graph — the transpose, whose out-degrees
+are the in-degrees — loaded and carried beside the first.  Sweeping asks
+nothing the walk was not going to do anyway, and every true source is still a
+root: nothing points at one, so no walk can reach it.</p>
+<p>Where the two differ is a node that comes <em>before</em> its parent in node order:
+given <code>1 -&gt; 0</code>, the sweep makes 0 a root of its own and drops the arc, where
+in-degrees would have rooted both at 1.  On a graph whose node order follows
+its arcs — transactions numbered as they are spent, which is the input this
+draws — the two agree.</p>
+<h2 id="the-node-the-graph-does-not-have"><a class="doc-anchor" href="#the-node-the-graph-does-not-have">§</a>The node the graph does not have</h2>
+<p>A graph of transactions has many roots, and the layout algorithm lays out one
+tree.  So when there is more than one root, a node that stands for nothing is
+made the parent of all of them, purely to give the algorithm its root.  It is
+marked <code>isdummy</code> and never drawn.</p>
+<p>It is also given <strong>zero width and zero height</strong>, which is what keeps it from
+showing up in the drawing anyway: the depth coordinate of a child is the far
+edge of its parent, so a root of zero width leaves the real roots at depth
+0 where they would have been, and a box of zero height takes no room along the
+breadth axis for the layout to route around.  A one-by-one invisible root
+would push the whole picture over by one column and open a gap its own size in
+the middle of the fringe; this way the drawing is the same one a single-rooted
+graph would have produced.</p>
+<p>When the sweep finds exactly one root there is no such node — that node is the
+root, and it is drawn like any other.</p>
+<h2 id="from-a-graph-to-a-tree"><a class="doc-anchor" href="#from-a-graph-to-a-tree">§</a>From a graph to a tree</h2>
+<p>Nothing says the input is a tree.  A node reachable along two different paths
+has two parents, which the algorithm has no way to draw, so what is laid out
+is a <em>spanning</em> forest: a breadth-first walk from each root in turn, where
+the first arc to reach a node is the one that becomes its edge and every later
+arc into it is dropped.  How many were dropped is in <a href="struct.Forest.html#structfield.dropped_arcs" title="field tree_jp2::forest::Forest::dropped_arcs"><code>Forest::dropped_arcs</code></a>,
+and the callers report it on stderr, because a picture that quietly stands for
+two thirds of the arcs is a lie the file itself cannot tell you about.</p>
+<p>Nodes on a cycle need no special handling: no walk from outside reaches one, so
+the first of them in node order is still unvisited when the sweep arrives, and
+becomes a root like any other node the sweep finds.  Nothing goes undrawn, and
+the arc that closes the cycle is dropped like any other second parent.</p>
+<h2 id="the-shape-the-layout-is-asked-for"><a class="doc-anchor" href="#the-shape-the-layout-is-asked-for">§</a>The shape the layout is asked for</h2>
+<ul>
+<li><code>vertically: false</code>, so depth runs left to right and the breadth axis is <code>y</code>.</li>
+<li>Every real node is a <a href="constant.DIAMETER.html" title="constant tree_jp2::forest::DIAMETER"><code>DIAMETER</code></a> by <a href="constant.DIAMETER.html" title="constant tree_jp2::forest::DIAMETER"><code>DIAMETER</code></a> box, so the drawing’s
+units are nodes.</li>
+<li><strong>No margin along the depth axis</strong> is not a setting: the algorithm puts a
+child’s near edge exactly on its parent’s far edge, so with unit boxes level
+<code>d</code> sits at <code>x = d</code>.</li>
+<li><a href="constant.SUBTREE_MARGIN.html" title="constant tree_jp2::forest::SUBTREE_MARGIN"><code>SUBTREE_MARGIN</code></a> on every node, which is the separation the algorithm keeps
+between a node and the sibling subtree to its right — one clear node between
+neighbouring subtrees, at every level.</li>
+</ul>
+<p>Two consequences the drawing code leans on: a node’s <code>x</code> <em>is</em> its depth, and
+two nodes at the same depth have centres at least <code>DIAMETER + SUBTREE_MARGIN</code>
+apart along the breadth axis.  Coordinates come back as top-left corners.</p>
+<h2 id="why-the-flat-entry-point"><a class="doc-anchor" href="#why-the-flat-entry-point">§</a>Why the flat entry point</h2>
+<p>The crate offers the same layout twice: [<code>non_layered_tidy_trees::layout</code>],
+whose three walks recurse once per level, and
+[<code>non_layered_tidy_trees::flat::layout_flat</code>], which mirrors the tree into
+arrays and sweeps over them.  They compute the same coordinates — the crate
+checks that bit for bit — and the difference that matters here is the stack:
+a chain of transactions can be a million nodes long, and a walk that recurses
+once per level overflows on it, where a sweep has no such ceiling.  So the
+sweeps are what this module asks for.</p>
+<p>The one thing the flat path cannot do is report itself node by node, because
+it visits independent subtrees in a different order; it takes no callbacks.
+Nothing here wants any.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Forest.html" title="struct tree_jp2::forest::Forest">Forest</a></dt><dd>What the walk over the graph produced, beyond the arena itself.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.DIAMETER.html" title="constant tree_jp2::forest::DIAMETER">DIAMETER</a></dt><dd>The side of a node’s box, and so the unit the whole drawing is measured in.</dd><dt><a class="constant" href="constant.SUBTREE_MARGIN.html" title="constant tree_jp2::forest::SUBTREE_MARGIN">SUBTREE_<wbr>MARGIN</a></dt><dd>Separation kept between neighbouring sibling subtrees.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.build.html" title="fn tree_jp2::forest::build">build</a></dt><dd>Builds the spanning forest of <code>graph</code> into an arena, rooted at a single node.</dd><dt><a class="fn" href="fn.lay_out.html" title="fn tree_jp2::forest::lay_out">lay_out</a></dt><dd>Places every node of <code>arena</code>, depth running left to right.</dd></dl></section></div></main></body></html>

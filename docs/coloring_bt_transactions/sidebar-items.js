@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_LIMIT","STATS_EVERY","WEIGHT_PLACES"],"enum":["Backend"],"fn":["main","push_int","push_weight","rate","run"],"mod":["colorset","poly","sexp","simd","store","weighted"]};
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_LIMIT","STATS_EVERY","USAGE","WEIGHT_PLACES"],"enum":["Backend","Output"],"fn":["main","option","plan","push_int","push_weight","rate","records_from","rewindable_stdin","run","survey"],"mod":["colorset","image","poly","sexp","simd","store","weighted"]};

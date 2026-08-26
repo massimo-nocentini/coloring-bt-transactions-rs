@@ -1,0 +1,77 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Colors as a picture"><title>coloring_bt_transactions::image - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module image</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module image</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#colors-as-a-picture" title="Colors as a picture">Colors as a picture</a><ul><li><a href="#two-formats-and-which-one-is-smaller" title="Two formats, and which one is smaller">Two formats, and which one is smaller</a></li><li><a href="#folding-transactions-together" title="Folding transactions together">Folding transactions together</a></li><li><a href="#why-the-header-is-padded-and-why-this-wants-a-file" title="Why the header is padded, and why this wants a file">Why the header is padded, and why this wants a file</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate coloring_<wbr>bt_<wbr>transactions</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">coloring_bt_transactions</a></div><h1>Module <span>image</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/coloring_bt_transactions/image.rs.html#1-760">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="colors-as-a-picture"><a class="doc-anchor" href="#colors-as-a-picture">§</a>Colors as a picture</h2>
+<p>The text output names every block in every color, which on a real run is
+tens of gigabytes of <code>(block . 1)</code> pairs.  The same answer drawn instead of
+spelled: one <strong>row</strong> per transaction, in the order the transactions arrive,
+one <strong>column</strong> per block id, counting up from 0, and a black pixel wherever
+that block is in that transaction’s color.  A color of a thousand blocks is a
+thousand bits rather than fourteen thousand bytes, and how far back a
+transaction’s coins reach is something you can then look at.</p>
+<p>What the picture drops is the coefficients.  For the unweighted backends
+there is nothing to drop — every coefficient is 1, so the color <em>is</em> its set
+of blocks and the bitmap is the whole answer.  Under <code>--weighted</code> a pixel
+says only that some of the transaction’s value came from that block, not how
+much; a weight too small to print as anything but <code>0.000000</code> is a black pixel
+like any other, which is one thing the picture shows better than the text.</p>
+<h3 id="two-formats-and-which-one-is-smaller"><a class="doc-anchor" href="#two-formats-and-which-one-is-smaller">§</a>Two formats, and which one is smaller</h3>
+<p><a href="enum.Format.html#variant.Pbm" title="variant coloring_bt_transactions::image::Format::Pbm"><code>Format::Pbm</code></a> is netpbm’s binary bitmap, <code>P4</code>: a short text header, then the
+rows packed eight pixels to the byte with the leftmost pixel in the <em>most</em>
+significant bit and each row padded out to a whole byte.  A 1 bit is black,
+which is what makes “the ones in the output” and “the black pixels” the same
+statement.  Every image tool reads it.  A row costs <code>width / 8</code> bytes and
+nothing else: the same whether it is empty or solid.</p>
+<p><a href="enum.Format.html#variant.Svg" title="variant coloring_bt_transactions::image::Format::Svg"><code>Format::Svg</code></a> draws the same rows as horizontal strokes, one per <em>run</em> of
+adjacent blocks.  A row then costs about <a href="constant.SVG_BYTES_PER_RUN.html" title="constant coloring_bt_transactions::image::SVG_BYTES_PER_RUN"><code>SVG_BYTES_PER_RUN</code></a> bytes per run
+and nothing at all for the white between them, so the two formats scale
+against different things:</p>
+<div class="example-wrap"><pre class="language-text"><code>    SVG is smaller  &lt;=&gt;  runs per row  &lt;  width / 56</code></pre></div>
+<p>Which side of that a real chain falls on is a question about the records
+rather than about the formats, so <code>--stats</code> measures it and says what the
+other format would have cost — see <a href="struct.Writer.html#method.runs" title="method coloring_bt_transactions::image::Writer::runs"><code>Writer::runs</code></a>.  Colors that reach back
+in a few long stretches are a handful of runs however wide the image, and
+drawing those is far cheaper than packing rows that are mostly white; on
+synthetic runs here the same records came out</p>
+<div class="example-wrap"><pre class="language-text"><code>    width   runs/row     PBM        SVG    smaller by
+    50,000       6.3   625 MB     5.2 MB       120x
+    10,000     176.0   125 MB   112.4 MB       1.11x
+     5,000      48.1   125 MB    60.4 MB       2.07x</code></pre></div>
+<p>and it takes a color shot through with gaps — a run every fifty-six columns,
+all the way across — before the bitmap starts to win.</p>
+<p>What the vector picture gives up is that it is one enormous <code>&lt;path&gt;</code>.  Every
+image tool reads a <code>P4</code>; an SVG of a million rows is a file a browser has to
+be willing to parse before it will show anything.</p>
+<p>Neither is compressed, and both compress well; the bitmap of a 200,000-record
+run goes from 125 MB to 8.8 MB through <code>gzip</code> and 6.5 MB through <code>zstd</code>.  If
+the output is only ever going to be read back by a program, that is a bigger
+win than the choice of format, and it composes with either.</p>
+<h3 id="folding-transactions-together"><a class="doc-anchor" href="#folding-transactions-together">§</a>Folding transactions together</h3>
+<p>A row per transaction is a row per record, and a real run has more records
+than any screen has pixels — a million rows is already a picture nothing will
+show you whole.  So a row may stand for more than one transaction:
+<a href="struct.Writer.html#method.new" title="associated function coloring_bt_transactions::image::Writer::new"><code>Writer::new</code></a>’s <code>bin</code> is how many consecutive transactions share a row, and
+the row they share is the union of their colors, black where <em>any</em> of them
+reaches that block.  Union is what the driver is computing anyway, so a
+binned picture is the same picture at a coarser scale rather than a sampled
+or averaged one, and nothing that was black can go white.  The last bin is
+whatever is left over, and it is written like any other.</p>
+<h3 id="why-the-header-is-padded-and-why-this-wants-a-file"><a class="doc-anchor" href="#why-the-header-is-padded-and-why-this-wants-a-file">§</a>Why the header is padded, and why this wants a file</h3>
+<p>Both formats put the height in front of the picture, and the height is the
+number of transactions — not known until the input has ended, by which time
+the picture is written and gigabytes long.  So the header is written with a
+placeholder and padded out to a length that cannot change, and
+<a href="struct.Writer.html#method.finish" title="method coloring_bt_transactions::image::Writer::finish"><code>Writer::finish</code></a> seeks back and stamps the real number into the hole.  A
+<code>usize</code> never needs more than 20 digits, so what each format pads <em>with</em> is
+the only difference: netpbm lets any run of whitespace separate two header
+tokens, and XML lets any run of it separate two attributes.</p>
+<p>That seek is why this writes to a file rather than to stdout: a pipe cannot
+be rewound.  The width has no such escape — it fixes the distance from one
+row to the next, so it cannot be discovered along the way the height can, and
+has to be settled before the first row is written.  <code>--blocks</code> says it
+outright; without it the driver counts the blocks first, by reading the
+records twice — see <code>main</code>’s <code>survey</code>.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Writer.html" title="struct coloring_bt_transactions::image::Writer">Writer</a></dt><dd>A bitmap being written a row at a time.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.Format.html" title="enum coloring_bt_transactions::image::Format">Format</a></dt><dd>Which of the two pictures to draw.  The module docs say when each is smaller.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.HEIGHT_DIGITS.html" title="constant coloring_bt_transactions::image::HEIGHT_DIGITS">HEIGHT_<wbr>DIGITS</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Blanks reserved for the row count in a <code>P4</code> header.</dd><dt><a class="constant" href="constant.SVG_BYTES_PER_RUN.html" title="constant coloring_bt_transactions::image::SVG_BYTES_PER_RUN">SVG_<wbr>BYTES_<wbr>PER_<wbr>RUN</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>What one run costs as a stroke, near enough for the note <code>--stats</code> prints
+about the format that was not chosen.</dd><dt><a class="constant" href="constant.SVG_TAIL.html" title="constant coloring_bt_transactions::image::SVG_TAIL">SVG_<wbr>TAIL</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>What closes an SVG, once the last stroke is in.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.for_each_run.html" title="fn coloring_bt_transactions::image::for_each_run">for_<wbr>each_<wbr>run</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Visit the maximal runs of black pixels in <code>row</code> as <code>(start, length)</code>.</dd><dt><a class="fn" href="fn.pbm_header.html" title="fn coloring_bt_transactions::image::pbm_header">pbm_<wbr>header</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd><code>P4</code>, <code>width</code> columns, <code>rows</code> rows, with the row count right-aligned in its
+fixed-width field.</dd><dt><a class="fn" href="fn.push_delta.html" title="fn coloring_bt_transactions::image::push_delta">push_<wbr>delta</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The same, signed, since every move but the first is a step that can go back
+up the row or back to the left of it.</dd><dt><a class="fn" href="fn.push_int.html" title="fn coloring_bt_transactions::image::push_int">push_<wbr>int</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Decimal, straight into the buffer — the driver’s <a href="../fn.push_int.html" title="fn coloring_bt_transactions::push_int"><code>crate::push_int</code></a>, which
+exists for the same reason: this runs once per number in a path with tens of
+millions of them.</dd><dt><a class="fn" href="fn.svg_header.html" title="fn coloring_bt_transactions::image::svg_header">svg_<wbr>header</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The opening of an SVG <code>width</code> by <code>rows</code>, padded to a length that does not
+depend on <code>rows</code>.</dd></dl></section></div></main></body></html>

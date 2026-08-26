@@ -74,6 +74,25 @@
 //! fall below what [`WEIGHT_PLACES`] decimals can show and print as `0.000000`.
 //! They are still there and still counted — the sum is still 1 — but they cannot
 //! be read off the output.  See [`push_weight`].
+//!
+//! # The other binaries
+//!
+//! This is the driver, and the rest of the crate is four programs that do
+//! something else with the same colouring or the same layout.  Each is its own
+//! page in these docs; what they have in common is here.
+//!
+//! - [`tx-mean`](../tx_mean/index.html) — the weighted colouring collapsed to
+//!   one `f64` per record, `<tx-id>,<mean>` a line.  A colour is a set and a set
+//!   does not fit in a column; its centre of mass does, and it reads on the same
+//!   scale as a block id.
+//! - [`tree-jp2`](../tree_jp2/index.html) — a webgraph laid out as a tree and
+//!   written as a lossless JPEG 2000, one pixel per node.  Nothing to do with
+//!   transactions; it shares the layout the viewers use, not the colouring.
+//! - `tree-view` and `tx-view` — the same two drawings in a window one can pan
+//!   and zoom, the second coloured by what this file computes.  They are behind
+//!   the `gui` feature, since GTK is a C library the rest of the crate has no
+//!   reason to want installed, so they are absent from a default `cargo doc`
+//!   and from these pages; `cargo doc --features gui` builds them.
 
 mod colorset;
 mod image;
