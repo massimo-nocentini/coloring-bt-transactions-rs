@@ -16,31 +16,36 @@
 //! is the whole memory-management story here, and it is why the working set
 //! tracks the UTXO set rather than the whole chain.
 //!
-//! One line goes out per record: each term as `(exponent . coefficient)`
-//! followed by a space, so a transaction with no color prints an empty line.
-//! That is byte for byte what Chicken's `(print* (car p*) " ")` produces, which
-//! is the point — the reference output can be diffed against.
+//! One line goes out per record: the transaction's id, a tab, and then the
+//! color.  What follows the tab is one of two things, and `--sum` is which:
+//!
+//! - by default, the color in full — each term as `(exponent . coefficient)`
+//!   followed by a space, so a transaction with no color prints nothing after
+//!   the tab.  That half of the line is byte for byte what Chicken's `(print*
+//!   (car p*) " ")` produces, which is the point: `cut -f2` off this output and
+//!   the reference can be diffed against it.
+//! - under `--sum`, one number — `sum_b b . weight(b)`, the color's terms added
+//!   up.  See [`Line::Sum`] for what that number is and why it takes weights.
 //!
 //! # A picture instead
 //!
 //! That output is enormous — a color of a thousand blocks is fourteen thousand
-//! bytes of `(block . 1)` — and most of every line is punctuation.  `--pbm
-//! <file>` and `--svg <file>` draw the same answer instead: one row per record
-//! in the order the records arrive, one column per block id counting up from 0,
-//! black where the block is in the color.  The bitmap packs the pixels; the SVG
-//! strokes a line per run of adjacent blocks and pays nothing for the white.
-//! Which comes out smaller depends on the records, and `--stats` measures it —
-//! see [`image`].
+//! bytes of `(block . 1)` — and most of every line is punctuation.  `--jp2
+//! <file>` draws the same answer instead: one row per record in the order the
+//! records arrive, one column per block id counting up from 0, black where the
+//! block is in the color, written as a lossless bilevel JPEG 2000 — see
+//! [`image`] for why that format and what it costs.
 //!
 //! Two more knobs, both about size:
 //!
 //! - `--bin <n>` puts `n` consecutive transactions on one row, black where any
 //!   of them reaches that block.  A million rows is a picture nothing will show
 //!   you whole; binning is how it becomes one that will.
-//! - `--blocks <n>` says how many columns to draw, which is the one thing the
-//!   image cannot discover as it goes — it is the distance from one row to the
-//!   next.  Left out, [`survey`] reads the records once to count the blocks
-//!   before drawing them, which needs an input that can be rewound.
+//! - `--blocks <n>` says how many columns to draw, overriding the count
+//!   [`survey`] arrives at.  It is not a way of avoiding that pass: a JPEG 2000
+//!   states its height in front of its first sample too, and the height is the
+//!   number of records, so a picture always reads the records once before it
+//!   colors any of them and always wants an input that can be rewound.
 //!
 //! # Backends
 //!
@@ -71,23 +76,30 @@
 //!
 //! Be aware of what the fixed format hides.  Weights decay by roughly a factor
 //! per hop of ancestry, so on a long chain the great majority of a color's terms
-//! fall below what [`WEIGHT_PLACES`] decimals can show and print as `0.000000`.
-//! They are still there and still counted — the sum is still 1 — but they cannot
-//! be read off the output.  See [`push_weight`].
+//! fall below what [`PLACES`] decimals can show and print as `0.000000`.  They
+//! are still there and still counted — the sum is still 1 — but they cannot be
+//! read off the output.  See [`push_fixed`].
+//!
+//! # One number instead
+//!
+//! `--sum` prints `sum_b b . weight(b)` in place of the terms: the whole color
+//! collapsed to one `f64`, which is what makes a color fit in a column of a CSV
+//! or a plot.  Because the weights sum to 1 that sum is the **weighted mean
+//! block id** — the centre of mass of the blocks the coins came from — so it
+//! reads on the same scale as a block id and the distance between two of them is
+//! a distance along the chain.  It needs weights to mean anything, so it selects
+//! [`weighted`] the way `--weighted` does; see [`Line::Sum`].
 //!
 //! # The other binaries
 //!
-//! This is the driver, and the rest of the crate is four programs that do
+//! This is the driver, and the rest of the crate is three programs that do
 //! something else with the same colouring or the same layout.  Each is its own
 //! page in these docs; what they have in common is here.
 //!
-//! - [`tx-mean`](../tx_mean/index.html) — the weighted colouring collapsed to
-//!   one `f64` per record, `<tx-id>,<mean>` a line.  A colour is a set and a set
-//!   does not fit in a column; its centre of mass does, and it reads on the same
-//!   scale as a block id.
 //! - [`tree-jp2`](../tree_jp2/index.html) — a webgraph laid out as a tree and
 //!   written as a lossless JPEG 2000, one pixel per node.  Nothing to do with
-//!   transactions; it shares the layout the viewers use, not the colouring.
+//!   transactions; what it has in common with this file is the picture format,
+//!   and with the viewers the layout — never the colouring.
 //! - `tree-view` and `tx-view` — the same two drawings in a window one can pan
 //!   and zoom, the second coloured by what this file computes.  They are behind
 //!   the `gui` feature, since GTK is a C library the rest of the crate has no
@@ -130,42 +142,98 @@ enum Backend {
     Weighted,
 }
 
+/// What a line says about a color, once the transaction's id and the tab are
+/// out of the way.  `--sum` is the choice between them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Line {
+    /// Every term, as `(exponent . coefficient)` followed by a space.  The whole
+    /// color, and the Scheme's own line.
+    Terms,
+    /// One number: `sum_b b . weight(b)`.
+    ///
+    /// A color is a set and a set does not fit in a column; this is the number
+    /// that does.  Since every weighted color is a distribution — the weights of
+    /// a fold sum to 1 by construction and each operand sums to 1 by induction,
+    /// which is the invariant [`weighted`] states and `--stats` reports drift
+    /// against — the sum *is* the weighted mean of the block ids, and so reads
+    /// on the same scale as a block id: a coinbase minted in block `b` prints
+    /// exactly `b`, and a transaction taking half its value from block 0 and
+    /// half from block 3 prints `1.500000`.
+    ///
+    /// Nothing here divides by the total to make that so.  It could, and an
+    /// earlier `tx-mean` binary did; the measured drift from 1 over 42,000
+    /// records is 5.6e-16, which moves a mean the size of a block id by around
+    /// 1e-12 — six orders of magnitude below the last decimal [`PLACES`] prints.
+    /// The division would buy nothing and would quietly turn a broken invariant
+    /// into a plausible number, where a sum that is not a mean shows up as one.
+    ///
+    /// It is also the form that survives the fixed format best.  A weight too
+    /// small to print as anything but `0.000000` still moves this by its full
+    /// share, because the terms are added before they are rounded rather than
+    /// each rounded on its own.
+    Sum,
+}
+
 /// Where a finished color goes.
 ///
 /// An enum rather than a trait because the choice is made once and the match is
 /// per *record*: inside each arm the walk over the color's terms is still a
 /// monomorphic closure, which is the loop that has to stay cheap.
 enum Output {
-    /// A line of `(block . coefficient)` pairs per record, on stdout.  The
-    /// buffer is reused across records; `line` is a field rather than a local
-    /// for that reason alone.
+    /// A line per record, on stdout.  The buffer is reused across records;
+    /// `line` is a field rather than a local for that reason alone.
+    ///
+    /// The sink is boxed so that a test can read back what a run wrote, which
+    /// costs a virtual call per *flush* rather than per record: the buffering
+    /// happens on this side of the box.
     Text {
-        out: io::BufWriter<io::StdoutLock<'static>>,
+        out: io::BufWriter<Box<dyn Write>>,
         line: Vec<u8>,
+        form: Line,
     },
     /// A row of pixels per record, in a file.  See [`image`].
-    Picture(image::Writer<File>),
+    Picture(image::Writer),
 }
 
 impl Output {
-    fn emit<S: ColorStore>(&mut self, store: &S, color: &S::Color) -> io::Result<()> {
+    fn emit<S: ColorStore>(
+        &mut self,
+        store: &S,
+        color: &S::Color,
+        tx_id: usize,
+    ) -> io::Result<()> {
         match self {
-            Output::Text { out, line } => {
+            Output::Text { out, line, form } => {
                 line.clear();
-                store.for_each_term(color, |exponent, coefficient| {
-                    line.push(b'(');
-                    push_int(line, exponent);
-                    line.extend_from_slice(b" . ");
-                    if S::WEIGHTED {
-                        push_weight(line, coefficient);
-                    } else {
-                        // Always exactly 1 here, and printed as the integer the
-                        // Scheme prints, so an unweighted run stays byte for
-                        // byte comparable.
-                        push_int(line, coefficient as usize);
+                // Which transaction this is, which the Scheme leaves to the
+                // reader to count out.  A line that names itself is one that can
+                // be sorted, joined and sampled; `cut -f2` puts back exactly the
+                // line the Scheme printed.
+                push_int(line, tx_id);
+                line.push(b'\t');
+                match form {
+                    Line::Terms => store.for_each_term(color, |exponent, coefficient| {
+                        line.push(b'(');
+                        push_int(line, exponent);
+                        line.extend_from_slice(b" . ");
+                        if S::WEIGHTED {
+                            push_fixed(line, coefficient);
+                        } else {
+                            // Always exactly 1 here, and printed as the integer
+                            // the Scheme prints, so an unweighted run stays byte
+                            // for byte comparable.
+                            push_int(line, coefficient as usize);
+                        }
+                        line.extend_from_slice(b") ");
+                    }),
+                    Line::Sum => {
+                        let mut sum = 0.0f64;
+                        store.for_each_term(color, |block, weight| {
+                            sum += block as f64 * weight;
+                        });
+                        push_fixed(line, sum);
                     }
-                    line.extend_from_slice(b") ");
-                });
+                }
                 line.push(b'\n');
                 out.write_all(line)
             }
@@ -179,19 +247,28 @@ impl Output {
         }
     }
 
-    /// Close the output.  For the bitmap this is not a formality — the height
-    /// only goes into the header here.
+    /// A line-per-record output over `sink`, buffered a megabyte at a time.
+    fn text(sink: Box<dyn Write>, form: Line) -> Self {
+        Output::Text {
+            out: io::BufWriter::with_capacity(1 << 20, sink),
+            line: Vec::new(),
+            form,
+        }
+    }
+
+    /// Close the output.  For the picture this is not a formality — the
+    /// codestream is only ended here.
     fn finish(self) -> io::Result<()> {
         match self {
             Output::Text { mut out, .. } => out.flush(),
-            Output::Picture(picture) => picture.finish().map(|_| ()),
+            Output::Picture(picture) => picture.finish(),
         }
     }
 }
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
-                     [--rings|--sets|--weighted] \
-                     [--pbm <file>|--svg <file> [--blocks <n>] [--bin <n>]] < records";
+                     [--rings|--sets|--weighted] [--sum] \
+                     [--jp2 <file> [--blocks <n>] [--bin <n>]] < records";
 
 /// Standard input, as something that can be read a second time — when the
 /// platform and the shell allow it.
@@ -219,12 +296,12 @@ fn rewindable_stdin() -> Option<File> {
     None
 }
 
-/// Read the records once without coloring them, for the number the bitmap has
-/// to know before it can write anything.
+/// Read the records once without coloring them, for the two numbers the picture
+/// has to know before it can write anything.
 ///
 /// Answers `(blocks, records)` — one past the largest block id the records
 /// carry, which is how many columns the image needs, and how many records there
-/// were, which is only for saying so out loud.
+/// were, which is how many rows it needs.
 ///
 /// One pass is enough because a color is a set of the blocks its transaction's
 /// coins *descend* from, and an ancestor cannot be mined later than its
@@ -233,7 +310,9 @@ fn rewindable_stdin() -> Option<File> {
 ///
 /// Only the records the run will actually reach are looked at, so a record limit
 /// narrows the image rather than padding it out to a chain the run stops short
-/// of.
+/// of.  This is the same walk the run itself makes and stops on the same
+/// conditions, which is what makes the count it arrives at the count the picture
+/// is drawn to.
 fn survey(input: impl io::Read, limit: usize) -> io::Result<(usize, usize)> {
     let mut reader = sexp::Reader::new(input);
     let mut inputs: Vec<sexp::Input> = Vec::new();
@@ -251,83 +330,86 @@ fn survey(input: impl io::Read, limit: usize) -> io::Result<(usize, usize)> {
 
 /// Work out where the records come from and where the colors go.
 ///
-/// The two are settled together because the bitmap's width may have to be read
-/// off the records before the first row can be written, and that costs the input
-/// a rewind.  The error is the message to print, since every one of these is a
-/// complaint about the command line rather than something to recover from.
+/// The two are settled together because a picture states its size before its
+/// first sample, so both of its dimensions have to be read off the records
+/// before the first row can be written, and that costs the input a rewind.  The
+/// error is the message to print, since every one of these is a complaint about
+/// the command line rather than something to recover from.
 fn plan(
-    bitmap: Option<(image::Format, String)>,
+    picture: Option<String>,
     blocks: Option<usize>,
     bin: Option<usize>,
+    form: Line,
     limit: usize,
-    stats: bool,
 ) -> Result<(Output, Box<dyn io::Read>), String> {
     // Held as a file when standard input is one, so that `survey` can read the
     // records and put them back.
     let mut source = rewindable_stdin();
 
-    let (format, path) = match bitmap {
-        Some(picture) => picture,
-        None => {
-            if let Some(name) = blocks.map(|_| "--blocks").or(bin.map(|_| "--bin")) {
-                return Err(format!(
-                    "{} describes the picture, so it needs --pbm <file> or --svg <file>",
-                    name
-                ));
-            }
-            return Ok((
-                Output::Text {
-                    out: io::BufWriter::with_capacity(1 << 20, io::stdout().lock()),
-                    line: Vec::new(),
-                },
-                records_from(source),
+    let Some(path) = picture else {
+        if let Some(name) = blocks.map(|_| "--blocks").or(bin.map(|_| "--bin")) {
+            return Err(format!(
+                "{} describes the picture, so it needs --jp2 <file>",
+                name
             ));
         }
+        return Ok((
+            Output::text(Box::new(io::stdout().lock()), form),
+            records_from(source),
+        ));
     };
+
+    // `--sum` says what goes after the tab on a line, and a picture has no
+    // lines.  Drawing one and quietly ignoring the other is the reading nobody
+    // wants.
+    if form == Line::Sum {
+        return Err("--sum says what a line says, and a picture has no lines: \
+                    drop one of --sum and --jp2"
+            .into());
+    }
 
     let bin = match bin {
         Some(0) => return Err("--bin 0 asks a row to stand for no transactions".into()),
         Some(n) => n,
         None => 1,
     };
+    if blocks == Some(0) {
+        return Err("--blocks 0 leaves the picture no columns to draw in".into());
+    }
 
-    let width = match blocks {
-        Some(0) => return Err("--blocks 0 leaves the picture no columns to draw in".into()),
-        Some(n) => n,
-        None => {
-            let file = source.as_mut().ok_or_else(|| {
-                "standard input cannot be rewound, so the blocks cannot be counted before \
-                 the rows are written: redirect the records from a file (`< records`) \
-                 rather than through a pipe, or say how many there are with --blocks <n>"
-                    .to_string()
-            })?;
-            let start = file.stream_position().map_err(|e| e.to_string())?;
-            let (blocks, records) = survey(&*file, limit).map_err(|e| e.to_string())?;
-            file.seek(SeekFrom::Start(start))
-                .map_err(|e| e.to_string())?;
-            // Worth a line on stderr: it is a whole pass over the input, so a
-            // long run is otherwise silent for a while before anything happens.
-            if records == 0 {
-                // Every record carries a block, so no blocks means no records.
-                // The image is then 0 x 0, which is a header a reader will
-                // parse and an image no reader will show.
-                eprintln!("circular-polynomial: no records, so {} is empty", path);
-            } else {
-                eprintln!(
-                    "circular-polynomial: {} records over {} blocks, so a {} x {} picture",
-                    records,
-                    blocks,
-                    blocks,
-                    records.div_ceil(bin)
-                );
-            }
-            blocks
-        }
-    };
+    // Both dimensions, before a single sample: the codestream names its size in
+    // front of the picture and cannot be told either number afterwards, so the
+    // records are counted first even when `--blocks` has already settled the
+    // width.  See `image`.
+    let file = source.as_mut().ok_or_else(|| {
+        "standard input cannot be rewound, so the records cannot be counted before the \
+         picture is written: a JPEG 2000 states how many rows it has in front of the \
+         first one, and that is how many records there are.  Redirect the records from \
+         a file (`< records`) rather than through a pipe"
+            .to_string()
+    })?;
+    let start = file.stream_position().map_err(|e| e.to_string())?;
+    let (seen, records) = survey(&*file, limit).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| e.to_string())?;
 
-    let writer = File::create(&path)
-        .and_then(|f| image::Writer::new(f, format, width, bin, stats))
-        .map_err(|e| format!("{}: {}", path, e))?;
+    // Every record carries a block, so no blocks means no records.  There is no
+    // JPEG 2000 of nothing — a codestream with no tiles in it is not an image a
+    // reader will open — so this is refused rather than written.
+    if records == 0 {
+        return Err(format!("no records, so there is no picture to draw in {}", path));
+    }
+    let width = blocks.unwrap_or(seen);
+    let rows = records.div_ceil(bin);
+    // Worth a line on stderr: it is a whole pass over the input, so a long run
+    // is otherwise silent for a while before anything happens.
+    eprintln!(
+        "circular-polynomial: {} records over {} blocks, so a {} x {} picture",
+        records, seen, width, rows
+    );
+
+    let writer =
+        image::Writer::new(&path, width, rows, bin).map_err(|e| format!("{}: {}", path, e))?;
     Ok((Output::Picture(writer), records_from(source)))
 }
 
@@ -351,7 +433,7 @@ fn records_from(source: Option<File>) -> Box<dyn io::Read> {
 /// and neither reads well glued to its name.  A prefix match alone would accept
 /// `--blocksy`, so the character after the name has to be an `=` or nothing.
 ///
-/// The separate word is not taken if it looks like another option, so `--pbm
+/// The separate word is not taken if it looks like another option, so `--jp2
 /// --stats` is a missing filename rather than a file called `--stats`.  Nothing
 /// here wants a value of that shape, and swallowing the next flag would leave a
 /// run silently doing something else.
@@ -373,7 +455,8 @@ fn main() -> ExitCode {
     // otherwise: a plain run of this program is still the Knuth port.
     let mut backend = Backend::Rings;
     let mut chose_backend = false;
-    let mut bitmap: Option<(image::Format, String)> = None;
+    let mut form = Line::Terms;
+    let mut picture: Option<String> = None;
     let mut blocks: Option<usize> = None;
     let mut bin: Option<usize> = None;
 
@@ -405,21 +488,14 @@ fn main() -> ExitCode {
                 backend = Backend::Weighted;
                 chose_backend = true;
             }
+            // Which of the two line forms, rather than which backend -- but a
+            // sum of weights needs weights, so it settles that too, below.
+            "--sum" => form = Line::Sum,
             "all" => limit = usize::MAX,
             _ => {
-                // Two spellings of one picture; the last one asked for wins,
-                // rather than one silently drawing over the other's file.
-                let formats = [("--pbm", image::Format::Pbm), ("--svg", image::Format::Svg)];
-                let mut drawn = 0;
-                for (name, format) in formats {
-                    if let Some((path, used)) = option(&args, i, name) {
-                        bitmap = Some((format, path.to_string()));
-                        drawn = used;
-                        break;
-                    }
-                }
-                if drawn > 0 {
-                    i += drawn;
+                if let Some((path, used)) = option(&args, i, "--jp2") {
+                    picture = Some(path.to_string());
+                    i += used;
                     continue;
                 }
                 let counts = [("--blocks", &mut blocks), ("--bin", &mut bin)];
@@ -456,7 +532,20 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    let (output, input) = match plan(bitmap, blocks, bin, limit, stats) {
+    // Checked after the whole command line rather than as `--sum` is read, so
+    // that it holds whichever order the two flags came in.
+    if form == Line::Sum {
+        if chose_backend && backend != Backend::Weighted {
+            eprintln!(
+                "circular-polynomial: --sum adds up the weights of a color, and the \
+                 unweighted backends have none to add up; drop --rings or --sets"
+            );
+            return ExitCode::FAILURE;
+        }
+        backend = Backend::Weighted;
+    }
+
+    let (output, input) = match plan(picture, blocks, bin, form, limit) {
         Ok(plan) => plan,
         Err(message) => {
             eprintln!("circular-polynomial: {}", message);
@@ -624,7 +713,7 @@ fn run<S: ColorStore>(
             store.observe(&color);
         }
 
-        out.emit::<S>(&store, &color)?;
+        out.emit::<S>(&store, &color, record.tx_id)?;
 
         if record.outputs > 0 {
             if let Some((displaced, _)) = colors.insert(record.tx_id, (color, record.outputs)) {
@@ -668,23 +757,11 @@ fn run<S: ColorStore>(
             rate(records, elapsed)
         );
         eprintln!("{}", store.audit(&mut colors.values().map(|(c, _)| c)));
-        // Worth saying out loud in a bitmap run, where stdout stays empty and
-        // the header is the only other place the size is written down.
+        // Worth saying out loud in a picture run, where stdout stays empty and
+        // the codestream is the only other place the size is written down.
         if let Output::Picture(picture) = &out {
             let (columns, rows) = picture.dimensions();
-            let (runs, pbm_row, svg_row) = picture.runs();
             eprintln!("picture: {} columns x {} rows", columns, rows);
-            // Which format is smaller is a question about the records rather
-            // than about the formats — see `image` — so it is answered here,
-            // from the run count the run actually produced, rather than guessed
-            // at in advance.
-            eprintln!(
-                "picture: {} runs, {} a row: {} bytes a row as --pbm, {} as --svg",
-                runs,
-                runs / rows.max(1) as u64,
-                pbm_row,
-                svg_row
-            );
         }
     }
 
@@ -710,22 +787,31 @@ fn rate(records: usize, seconds: f64) -> String {
     }
 }
 
-/// How many decimal places a weight is printed to.
-const WEIGHT_PLACES: u32 = 6;
-
-/// A weight in `[0, 1]`, to [`WEIGHT_PLACES`] fixed decimals.
+/// How many decimal places a weight, or a sum of them, is printed to.
 ///
-/// Fixed rather than shortest-round-trip, and done in integers rather than with
-/// `{}`, for the same reason [`push_int`] exists: this runs once per term, tens
-/// of millions of times, and float formatting is not cheap.  Scaling by a power
-/// of ten and printing two integers costs one multiply and one rounding.
+/// Enough to separate two transactions that differ, few enough to hold a column.
+/// Six is also well inside what an `f64` can say about a number the size of a
+/// block id: a sum near a million still has nine significant digits to spare.
+const PLACES: u32 = 6;
+
+/// A non-negative value to [`PLACES`] fixed decimals.
+///
+/// Fixed rather than shortest-round-trip so a column lines up, and done in
+/// integers rather than with `{}`, for the same reason [`push_int`] exists: this
+/// runs once per term, tens of millions of times, and float formatting is not
+/// cheap.  Scaling by a power of ten and printing two integers costs one
+/// multiply and one rounding.
 ///
 /// What that gives up is resolution.  A weight below half of the smallest
 /// representable place prints as `0.000000` — the term is still there, and still
-/// counts toward the sum, it just cannot be read off the output.  Deep enough
-/// ancestry will do that to a weight.
-fn push_weight(out: &mut Vec<u8>, value: f64) {
-    let scale = 10u64.pow(WEIGHT_PLACES);
+/// counts toward [`Line::Sum`], it just cannot be read off the output.  Deep
+/// enough ancestry will do that to a weight.
+///
+/// The scaled value has to fit a `u64`, which at six places leaves room up to
+/// about 1.8e13 — some ten million times the length of the chain, so the cast is
+/// not a limit anything printed here will reach.
+fn push_fixed(out: &mut Vec<u8>, value: f64) {
+    let scale = 10u64.pow(PLACES);
     let units = (value * scale as f64).round() as u64;
 
     push_int(out, (units / scale) as usize);
@@ -734,7 +820,7 @@ fn push_weight(out: &mut Vec<u8>, value: f64) {
     // The fraction is zero-padded to a fixed width, which `push_int` will not do
     // -- it prints 5 as "5" where this needs "000005".
     let mut fraction = units % scale;
-    let mut digits = [b'0'; WEIGHT_PLACES as usize];
+    let mut digits = [b'0'; PLACES as usize];
     let mut i = digits.len();
     while fraction > 0 {
         i -= 1;
@@ -760,4 +846,250 @@ fn push_int(out: &mut Vec<u8>, value: Coeff) {
         }
     }
     out.extend_from_slice(&digits[i..]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A sink a test can read back.  [`Output`] owns its writer, so the buffer
+    /// is shared with it rather than handed over.
+    #[derive(Clone, Default)]
+    struct Shared(Rc<RefCell<Vec<u8>>>);
+
+    impl Write for Shared {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A record in the shape [`sexp`] reads: the header's block and tx id, then
+    /// `(prev-tx, amount)` an input, then how many outputs.
+    fn record(block: usize, tx: usize, spends: &[(usize, usize)], outputs: usize) -> String {
+        let inputs: String = spends
+            .iter()
+            .map(|(prev, amount)| format!("(7 {} {} 0)", amount, prev))
+            .collect();
+        let outs: String = (0..outputs).map(|_| "(7 1 0)".to_string()).collect();
+        format!("((1 {} {} 0 0 0 0) ({}) ({}))\n", block, tx, inputs, outs)
+    }
+
+    /// Color `records` with the backend `form` implies and answer the lines.
+    fn lines<S: ColorStore>(records: &str, form: Line, limit: usize) -> Vec<String> {
+        let sink = Shared::default();
+        let out = Output::text(Box::new(sink.clone()), form);
+        run::<S>(limit, false, out, Box::new(io::Cursor::new(records.to_string().into_bytes())))
+            .expect("the records are well formed");
+        let written = sink.0.borrow().clone();
+        String::from_utf8(written)
+            .expect("the output is digits and punctuation")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The sums of a run, which is `--sum`'s backend and no other.
+    fn sums(records: &str, limit: usize) -> Vec<String> {
+        lines::<weighted::WeightedSets>(records, Line::Sum, limit)
+    }
+
+    /// Every line names its transaction and then says what it has to say, with a
+    /// tab between the two -- and what follows the tab under [`Line::Terms`] is
+    /// still exactly the Scheme's line, trailing space and all.
+    #[test]
+    fn a_line_is_the_transaction_then_a_tab_then_the_color() {
+        let records = record(3, 0, &[], 1) + &record(4, 1, &[(0, 50)], 0);
+        let terms = lines::<RingStore>(&records, Line::Terms, usize::MAX);
+        assert_eq!(terms, ["0\t(3 . 1) ", "1\t(3 . 1) "]);
+        for line in &terms {
+            let (id, color) = line.split_once('\t').expect("a tab in every line");
+            assert!(id.bytes().all(|b| b.is_ascii_digit()), "{:?}", id);
+            assert!(color.ends_with(' '), "the Scheme's trailing space: {:?}", color);
+        }
+    }
+
+    /// The three backends are three ways to the same answer, and two of them
+    /// promise the same bytes.  A color with no terms is an empty half-line
+    /// rather than a missing one.
+    #[test]
+    fn the_unweighted_backends_agree_line_for_line() {
+        let records = record(0, 0, &[], 2)
+            + &record(5, 1, &[], 1)
+            + &record(6, 2, &[(0, 10), (1, 90)], 1)
+            + &record(7, 3, &[(0, 10), (2, 90)], 0);
+        assert_eq!(
+            lines::<RingStore>(&records, Line::Terms, usize::MAX),
+            lines::<colorset::SetStore>(&records, Line::Terms, usize::MAX)
+        );
+        assert_eq!(
+            lines::<RingStore>(&records, Line::Terms, usize::MAX).last().unwrap(),
+            "3\t(5 . 1) (0 . 1) "
+        );
+    }
+
+    /// Nothing was spent, so the block that minted it holds all of the weight
+    /// and the sum is that block, exactly.
+    #[test]
+    fn a_coinbase_sits_on_its_own_block() {
+        assert_eq!(sums(&record(7, 0, &[], 1), usize::MAX), ["0\t7.000000"]);
+    }
+
+    /// Half the value from block 0 and half from block 3 puts the sum halfway
+    /// between them -- the case [`Line::Sum`] exists to compute.
+    #[test]
+    fn two_equal_inputs_land_between_their_blocks() {
+        let records =
+            record(0, 0, &[], 1) + &record(3, 1, &[], 1) + &record(5, 2, &[(0, 50), (1, 50)], 1);
+        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t1.500000");
+    }
+
+    /// Weighting is by amount, not by input count: nine tenths of the value
+    /// coming from block 0 pulls the sum nine tenths of the way to it.
+    #[test]
+    fn the_sum_follows_the_value_not_the_inputs() {
+        let records =
+            record(0, 0, &[], 1) + &record(10, 1, &[], 1) + &record(11, 2, &[(0, 90), (1, 10)], 1);
+        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t1.000000");
+    }
+
+    /// A chain of single-input transactions carries its ancestor's sum along
+    /// unchanged: one input takes all of the weight, so there is nothing to mix
+    /// with -- and nothing for the drift to accumulate out of, either.
+    #[test]
+    fn a_single_input_inherits_the_sum() {
+        let mut records =
+            record(0, 0, &[], 1) + &record(4, 1, &[], 1) + &record(5, 2, &[(0, 50), (1, 50)], 1);
+        for tx in 3..8 {
+            records += &record(5 + tx, tx, &[(tx - 1, 100)], 1);
+        }
+        let lines = sums(&records, usize::MAX);
+        assert!(
+            lines[3..].iter().all(|l| l.ends_with("\t2.000000")),
+            "{:?}",
+            lines
+        );
+    }
+
+    /// Nothing forbids a record whose inputs are all worth nothing, and it must
+    /// not divide by the total: the inputs share equally instead.
+    #[test]
+    fn inputs_worth_nothing_share_equally() {
+        let records =
+            record(0, 0, &[], 1) + &record(6, 1, &[], 1) + &record(9, 2, &[(0, 0), (1, 0)], 1);
+        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t3.000000");
+    }
+
+    /// The claim [`Line::Sum`] rests on: a color's weights sum to 1, so the sum
+    /// of `b . weight(b)` is the weighted mean without anything dividing by
+    /// them.  Asserted over a fold deep enough to accumulate drift if there were
+    /// any -- and against the mean computed the other way, in full `f64`.
+    #[test]
+    fn a_color_sums_to_one_so_the_sum_is_the_mean() {
+        let mut records = String::new();
+        for block in 0..8 {
+            records += &record(block, block, &[], 4);
+        }
+        // Ten rounds of transactions, each spending four earlier ones at
+        // lopsided amounts, so the weights are anything but equal.
+        let mut tx = 8;
+        for round in 0..10 {
+            for k in 0..4 {
+                let spends: Vec<(usize, usize)> = (0..4)
+                    .map(|i| (tx - 8 + i, 1 + (i * 7 + k * 3 + round) % 23))
+                    .collect();
+                records += &record(20 + round, tx, &spends, 4);
+                tx += 1;
+            }
+        }
+
+        let mut store = weighted::WeightedSets::new();
+        let mut colors: HashMap<usize, (weighted::Color, usize)> = HashMap::new();
+        let mut reader = sexp::Reader::new(records.as_bytes());
+        let mut inputs: Vec<sexp::Input> = Vec::new();
+        let (mut worst_drift, mut worst_gap) = (0.0f64, 0.0f64);
+
+        // The colouring again, in the shape a test can look inside: what `run`
+        // does per record, minus the emit.
+        while let Some(record) = reader.next_record(&mut inputs).unwrap() {
+            let color = if inputs.is_empty() {
+                store.singleton(record.block_id)
+            } else {
+                let total: f64 = inputs.iter().map(|i| i.amount as f64).sum();
+                let mut accumulator: Option<weighted::Color> = None;
+                for i in (0..inputs.len()).rev() {
+                    let weight = inputs[i].amount as f64 / total;
+                    let (root, _) = colors.remove(&inputs[i].prev_tx_id).expect("an ancestor");
+                    accumulator = Some(match accumulator.take() {
+                        None => store.scale(&root, weight),
+                        Some(acc) => store.combine(&root, weight, &acc, 1.0),
+                    });
+                    colors.insert(inputs[i].prev_tx_id, (root, 1));
+                }
+                accumulator.expect("a fold over at least one input")
+            };
+
+            let (mut sum, mut mass) = (0.0f64, 0.0f64);
+            store.for_each_term(&color, |block, weight| {
+                sum += block as f64 * weight;
+                mass += weight;
+            });
+            worst_drift = worst_drift.max((mass - 1.0).abs());
+            // The sum against the mean it is claimed to be.
+            worst_gap = worst_gap.max((sum - sum / mass).abs());
+            colors.insert(record.tx_id, (color, 1));
+        }
+
+        // A few ULPs, over a fold forty deep.  The invariant holds, and the
+        // division `Line::Sum` does not do would have changed nothing.
+        assert!(worst_drift < 1e-12, "weights drifted from 1 by {}", worst_drift);
+        assert!(
+            worst_gap < 1e-9,
+            "the sum and the mean differ by {}, which the printed decimals would show",
+            worst_gap
+        );
+    }
+
+    /// The limit is a record count, and it stops the reader rather than the
+    /// printing -- so a short run is a prefix of a long one.
+    #[test]
+    fn the_limit_takes_a_prefix() {
+        let records = record(0, 0, &[], 1) + &record(1, 1, &[], 1) + &record(2, 2, &[], 1);
+        assert_eq!(sums(&records, 2), ["0\t0.000000", "1\t1.000000"]);
+        assert!(sums(&records, 0).is_empty());
+    }
+
+    /// Spending a transaction nobody has seen is the input's mistake, not a
+    /// color this program can invent.
+    #[test]
+    fn spending_an_unknown_transaction_is_an_error() {
+        let records = record(0, 9, &[(42, 5)], 1);
+        let out = Output::text(Box::new(Shared::default()), Line::Terms);
+        let error = run::<RingStore>(usize::MAX, false, out, Box::new(io::Cursor::new(records.into_bytes())))
+            .expect_err("transaction 42 was never read");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("unknown transaction 42"),
+            "{}",
+            error
+        );
+    }
+
+    /// The fixed format pads the fraction and does not pad the integer part.
+    #[test]
+    fn the_fixed_format_pads_only_the_fraction() {
+        let mut line = Vec::new();
+        push_fixed(&mut line, 0.5);
+        push_fixed(&mut line, 12.0);
+        push_fixed(&mut line, 900_000.000_001_5);
+        assert_eq!(
+            String::from_utf8(line).unwrap(),
+            "0.50000012.000000900000.000002"
+        );
+    }
 }

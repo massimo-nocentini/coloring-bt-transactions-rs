@@ -68,7 +68,7 @@
 //! What is *lost* is everything between the oldest and the newest block of a
 //! colour, which for a heavily mixed transaction is nearly all of it.  Clicking
 //! one says how many blocks it really names, and which the extremes are; the
-//! whole set is what `main --pbm` draws, and a window of circles cannot.
+//! whole set is what `main --jp2` draws, and a window of circles cannot.
 //!
 //! # What it costs to read a file
 //!

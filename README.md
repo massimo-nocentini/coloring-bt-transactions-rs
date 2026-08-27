@@ -40,7 +40,6 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 | | |
 |---|---|
 | `coloring-bt-transactions` | the colouring itself: one line per record, or a picture |
-| `tx-mean` | the same colouring collapsed to one number per record, as CSV |
 | `tree-jp2` | a webgraph laid out as a tree and written as a lossless JPEG 2000 |
 | `tree-view` | that drawing in a window, pannable and zoomable (needs GTK) |
 | `tx-view` | the transactions themselves in that window, coloured (needs GTK) |
@@ -49,14 +48,30 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 
 ```text
 coloring-bt-transactions [<record-limit>|all] [--stats]
-                         [--rings|--sets|--weighted]
-                         [--pbm <file>|--svg <file> [--blocks <n>] [--bin <n>]]
+                         [--rings|--sets|--weighted] [--sum]
+                         [--jp2 <file> [--blocks <n>] [--bin <n>]]
                          < records
 ```
 
-One line out per record: each term as `(exponent . coefficient)` followed by a
-space, which is byte for byte what the Scheme's `(print* (car p*) " ")` produces.
-The default limit is 1,000,001 records, where the Scheme stops; `all` removes it.
+One line out per record: the transaction's id, a tab, and then its colour.  By
+default the colour is spelled out in full — each term as `(exponent .
+coefficient)` followed by a space, which is byte for byte what the Scheme's
+`(print* (car p*) " ")` produces, so `cut -f2` off this output is what the
+reference can be diffed against.  The default limit is 1,000,001 records, where
+the Scheme stops; `all` removes it.
+
+`--sum` prints one number after the tab instead: `sum_b b * weight(b)`, the whole
+colour collapsed to an `f64`.  A colour is a set and a set does not fit in a
+column; this does, and because a weighted colour's terms sum to 1 the number is
+the **weighted mean block id** — the centre of mass of the blocks the coins came
+from.  A coinbase minted in block `b` prints exactly `b`; half the value from
+block 0 and half from block 3 prints `1.500000`.  So it reads on the same scale
+as a block id, and the distance between two of them is a distance along the
+chain.  It adds up weights, so it selects `--weighted` and contradicts the other
+two backends.  (This was a separate `tx-mean` binary, which divided the sum by
+the total weight; the measured drift from 1 is 5.6e-16, six orders of magnitude
+below the last decimal printed, so the division is gone and the output is
+unchanged.)
 
 Three representations of a colour, all driven by the one loop:
 
@@ -70,28 +85,15 @@ Three representations of a colour, all driven by the one loop:
   purpose, so it is a separate mode rather than a flag on the others.
 
 The text is enormous — a colour of a thousand blocks is fourteen thousand bytes
-of `(block . 1)`, and most of it punctuation.  `--pbm` and `--svg` draw the same
-answer instead: one row per record, one column per block id, ink where the block
-is in the colour.  `--bin <n>` puts `n` consecutive transactions on a row, which
-is how a million rows becomes a picture something will show you whole; `--blocks
-<n>` says how many columns to draw, and left out it is discovered by reading the
-records once first, which needs an input that can be rewound.  `--stats` reports
-throughput, memory, and what the other format would have cost.
-
-### `tx-mean`
-
-```text
-tx-mean [<record-limit>|all] < records
-```
-
-`<tx-id>,<mean>` a line, where the mean is `sum_b b * weight(b)` — the weighted
-mean block id, the centre of mass of the blocks the coins came from.  A coinbase
-minted in block `b` prints exactly `b`.  The number reads on the same scale as a
-block id, so the distance between two of them is a distance along the chain, and
-a colour fits in a CSV column.  Each line is written the moment that record's
-colour is finished, so it is usable in a pipe over a chain that has not stopped
-arriving.  The weighted backend is the only one that can answer this, so there
-is no flag to change it.
+of `(block . 1)`, and most of it punctuation.  `--jp2` draws the same answer
+instead: one row per record, one column per block id, ink where the block is in
+the colour, written as a lossless bilevel JPEG 2000.  `--bin <n>` puts `n`
+consecutive transactions on a row, which is how a million rows becomes a picture
+something will show you whole; `--blocks <n>` says how many columns to draw,
+overriding the count the records are read for.  A JPEG 2000 states both of its
+dimensions in front of its first sample and the height is the number of records,
+so a picture always reads the records once before colouring them, and so always
+wants an input that can be rewound.  `--stats` reports throughput and memory.
 
 ### `tree-jp2`
 
