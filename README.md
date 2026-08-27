@@ -6,8 +6,8 @@ Give every transaction a **colour**: the set of blocks its coins descend from.
 A coinbase is coloured by the block that minted it; every other transaction is
 coloured by the union of the colours of the transactions its inputs spend.  That
 one rule, run over a stream of transaction records, is what this crate computes —
-and then prints, draws as a bitmap, writes as a JPEG 2000, or shows in a window
-you can pan and zoom around.
+and then prints, draws as a bitmap, writes as a PNG, or shows in a window you
+can pan and zoom around.
 
 It began as a port of the driver at the bottom of `src/test/circular-polynomial.scm`,
 a Chicken Scheme program built on Knuth's circular-list exercise (*TAOCP* §2.2.4).
@@ -49,7 +49,7 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 ```text
 coloring-bt-transactions [<record-limit>|all] [--stats]
                          [--rings|--sets|--weighted] [--sum]
-                         [--jp2 <file> [--blocks <n>] [--bin <n>]]
+                         [--png <file> [--blocks <n>] [--bin <n>]]
                          < records
 ```
 
@@ -85,15 +85,17 @@ Three representations of a colour, all driven by the one loop:
   purpose, so it is a separate mode rather than a flag on the others.
 
 The text is enormous — a colour of a thousand blocks is fourteen thousand bytes
-of `(block . 1)`, and most of it punctuation.  `--jp2` draws the same answer
+of `(block . 1)`, and most of it punctuation.  `--png` draws the same answer
 instead: one row per record, one column per block id, ink where the block is in
-the colour, written as a lossless bilevel JPEG 2000.  `--bin <n>` puts `n`
-consecutive transactions on a row, which is how a million rows becomes a picture
-something will show you whole; `--blocks <n>` says how many columns to draw,
-overriding the count the records are read for.  A JPEG 2000 states both of its
-dimensions in front of its first sample and the height is the number of records,
-so a picture always reads the records once before colouring them, and so always
-wants an input that can be rewound.  `--stats` reports throughput and memory.
+the colour, written as a lossless bilevel PNG — one bit a pixel, which is both
+the smallest this compresses to and something every viewer opens.  `--bin <n>`
+puts `n` consecutive transactions on a row, which is how a million rows becomes a
+picture something will show you whole; `--blocks <n>` says how many columns to
+draw, overriding the count the records are read for.  A PNG states both of its
+dimensions in front of its first scanline and the height is the number of
+records, so a picture always reads the records once before colouring them, and so
+always wants an input that can be rewound.  `--stats` reports throughput and
+memory.
 
 ### `tree-jp2`
 

@@ -16,50 +16,61 @@
 //! pixel like any other, which is one thing the picture shows better than the
 //! text.
 //!
-//! ## A lossless, bilevel JPEG 2000
+//! ## A bilevel PNG
 //!
-//! One component, one bit a sample: [`INK`] where the block is in the color and
+//! One channel, one bit a sample: [`INK`] where the block is in the color and
 //! [`PAPER`] where it is not.  A greyscale sample of 0 is black and the largest
-//! it can be is white, so at a precision of one bit those two numbers *are*
-//! black on white, and "the ones in the output" and "the black pixels" stay the
-//! same statement.
+//! it can be is white, so at a depth of one bit those two numbers *are* black on
+//! white, and "the ones in the output" and "the black pixels" stay the same
+//! statement.
 //!
 //! Lossless, and not as a preference.  A pixel here is a whole fact — these
 //! coins did or did not come through that block — so there is no approximation
 //! of one that is still an answer, and at one bit a sample there is nothing to
-//! approximate with in any case.  The encoder is set up for the reversible path
-//! accordingly: the 5/3 integer wavelet, no quantisation, one quality layer at
-//! no rate cap.  `the_picture_round_trips_losslessly` asserts that against the
-//! decoder rather than trusting the setting.
+//! approximate with in any case.  With PNG that costs nothing to arrange:
+//! deflate is the only compression the format has, and it gives back what it was
+//! given.  `the_picture_round_trips_losslessly` asserts that against a decoder
+//! this file shares no code with, rather than taking the format's word for it.
 //!
-//! What that buys over the packed raster this used to write is the compression a
-//! bitmap has no way to express.  A row is a stretch of ink and then the white
-//! past the block its transaction was mined in, and the wavelet plus EBCOT
-//! charge almost nothing for a flat stretch of either tone, so on a synthetic
-//! run of 42,000 records over 2,000 blocks — 447 pixels in a thousand inked —
-//! the same picture came to
+//! ## Why this and not a wavelet codec
+//!
+//! This drew a lossless bilevel JPEG 2000 first, for the reduced resolutions
+//! such a file carries, and what it wrote was a picture almost nothing would
+//! open.  At one bit a sample the codestream says `Ssiz = 0`, and while OpenJPEG
+//! reads that back happily — which is why the round-trip test passed all along —
+//! macOS's ImageIO refuses the file outright, `sips` and Preview with it.
+//! OpenJPEG's own `opj_compress` will not even produce one: hand it a netpbm
+//! with a maxval of 1 and it promotes the samples to eight bits on the way in.
+//! One bit a sample is a corner of that standard the readers did not follow it
+//! into.
+//!
+//! Raising the precision to something they do take costs what the wavelet costs.
+//! The reversible 5/3 filter scales its coefficients with the range of the
+//! samples, so each extra bit of precision is roughly another bitplane for EBCOT
+//! to code — over the paper as much as over the ink, and the paper is most of
+//! it.  On a synthetic run of 42,000 records over 2,000 blocks — 422 pixels in a
+//! thousand inked — the same picture came to
 //!
 //! ```text
-//!     packed raster       10.5 MB
-//!     the same, gzip -9   56.7 kB
-//!     JPEG 2000          103.0 kB
+//!     packed raster              10.5 MB
+//!     JPEG 2000, 1 bit a sample   667 kB   and no common reader opens it
+//!     JPEG 2000, 2 bits a sample  2.0 MB
+//!     JPEG 2000, 8 bits a sample  8.2 MB
+//!     this, one bit a sample      309 kB
 //! ```
 //!
-//! which is the shape of the trade rather than a win outright.  A raster whose
-//! rows resemble one another is exactly what a general-purpose compressor is
-//! good at, and on records as regular as those it beats this comfortably.  What
-//! it does not leave behind is an image.  This is one, every tool opens it, and
-//! [`RESOLUTIONS`] reduced resolutions are in the file: a viewer can show a
-//! picture a hundred thousand rows tall at 1/32 scale without decoding the full
-//! size, which for these is the difference between looking at it and not.
+//! so the encoding that could not be read was not the small one either.  A row
+//! here is a stretch of ink and then the white past the block its transaction
+//! was mined in, and a row resembles the row above it; that is the shape LZ77
+//! and Huffman are good at, and they are good at it without spending a bitplane
+//! on the paper.
 //!
-//! What it costs is time.  Writing a raster is a memcpy; this runs a wavelet and
-//! an arithmetic coder over every sample, paper included, and the paper is most
-//! of them — on the run above, 84 million samples for about 0.07s over what the
-//! same colouring cost written as text.  The number to watch is that one: the
-//! picture is `width * rows` samples whatever is drawn in it, so it is `--bin`,
-//! which is the only thing that changes how many samples there are, that decides
-//! what a long run pays here.
+//! What this gives up is the one thing the wavelet was here for.  A JPEG 2000
+//! holds reduced resolutions in the file, so a viewer can show a picture a
+//! hundred thousand rows tall at 1/32 scale without decoding the full size; a
+//! PNG has no such thing, and whatever opens one of these decodes all of it.
+//! That is a real loss, taken deliberately: a picture a viewer can open at one
+//! scale beats a picture it cannot open at six.
 //!
 //! ## Folding transactions together
 //!
@@ -75,134 +86,132 @@
 //!
 //! ## Why both dimensions are settled before the first row
 //!
-//! A JPEG 2000 states its size in front of its first sample and never revisits
-//! it, so neither number can be discovered along the way and neither can be
-//! stamped in afterwards the way a netpbm header's height could be.  The width
-//! is the number of blocks and the height is the number of records divided by
-//! the bin, and the driver reads the records once to count both before it colors
-//! any of them — see `main`'s `survey`.  That is why a picture wants an input it
-//! can rewind and a pipe will not do, and why `--blocks <n>`, which still
-//! overrides the width, no longer excuses that pass: the height needs it too.
+//! A PNG states its size in `IHDR`, in the twenty-five bytes that come before
+//! the first scanline, so neither number can be discovered along the way.  The
+//! width is the number of blocks and the height is the number of records divided
+//! by the bin, and the driver reads the records once to count both before it
+//! colors any of them — see `main`'s `survey`.  That is why a picture wants an
+//! input it can rewind and a pipe will not do, and why `--blocks <n>`, which
+//! still overrides the width, does not excuse that pass: the height needs it
+//! too.
 //!
-//! Having promised a height, the writer keeps it.  [`Writer::finish`] pads the
-//! picture out with blank rows if the records ran out early, and
-//! [`Writer::end_transaction`] refuses a row past the last rather than handing
-//! the encoder a tile it did not ask for and writing a file no reader will open.
+//! `IHDR` does sit at a fixed offset, so a writer willing to seek could stamp
+//! the height in at the end and let the records arrive down a pipe.  This one
+//! does not, and what that would cost is the reason: a height counted in front
+//! of the picture is a height the rows are then *checked against*.
+//! [`Writer::end_transaction`] refuses a row past the last, and
+//! [`Writer::finish`] pads the picture out with blank rows if the records ran
+//! out early — so a run whose two passes disagree is an error rather than a
+//! picture quietly of the wrong shape.
 //!
-//! ## Bands and tiles
+//! ## One scanline at a time
 //!
-//! Rows arrive one at a time and the encoder takes whole tiles, so the rows are
-//! held a band of [`TILE`] of them at a time, packed eight pixels to the byte,
-//! and the band's tiles go out in the order the encoder counts them — across,
-//! then down — as soon as the band is full.  The working set is that band and
-//! the one tile being unpacked into samples, `TILE * (width / 8 + TILE)` bytes,
-//! however tall the picture: a drawing far past the size of memory is still
-//! written a megabyte at a time.
+//! A PNG's pixels are a single deflate stream over the scanlines, each preceded
+//! by the byte naming the filter it was written with, and deflate takes them as
+//! they come.  So a row is packed into the writer's `row` as it is drawn, handed
+//! to the compressor when it closes, and the compressed bytes go out as an
+//! `IDAT` every [`IDAT`] of them.  The working set is one scanline and one
+//! chunk's worth of output — `width / 8 + 1 MiB` bytes, however tall the picture
+//! — so a drawing far past the size of memory is still written a megabyte at a
+//! time.
 //!
-//! The codestream is not written straight through either — the encoder goes back
-//! to stamp lengths into markers it has already emitted — so the output is a
-//! file it can seek in rather than a sink of the caller's choosing.
+//! That row buffer holds the scanline itself rather than something to be turned
+//! into one.  Paper is a 1 and ink a 0, so a row starts as all 1s and
+//! [`Writer::set`] *clears* a bit; the bytes the compressor sees are the bytes
+//! `set` wrote, and nothing is unpacked or copied on the way.
+//!
+//! Every row is filtered with `None`.  PNG's filters predict a byte from its
+//! neighbours, and these rows do resemble the row above — but at one bit a
+//! sample a row is packed eight pixels to the byte, and subtracting one packed
+//! byte from another turns two nearly identical rows into a difference deflate
+//! can no longer match against anything.  On the run above, filtering every row
+//! with `Up` instead came to 402 kB against `None`'s 309 kB.
+//!
+//! Nothing here is written twice — unlike the codestream this replaces, which
+//! went back to stamp lengths into markers it had already emitted — so the
+//! output could be any sink the caller has.  It is a path because that is where
+//! the file gets created and nothing has yet wanted otherwise.
 
-use std::io;
+use std::fs::File;
+use std::io::{self, Write};
 
-use openjp2::image::{opj_image, opj_image_comptparm};
-use openjp2::openjpeg::{opj_cparameters_t, OPJ_CLRSPC_GRAY, OPJ_CODEC_JP2, OPJ_LRCP};
-use openjp2::{Codec, Stream};
-
-/// The side of the square the picture is written in.
-///
-/// This is the working set: a tile is unpacked whole before it is handed over,
-/// so the number trades memory against how much context the wavelet has to
-/// compress with.  1024 is a mebibyte of samples a tile, and the same value
-/// `tree-jp2` writes its pictures in.
-const TILE: usize = 1024;
-
-/// Wavelet decomposition levels.  Six is the encoder's own default, and it is
-/// also what lets a viewer open one of these at 1/32 scale without decoding the
-/// full-size picture — which, for a picture whose rows outnumber a screen's by
-/// three orders of magnitude, is how it gets looked at at all.
-const RESOLUTIONS: i32 = 6;
+use flate2::write::ZlibEncoder;
+use flate2::{Compression, Crc};
 
 /// A block that is in the color: at one bit a sample, black.
 pub const INK: u8 = 0;
 
-/// One that is not: white.
+/// One that is not: 1, the largest a one-bit sample can be, and so white.
 pub const PAPER: u8 = 1;
 
-/// The eight samples a packed byte stands for, leftmost pixel in the most
-/// significant bit.
+/// How much compressed output to gather before it goes out as an `IDAT` chunk.
 ///
-/// A table rather than eight shifts and tests, because this is the one thing
-/// unpacking a tile does to every pixel of it, and a tile is a million pixels of
-/// which the great majority come out of the two entries for `0x00` and `0xff`.
-const SAMPLES: [[u8; 8]; 256] = {
-    let mut table = [[PAPER; 8]; 256];
-    let mut byte = 0usize;
-    while byte < 256 {
-        let mut bit = 0usize;
-        while bit < 8 {
-            if byte & (0x80 >> bit) != 0 {
-                table[byte][bit] = INK;
-            }
-            bit += 1;
-        }
-        byte += 1;
-    }
-    table
-};
+/// A chunk states its length in front of its data, so this is the one thing held
+/// back at all: the compressor's output has to be in hand before the chunk it
+/// goes in can be started.  It is a working set and nothing else — a PNG is the
+/// same picture however its `IDAT`s are divided up — so the number is a megabyte
+/// for the reason a buffer usually is.
+const IDAT: usize = 1 << 20;
+
+/// The eight bytes every PNG begins with.
+///
+/// The `\x89` and the `\r\n`, `\x1a`, `\n` are the format's own check that
+/// nothing along the way stripped the high bit or rewrote the line endings.
+const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// The filter byte in front of every scanline.  See the module docs for why it
+/// is always this one.
+const NO_FILTER: u8 = 0;
+
+/// A byte of blank paper: eight [`PAPER`] pixels.  What a row starts as, what a
+/// closed row is blanked back to, and what the slack bits past the last column
+/// stay as for the whole picture.
+const BLANK: u8 = if PAPER == 0 { 0x00 } else { 0xff };
+
+/// [`Writer::set`] inks a pixel by *clearing* its bit, and a row is blanked by
+/// setting them all -- which is [`INK`] and [`PAPER`] only for as long as they
+/// are these two numbers.
+const _: () = assert!(INK == 0 && PAPER == 1);
 
 /// A picture being drawn a transaction at a time.
 ///
 /// A transaction is drawn by [`Writer::set`], once per block in its color, and
 /// closed by [`Writer::end_transaction`]; every `bin` of those makes a row, and
-/// every [`TILE`] rows make a band that goes out to the encoder.
+/// a row that closes goes to the compressor.
 pub struct Writer {
-    /// Boxed, and set up only once it is in the box.  The encoder keeps
-    /// pointers into itself — the tile coder's `cp` is the address of the
-    /// codec's own coding parameters — so an encoder that has been started and
-    /// is then moved is an encoder reading whatever now lives where it used to
-    /// be.  A box is an address that does not move when this struct does, and
-    /// putting it there *before* [`Codec::setup_encoder`] is what makes the
-    /// pointers it takes stay true.  Left on the stack it fails the way that
-    /// costs the most to find: the debug build works.
-    codec: Box<Codec>,
-    stream: Stream,
-    /// The encoder was set up against this and reads it as it goes, so it
-    /// outlives the setup call rather than being a local of it.
-    image: Box<opj_image>,
+    /// The file, from the signature to `IEND`, written straight through.
+    out: File,
+    /// The deflate stream the scanlines go into.  Its sink gathers compressed
+    /// bytes until there are [`IDAT`] of them, at which point [`Writer::drain`]
+    /// empties it into a chunk.
+    zip: ZlibEncoder<Vec<u8>>,
     /// Columns, i.e. how many block ids the picture has room for.
     width: usize,
-    /// Rows, as promised to the encoder before the first sample.
+    /// Rows, as promised in `IHDR` before the first scanline.
     height: usize,
     /// Transactions to a row.  One is a row each, which is the plain picture.
     bin: usize,
-    /// Bytes a packed row: the distance from one row of `band` to the next.
-    stride: usize,
-    /// Tiles across the picture, which is also the stride of a tile index.
-    across: usize,
-    /// Up to [`TILE`] rows, packed eight pixels to the byte.  Zero outside
-    /// `..dirty` of each row at all times, which is the invariant that lets
-    /// [`Writer::flush_band`] clear only a prefix of each.
-    band: Vec<u8>,
+    /// The row being drawn, as the compressor will take it: `row[0]` is
+    /// [`NO_FILTER`] and never changes, and `row[1..]` is the packed samples,
+    /// leftmost pixel in the most significant bit.  All 1s outside `..dirty` of
+    /// the samples at all times, which is the invariant that lets a closed row
+    /// be blanked by clearing a prefix.
+    row: Vec<u8>,
     dirty: usize,
-    /// Rows finished in the band so far, always below [`TILE`].
-    filled: usize,
     /// Transactions drawn into the row being built, always below `bin`.
     pending: usize,
-    /// Rows finished in the picture so far, at most `height`.
+    /// Rows finished so far, at most `height`.
     rows: usize,
-    /// Bands sent, which is the tile row the next one will be.
-    bands: usize,
     /// The first block id seen that the picture has no column for, if any.
     escaped: Option<usize>,
 }
 
 impl Writer {
     /// Open `path` for a picture `width` columns by `height` rows, with `bin`
-    /// transactions to the row, and start the codestream.
+    /// transactions to the row, and write everything up to the first scanline.
     ///
-    /// Both dimensions are final here: see the module docs for why a JPEG 2000
-    /// cannot be told either of them later.
+    /// Both dimensions are final here: see the module docs for why a PNG cannot
+    /// be told either of them later.
     pub fn new(path: &str, width: usize, height: usize, bin: usize) -> io::Result<Self> {
         assert!(bin > 0, "a row has to stand for at least one transaction");
         if width == 0 || height == 0 {
@@ -210,75 +219,42 @@ impl Writer {
                 "an image needs a column and a row, and this one has none",
             ));
         }
-
-        let comp = opj_image_comptparm {
-            dx: 1,
-            dy: 1,
-            w: width as u32,
-            h: height as u32,
-            x0: 0,
-            y0: 0,
-            prec: 1,
-            bpp: 1,
-            sgnd: 0,
-        };
-        // `tile_create` rather than `create`: it describes the picture without
-        // allocating a sample for every pixel of it, which is the whole point of
-        // handing the encoder one tile at a time.  The extent is not in the
-        // component parameters, so it is set here.
-        let mut image = opj_image::tile_create(&[comp], OPJ_CLRSPC_GRAY)
-            .ok_or_else(|| io::Error::other("could not describe the image"))?;
-        image.x1 = width as u32;
-        image.y1 = height as u32;
-
-        let mut params = opj_cparameters_t::default();
-        params.tile_size_on = 1;
-        params.cp_tdx = TILE as i32;
-        params.cp_tdy = TILE as i32;
-        params.numresolution = RESOLUTIONS;
-        params.prog_order = OPJ_LRCP;
-        // Lossless: the reversible 5/3 wavelet, and one quality layer whose rate
-        // is 0 — the encoder's spelling of "do not throw anything away".
-        params.irreversible = 0;
-        params.tcp_numlayers = 1;
-        params.tcp_rates[0] = 0.0;
-        params.cp_disto_alloc = 1;
-
-        let mut codec = Box::new(
-            Codec::new_encoder(OPJ_CODEC_JP2)
-                .ok_or_else(|| io::Error::other("could not open a JPEG 2000 encoder"))?,
-        );
-        // The encoder seeks back over what it has written, so this is a file
-        // rather than the caller's choice of sink.
-        let mut stream = Stream::new_file(path, 1 << 20, false)?;
-
-        if codec.setup_encoder(&mut params, &mut image) == 0 {
-            return Err(io::Error::other("the encoder would not take these settings"));
+        // `IHDR` has four bytes for each of them, and a picture that does not
+        // fit in those is not one this format can state the size of at all.
+        if width > u32::MAX as usize || height > u32::MAX as usize {
+            return Err(io::Error::other(format!(
+                "a {} x {} picture is larger than a PNG can say it is",
+                width, height
+            )));
         }
-        if codec.start_compress(&mut image, &mut stream) == 0 {
-            return Err(io::Error::other("could not start the codestream"));
-        }
+
+        let mut out = File::create(path)?;
+        out.write_all(&SIGNATURE)?;
+
+        let mut ihdr = [0u8; 13];
+        ihdr[..4].copy_from_slice(&(width as u32).to_be_bytes());
+        ihdr[4..8].copy_from_slice(&(height as u32).to_be_bytes());
+        ihdr[8] = 1; // one bit a sample
+        ihdr[9] = 0; // greyscale: no palette, no colour, no alpha
+        ihdr[10] = 0; // deflate, which is the only compression PNG has
+        ihdr[11] = 0; // the filtering PNG always uses; `NO_FILTER` is per row
+        ihdr[12] = 0; // not interlaced
+        chunk(&mut out, b"IHDR", &ihdr)?;
 
         let stride = width.div_ceil(8);
+        let mut row = vec![BLANK; 1 + stride];
+        row[0] = NO_FILTER;
+
         Ok(Writer {
-            codec,
-            stream,
-            image,
+            out,
+            zip: ZlibEncoder::new(Vec::with_capacity(IDAT), Compression::best()),
             width,
             height,
             bin,
-            stride,
-            across: width.div_ceil(TILE),
-            // A band, and one row of slack past it.  Rows are drawn into
-            // before they are closed, so a record arriving past the last row of
-            // a picture shorter than a band needs somewhere to land in the
-            // moment before `end_transaction` refuses it.
-            band: vec![0u8; stride * (height + 1).min(TILE)],
+            row,
             dirty: 0,
-            filled: 0,
             pending: 0,
             rows: 0,
-            bands: 0,
             escaped: None,
         })
     }
@@ -298,8 +274,9 @@ impl Writer {
         }
         let byte = block / 8;
         // Leftmost pixel in the most significant bit, so that block ids read
-        // left to right across the row.
-        self.band[self.filled * self.stride + byte] |= 0x80 >> (block % 8);
+        // left to right across the row -- and cleared rather than set, because
+        // ink is the 0 of the two.
+        self.row[1 + byte] &= !(0x80 >> (block % 8));
         if byte >= self.dirty {
             self.dirty = byte + 1;
         }
@@ -321,16 +298,15 @@ impl Writer {
         }
         self.pending += 1;
         if self.pending == self.bin {
-            // Nothing is cleared until the band goes out, so a bin's
-            // transactions have been drawing into the same row all along: the
-            // row is their union without any of them being asked to compute one.
+            // Nothing is blanked until the row closes, so a bin's transactions
+            // have been drawing into the same one all along: the row is their
+            // union without any of them being asked to compute one.
             self.end_row()?;
         }
         Ok(())
     }
 
-    /// Close the row being built and start the next one, sending the band if
-    /// that filled it.
+    /// Hand the row being built to the compressor, blank it, and start the next.
     fn end_row(&mut self) -> io::Result<()> {
         if self.rows == self.height {
             return Err(io::Error::new(
@@ -342,82 +318,34 @@ impl Writer {
                 ),
             ));
         }
-        self.pending = 0;
-        self.filled += 1;
-        self.rows += 1;
-        if self.filled == TILE {
-            self.flush_band()?;
-        }
-        Ok(())
-    }
-
-    /// Hand the finished band to the encoder, a tile at a time, and clear it.
-    ///
-    /// The band is as tall as the tile row it stands for — full bands are
-    /// [`TILE`] rows and the last one is whatever is left of the height, which
-    /// [`Writer::finish`] arranges by padding — so its rows are exactly the
-    /// samples the encoder is expecting for these tile indices.
-    fn flush_band(&mut self) -> io::Result<()> {
-        let rows = self.filled;
-        debug_assert_eq!(
-            rows,
-            TILE.min(self.height - self.bands * TILE),
-            "a band is the height of the tile row it is"
-        );
-        for tx in 0..self.across {
-            let x0 = tx * TILE;
-            let x1 = ((tx + 1) * TILE).min(self.width);
-            let tile = self.tile_bytes(x0, x1, rows);
-            // Tiles go out across and then down, which is the order the encoder
-            // counts them in and the only one it accepts.
-            let index = (self.bands * self.across + tx) as u32;
-            if self.codec.write_tile(index, &tile, &mut self.stream) == 0 {
-                return Err(io::Error::other(format!("could not write tile {}", index)));
-            }
-        }
-        // Bits are only ever set below `dirty`, so that prefix is the only part
-        // of a row that can be non-zero and the rest is still the zeroes it
-        // started as.  Colors are sets of *ancestor* blocks and the chain only
-        // grows, so early bands reach nowhere near the right-hand edge and this
-        // is the difference between clearing a band and clearing the picture.
-        for row in 0..rows {
-            let at = row * self.stride;
-            self.band[at..at + self.dirty].fill(0);
-        }
+        self.zip.write_all(&self.row)?;
+        // Bits are only ever cleared below `dirty`, so that prefix is the only
+        // part of the row that can have gone dark and the rest is still the
+        // paper it started as.  Colors are sets of *ancestor* blocks and the
+        // chain only grows, so early rows reach nowhere near the right-hand edge
+        // and this is the difference between blanking a prefix and blanking the
+        // width.
+        self.row[1..1 + self.dirty].fill(BLANK);
         self.dirty = 0;
-        self.filled = 0;
-        self.bands += 1;
-        Ok(())
+        self.pending = 0;
+        self.rows += 1;
+        self.drain()
     }
 
-    /// One tile of the band as the samples the encoder wants: row-major, a byte
-    /// a sample, `[x0, x1)` of each of the band's first `rows` rows.
+    /// Send what the compressor has produced, if there is a chunk's worth of it.
     ///
-    /// `x0` is a multiple of [`TILE`] and so of 8, which is what lets a whole
-    /// packed byte become eight samples in one copy; only the far edge of the
-    /// picture, where `x1` need not be a multiple of anything, is trimmed.
-    fn tile_bytes(&self, x0: usize, x1: usize, rows: usize) -> Vec<u8> {
-        let w = x1 - x0;
-        let mut tile = vec![PAPER; w * rows];
-        for row in 0..rows {
-            // `dirty` bounds every row of the band, so a tile past it is paper
-            // and is never looked at.
-            let packed = &self.band[row * self.stride..row * self.stride + self.dirty];
-            let out = &mut tile[row * w..(row + 1) * w];
-            for at in (0..w).step_by(8) {
-                let byte = x0 / 8 + at / 8;
-                if byte >= packed.len() {
-                    break;
-                }
-                let bits = packed[byte];
-                if bits == 0 {
-                    continue;
-                }
-                let n = (w - at).min(8);
-                out[at..at + n].copy_from_slice(&SAMPLES[bits as usize][..n]);
-            }
+    /// A chunk needs its length in front of it, which is what holds any of the
+    /// output back at all; the tail below [`IDAT`] is left for
+    /// [`Writer::finish`], which has the end of the deflate stream to add to it
+    /// anyway.
+    fn drain(&mut self) -> io::Result<()> {
+        if self.zip.get_ref().len() < IDAT {
+            return Ok(());
         }
-        tile
+        chunk(&mut self.out, b"IDAT", self.zip.get_ref())?;
+        // Emptied rather than replaced: the capacity is the buffer.
+        self.zip.get_mut().clear();
+        Ok(())
     }
 
     /// `(columns, rows)` as the picture was opened for, which is what it will be
@@ -427,71 +355,100 @@ impl Writer {
     }
 
     /// Close the picture: finish the row in hand, pad out to the promised
-    /// height, send what is left of the band, and close the codestream.
+    /// height, end the deflate stream and write `IEND`.
     pub fn finish(mut self) -> io::Result<()> {
         // A bin that never filled up is still a row: the run does not owe the
         // picture a whole bin's worth of transactions at the end of the records.
         if self.pending > 0 {
             self.end_row()?;
         }
-        // The height went into the file before the first sample, so the encoder
-        // is owed exactly that many rows.  Short of them the file would be a
-        // codestream missing its last tiles, which is not an image; blank rows
-        // are at least an honest picture of records that were not there.
+        // The height went into `IHDR` before the first scanline, so the picture
+        // owes exactly that many rows.  Short of them the file is a truncated
+        // image every reader complains about; blank rows are at least an honest
+        // picture of records that were not there.
         while self.rows < self.height {
             self.end_row()?;
         }
-        if self.filled > 0 {
-            self.flush_band()?;
+        // Ending the stream puts deflate's last block and its checksum into the
+        // same buffer, on top of the tail the last `drain` left in it, and hands
+        // the buffer back.  A zlib stream always ends with something, so this is
+        // never the empty chunk the check below would otherwise be about; the
+        // check is there because a chunk of nothing is not worth writing.
+        let held = self.zip.finish()?;
+        if !held.is_empty() {
+            chunk(&mut self.out, b"IDAT", &held)?;
         }
-        if self.codec.end_compress(&mut self.stream) == 0 {
-            return Err(io::Error::other("could not close the codestream"));
-        }
-        // The encoder points at the image for as long as it is writing, so it
-        // goes first.  Nothing runs between here and the end of the scope that
-        // would notice, but the order the two are in is not an accident and
-        // saying so is cheaper than rediscovering it.
-        drop(self.codec);
-        drop(self.image);
-        Ok(())
+        chunk(&mut self.out, b"IEND", &[])?;
+        self.out.flush()
     }
+}
+
+/// One PNG chunk: its length, its four-byte name, its data, and a CRC-32 over
+/// the name and the data — the length deliberately not among them, since it is
+/// what a reader has to trust before it can check anything.
+fn chunk(out: &mut File, name: &[u8; 4], data: &[u8]) -> io::Result<()> {
+    debug_assert!(
+        data.len() <= u32::MAX as usize,
+        "a chunk states its length in four bytes"
+    );
+    let mut head = [0u8; 8];
+    head[..4].copy_from_slice(&(data.len() as u32).to_be_bytes());
+    head[4..].copy_from_slice(name);
+    out.write_all(&head)?;
+    out.write_all(data)?;
+
+    let mut crc = Crc::new();
+    crc.update(name);
+    crc.update(data);
+    out.write_all(&crc.sum().to_be_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openjp2::openjpeg::opj_dparameters_t;
 
     /// A path under the test runner's temporary directory, distinct per test so
     /// that the tests can run in the same directory at the same time.
     fn scratch(name: &str) -> String {
         std::env::temp_dir()
-            .join(format!("colors-{}-{name}.jp2", std::process::id()))
+            .join(format!("colors-{}-{name}.png", std::process::id()))
             .to_string_lossy()
             .into_owned()
     }
 
-    /// The picture at `path`, read back with the decoder: its size and its
-    /// samples, row-major.
+    /// The picture at `path`, read back with a decoder this file shares no code
+    /// with: its size and its samples, row-major, a byte a pixel.
+    ///
+    /// The bits are unpacked here rather than by asking the decoder to expand
+    /// them, so that a sample of [`INK`] means what this file says it means and
+    /// the decoder is left to do the inflating and the unfiltering — the two
+    /// steps a writer cannot check itself.
     fn decode(path: &str) -> (usize, usize, Vec<u8>) {
-        let mut params = opj_dparameters_t::default();
-        let mut codec = Codec::new_decoder(OPJ_CODEC_JP2).unwrap();
-        assert!(codec.setup_decoder(&mut params) != 0);
-
-        let mut stream = Stream::new_file(path, 1 << 20, true).unwrap();
-        let mut image = codec.read_header(&mut stream).expect("a JP2 header");
-        assert!(codec.decode(&mut stream, &mut image) != 0);
-        assert!(codec.end_decompress(&mut stream) != 0);
-
-        let (w, h) = (image.x1 as usize, image.y1 as usize);
-        let comps = image.comps().unwrap();
-        assert_eq!(comps.len(), 1, "one bilevel component");
-        assert_eq!(comps[0].prec, 1, "one bit a sample");
-        let samples = comps[0].data().unwrap().iter().map(|&s| s as u8).collect();
+        let file = io::BufReader::new(File::open(path).unwrap());
+        let mut reader = png::Decoder::new(file).read_info().expect("a PNG header");
+        {
+            let info = reader.info();
+            assert_eq!(info.bit_depth, png::BitDepth::One, "one bit a sample");
+            assert_eq!(
+                info.color_type,
+                png::ColorType::Grayscale,
+                "one greyscale channel"
+            );
+        }
+        let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
+        let frame = reader.next_frame(&mut buf).unwrap();
+        let (w, h) = (frame.width as usize, frame.height as usize);
+        let mut samples = Vec::with_capacity(w * h);
+        for y in 0..h {
+            let row = &buf[y * frame.line_size..(y + 1) * frame.line_size];
+            for x in 0..w {
+                samples.push((row[x / 8] >> (7 - x % 8)) & 1);
+            }
+        }
         (w, h, samples)
     }
 
-    /// Draw `transactions` with one to a row and answer the rows the file
+    /// Draw `colors` with one transaction to a row and answer the rows the file
     /// decodes back to, as `#` for ink and `.` for paper.
     fn draw(name: &str, width: usize, rows: usize, colors: &[&[usize]]) -> Vec<String> {
         binned(name, width, rows, 1, colors)
@@ -561,7 +518,7 @@ mod tests {
         );
     }
 
-    /// Rows are cleared by a prefix, so the case that would catch a wrong prefix
+    /// Rows are blanked by a prefix, so the case that would catch a wrong prefix
     /// is a wide row followed by a narrow one.
     #[test]
     fn a_row_does_not_inherit_the_one_before_it() {
@@ -645,8 +602,8 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    /// The height is a promise made before the first sample, so a record past
-    /// the last row is refused rather than quietly dropped or half-written.
+    /// The height is a promise made in `IHDR`, so a record past the last row is
+    /// refused rather than quietly dropped or half-written.
     #[test]
     fn a_record_past_the_last_row_is_refused() {
         let path = scratch("too-tall");
@@ -656,8 +613,8 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    /// And short of the promise the picture is padded rather than left as a
-    /// codestream missing its last tiles.
+    /// And short of the promise the picture is padded rather than left a
+    /// truncated image.
     #[test]
     fn records_that_run_out_early_leave_blank_rows() {
         assert_eq!(
@@ -666,14 +623,30 @@ mod tests {
         );
     }
 
-    /// The claim the whole file rests on: what the writer inked is what the
-    /// decoder gives back, pixel for pixel.  Nothing in the settings says
-    /// lossless out loud, so it is asserted rather than assumed.
+    /// A picture too wide for a `u32` cannot be described, and is refused rather
+    /// than silently truncated into one that can be.
+    ///
+    /// Only where a `usize` is wider than the four bytes `IHDR` gives it, which
+    /// is the only place the check can fire.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_picture_past_what_the_header_can_say_is_refused() {
+        let path = scratch("enormous");
+        // `Writer` is not `Debug`, so the `Ok` is named rather than unwrapped.
+        let Err(e) = Writer::new(&path, 1usize << 33, 1, 1) else {
+            panic!("a picture 2^33 columns wide was opened");
+        };
+        assert!(e.to_string().contains("larger than a PNG can say"), "{}", e);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The claim the whole file rests on: what the writer inked is what a
+    /// decoder gives back, pixel for pixel.
     #[test]
     fn the_picture_round_trips_losslessly() {
         // Deliberately awkward: a width that is not a multiple of eight, colors
         // that reach both edges, empty ones, and a lone pixel in the middle of
-        // the paper — the first thing a quantiser would spend.
+        // the paper.
         let colors: &[&[usize]] = &[
             &[0, 1, 2, 9],
             &[],
@@ -697,17 +670,20 @@ mod tests {
         assert_eq!(picture, wanted, "every pixel survived");
     }
 
-    /// A picture wider and taller than one tile, so that the tile loop runs more
-    /// than once on each axis and the seams have to line up.
+    /// A picture whose scanlines run past one `IDAT`, so that the chunk loop
+    /// runs more than once and the seam between two chunks has to be nothing at
+    /// all to a reader.
     #[test]
-    fn a_picture_of_many_tiles_round_trips() {
-        let width = TILE + 300;
-        // One inked pixel a row, walking across and down, so that a tile drawn
-        // from the wrong band or the wrong columns cannot pass.
-        let colors: Vec<Vec<usize>> = (0..TILE + 200).map(|r| vec![r % width]).collect();
+    fn a_picture_of_many_chunks_round_trips() {
+        let width = 4096;
+        let rows = 16 * 1024;
+        // One inked pixel a row, walking across and down, so that a row drawn
+        // from the wrong place cannot pass -- and, being a diagonal rather than
+        // a repeat, 8 MB of scanlines that do not all deflate to nothing.
+        let colors: Vec<Vec<usize>> = (0..rows).map(|r| vec![r % width]).collect();
         let borrowed: Vec<&[usize]> = colors.iter().map(|c| c.as_slice()).collect();
 
-        let picture = binned("tiles", width, colors.len(), 1, &borrowed);
+        let picture = binned("chunks", width, rows, 1, &borrowed);
         for (r, row) in picture.iter().enumerate() {
             assert_eq!(row.len(), width);
             assert_eq!(

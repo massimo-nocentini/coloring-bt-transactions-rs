@@ -30,11 +30,11 @@
 //! # A picture instead
 //!
 //! That output is enormous — a color of a thousand blocks is fourteen thousand
-//! bytes of `(block . 1)` — and most of every line is punctuation.  `--jp2
+//! bytes of `(block . 1)` — and most of every line is punctuation.  `--png
 //! <file>` draws the same answer instead: one row per record in the order the
 //! records arrive, one column per block id counting up from 0, black where the
-//! block is in the color, written as a lossless bilevel JPEG 2000 — see
-//! [`image`] for why that format and what it costs.
+//! block is in the color, written as a lossless bilevel PNG — see [`image`] for
+//! why that format and what it costs.
 //!
 //! Two more knobs, both about size:
 //!
@@ -42,8 +42,8 @@
 //!   of them reaches that block.  A million rows is a picture nothing will show
 //!   you whole; binning is how it becomes one that will.
 //! - `--blocks <n>` says how many columns to draw, overriding the count
-//!   [`survey`] arrives at.  It is not a way of avoiding that pass: a JPEG 2000
-//!   states its height in front of its first sample too, and the height is the
+//!   [`survey`] arrives at.  It is not a way of avoiding that pass: a PNG
+//!   states its height in front of its first scanline too, and the height is the
 //!   number of records, so a picture always reads the records once before it
 //!   colors any of them and always wants an input that can be rewound.
 //!
@@ -98,8 +98,10 @@
 //!
 //! - [`tree-jp2`](../tree_jp2/index.html) — a webgraph laid out as a tree and
 //!   written as a lossless JPEG 2000, one pixel per node.  Nothing to do with
-//!   transactions; what it has in common with this file is the picture format,
-//!   and with the viewers the layout — never the colouring.
+//!   transactions; what it has in common with the viewers is the layout, never
+//!   the colouring.  It draws three tones rather than two, which at eight bits a
+//!   sample is a precision every reader takes — see [`image`] for why the
+//!   picture here does not.
 //! - `tree-view` and `tx-view` — the same two drawings in a window one can pan
 //!   and zoom, the second coloured by what this file computes.  They are behind
 //!   the `gui` feature, since GTK is a C library the rest of the crate has no
@@ -256,8 +258,8 @@ impl Output {
         }
     }
 
-    /// Close the output.  For the picture this is not a formality — the
-    /// codestream is only ended here.
+    /// Close the output.  For the picture this is not a formality — the last
+    /// rows, the end of the deflate stream and `IEND` are only written here.
     fn finish(self) -> io::Result<()> {
         match self {
             Output::Text { mut out, .. } => out.flush(),
@@ -268,7 +270,7 @@ impl Output {
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
                      [--rings|--sets|--weighted] [--sum] \
-                     [--jp2 <file> [--blocks <n>] [--bin <n>]] < records";
+                     [--png <file> [--blocks <n>] [--bin <n>]] < records";
 
 /// Standard input, as something that can be read a second time — when the
 /// platform and the shell allow it.
@@ -349,7 +351,7 @@ fn plan(
     let Some(path) = picture else {
         if let Some(name) = blocks.map(|_| "--blocks").or(bin.map(|_| "--bin")) {
             return Err(format!(
-                "{} describes the picture, so it needs --jp2 <file>",
+                "{} describes the picture, so it needs --png <file>",
                 name
             ));
         }
@@ -364,7 +366,7 @@ fn plan(
     // wants.
     if form == Line::Sum {
         return Err("--sum says what a line says, and a picture has no lines: \
-                    drop one of --sum and --jp2"
+                    drop one of --sum and --png"
             .into());
     }
 
@@ -377,15 +379,15 @@ fn plan(
         return Err("--blocks 0 leaves the picture no columns to draw in".into());
     }
 
-    // Both dimensions, before a single sample: the codestream names its size in
-    // front of the picture and cannot be told either number afterwards, so the
-    // records are counted first even when `--blocks` has already settled the
-    // width.  See `image`.
+    // Both dimensions, before a single pixel: the header names the size in
+    // front of the picture and is not gone back to afterwards, so the records
+    // are counted first even when `--blocks` has already settled the width.
+    // See `image`.
     let file = source.as_mut().ok_or_else(|| {
         "standard input cannot be rewound, so the records cannot be counted before the \
-         picture is written: a JPEG 2000 states how many rows it has in front of the \
-         first one, and that is how many records there are.  Redirect the records from \
-         a file (`< records`) rather than through a pipe"
+         picture is written: a PNG states how many rows it has in front of the first \
+         one, and that is how many records there are.  Redirect the records from a \
+         file (`< records`) rather than through a pipe"
             .to_string()
     })?;
     let start = file.stream_position().map_err(|e| e.to_string())?;
@@ -394,8 +396,8 @@ fn plan(
         .map_err(|e| e.to_string())?;
 
     // Every record carries a block, so no blocks means no records.  There is no
-    // JPEG 2000 of nothing — a codestream with no tiles in it is not an image a
-    // reader will open — so this is refused rather than written.
+    // picture of nothing — a PNG has to have a column and a row — so this is
+    // refused rather than written.
     if records == 0 {
         return Err(format!("no records, so there is no picture to draw in {}", path));
     }
@@ -433,7 +435,7 @@ fn records_from(source: Option<File>) -> Box<dyn io::Read> {
 /// and neither reads well glued to its name.  A prefix match alone would accept
 /// `--blocksy`, so the character after the name has to be an `=` or nothing.
 ///
-/// The separate word is not taken if it looks like another option, so `--jp2
+/// The separate word is not taken if it looks like another option, so `--png
 /// --stats` is a missing filename rather than a file called `--stats`.  Nothing
 /// here wants a value of that shape, and swallowing the next flag would leave a
 /// run silently doing something else.
@@ -493,7 +495,7 @@ fn main() -> ExitCode {
             "--sum" => form = Line::Sum,
             "all" => limit = usize::MAX,
             _ => {
-                if let Some((path, used)) = option(&args, i, "--jp2") {
+                if let Some((path, used)) = option(&args, i, "--png") {
                     picture = Some(path.to_string());
                     i += used;
                     continue;
@@ -758,7 +760,8 @@ fn run<S: ColorStore>(
         );
         eprintln!("{}", store.audit(&mut colors.values().map(|(c, _)| c)));
         // Worth saying out loud in a picture run, where stdout stays empty and
-        // the codestream is the only other place the size is written down.
+        // the file's own header is the only other place the size is written
+        // down.
         if let Output::Picture(picture) = &out {
             let (columns, rows) = picture.dimensions();
             eprintln!("picture: {} columns x {} rows", columns, rows);

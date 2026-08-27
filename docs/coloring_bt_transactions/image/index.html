@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Colors as a picture"><title>coloring_bt_transactions::image - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module image</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module image</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#colors-as-a-picture" title="Colors as a picture">Colors as a picture</a><ul><li><a href="#a-lossless-bilevel-jpeg-2000" title="A lossless, bilevel JPEG 2000">A lossless, bilevel JPEG 2000</a></li><li><a href="#folding-transactions-together" title="Folding transactions together">Folding transactions together</a></li><li><a href="#why-both-dimensions-are-settled-before-the-first-row" title="Why both dimensions are settled before the first row">Why both dimensions are settled before the first row</a></li><li><a href="#bands-and-tiles" title="Bands and tiles">Bands and tiles</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate coloring_<wbr>bt_<wbr>transactions</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">coloring_bt_transactions</a></div><h1>Module <span>image</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/coloring_bt_transactions/image.rs.html#1-722">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="colors-as-a-picture"><a class="doc-anchor" href="#colors-as-a-picture">§</a>Colors as a picture</h2>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Colors as a picture"><title>coloring_bt_transactions::image - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module image</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module image</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#colors-as-a-picture" title="Colors as a picture">Colors as a picture</a><ul><li><a href="#a-bilevel-png" title="A bilevel PNG">A bilevel PNG</a></li><li><a href="#why-this-and-not-a-wavelet-codec" title="Why this and not a wavelet codec">Why this and not a wavelet codec</a></li><li><a href="#folding-transactions-together" title="Folding transactions together">Folding transactions together</a></li><li><a href="#why-both-dimensions-are-settled-before-the-first-row" title="Why both dimensions are settled before the first row">Why both dimensions are settled before the first row</a></li><li><a href="#one-scanline-at-a-time" title="One scanline at a time">One scanline at a time</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate coloring_<wbr>bt_<wbr>transactions</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">coloring_bt_transactions</a></div><h1>Module <span>image</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/coloring_bt_transactions/image.rs.html#1-698">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="colors-as-a-picture"><a class="doc-anchor" href="#colors-as-a-picture">§</a>Colors as a picture</h2>
 <p>The text output names every block in every color, which on a real run is
 tens of gigabytes of <code>(block . 1)</code> pairs.  The same answer drawn instead of
 spelled: one <strong>row</strong> per transaction, in the order the transactions arrive,
@@ -13,42 +13,51 @@ says only that some of the transaction’s value came from that block, not how
 much; a weight too small to print as anything but <code>0.000000</code> is an inked
 pixel like any other, which is one thing the picture shows better than the
 text.</p>
-<h3 id="a-lossless-bilevel-jpeg-2000"><a class="doc-anchor" href="#a-lossless-bilevel-jpeg-2000">§</a>A lossless, bilevel JPEG 2000</h3>
-<p>One component, one bit a sample: <a href="constant.INK.html" title="constant coloring_bt_transactions::image::INK"><code>INK</code></a> where the block is in the color and
+<h3 id="a-bilevel-png"><a class="doc-anchor" href="#a-bilevel-png">§</a>A bilevel PNG</h3>
+<p>One channel, one bit a sample: <a href="constant.INK.html" title="constant coloring_bt_transactions::image::INK"><code>INK</code></a> where the block is in the color and
 <a href="constant.PAPER.html" title="constant coloring_bt_transactions::image::PAPER"><code>PAPER</code></a> where it is not.  A greyscale sample of 0 is black and the largest
-it can be is white, so at a precision of one bit those two numbers <em>are</em>
-black on white, and “the ones in the output” and “the black pixels” stay the
-same statement.</p>
+it can be is white, so at a depth of one bit those two numbers <em>are</em> black on
+white, and “the ones in the output” and “the black pixels” stay the same
+statement.</p>
 <p>Lossless, and not as a preference.  A pixel here is a whole fact — these
 coins did or did not come through that block — so there is no approximation
 of one that is still an answer, and at one bit a sample there is nothing to
-approximate with in any case.  The encoder is set up for the reversible path
-accordingly: the 5/3 integer wavelet, no quantisation, one quality layer at
-no rate cap.  <code>the_picture_round_trips_losslessly</code> asserts that against the
-decoder rather than trusting the setting.</p>
-<p>What that buys over the packed raster this used to write is the compression a
-bitmap has no way to express.  A row is a stretch of ink and then the white
-past the block its transaction was mined in, and the wavelet plus EBCOT
-charge almost nothing for a flat stretch of either tone, so on a synthetic
-run of 42,000 records over 2,000 blocks — 447 pixels in a thousand inked —
-the same picture came to</p>
-<div class="example-wrap"><pre class="language-text"><code>    packed raster       10.5 MB
-    the same, gzip -9   56.7 kB
-    JPEG 2000          103.0 kB</code></pre></div>
-<p>which is the shape of the trade rather than a win outright.  A raster whose
-rows resemble one another is exactly what a general-purpose compressor is
-good at, and on records as regular as those it beats this comfortably.  What
-it does not leave behind is an image.  This is one, every tool opens it, and
-<a href="constant.RESOLUTIONS.html" title="constant coloring_bt_transactions::image::RESOLUTIONS"><code>RESOLUTIONS</code></a> reduced resolutions are in the file: a viewer can show a
-picture a hundred thousand rows tall at 1/32 scale without decoding the full
-size, which for these is the difference between looking at it and not.</p>
-<p>What it costs is time.  Writing a raster is a memcpy; this runs a wavelet and
-an arithmetic coder over every sample, paper included, and the paper is most
-of them — on the run above, 84 million samples for about 0.07s over what the
-same colouring cost written as text.  The number to watch is that one: the
-picture is <code>width * rows</code> samples whatever is drawn in it, so it is <code>--bin</code>,
-which is the only thing that changes how many samples there are, that decides
-what a long run pays here.</p>
+approximate with in any case.  With PNG that costs nothing to arrange:
+deflate is the only compression the format has, and it gives back what it was
+given.  <code>the_picture_round_trips_losslessly</code> asserts that against a decoder
+this file shares no code with, rather than taking the format’s word for it.</p>
+<h3 id="why-this-and-not-a-wavelet-codec"><a class="doc-anchor" href="#why-this-and-not-a-wavelet-codec">§</a>Why this and not a wavelet codec</h3>
+<p>This drew a lossless bilevel JPEG 2000 first, for the reduced resolutions
+such a file carries, and what it wrote was a picture almost nothing would
+open.  At one bit a sample the codestream says <code>Ssiz = 0</code>, and while OpenJPEG
+reads that back happily — which is why the round-trip test passed all along —
+macOS’s ImageIO refuses the file outright, <code>sips</code> and Preview with it.
+OpenJPEG’s own <code>opj_compress</code> will not even produce one: hand it a netpbm
+with a maxval of 1 and it promotes the samples to eight bits on the way in.
+One bit a sample is a corner of that standard the readers did not follow it
+into.</p>
+<p>Raising the precision to something they do take costs what the wavelet costs.
+The reversible 5/3 filter scales its coefficients with the range of the
+samples, so each extra bit of precision is roughly another bitplane for EBCOT
+to code — over the paper as much as over the ink, and the paper is most of
+it.  On a synthetic run of 42,000 records over 2,000 blocks — 422 pixels in a
+thousand inked — the same picture came to</p>
+<div class="example-wrap"><pre class="language-text"><code>    packed raster              10.5 MB
+    JPEG 2000, 1 bit a sample   667 kB   and no common reader opens it
+    JPEG 2000, 2 bits a sample  2.0 MB
+    JPEG 2000, 8 bits a sample  8.2 MB
+    this, one bit a sample      309 kB</code></pre></div>
+<p>so the encoding that could not be read was not the small one either.  A row
+here is a stretch of ink and then the white past the block its transaction
+was mined in, and a row resembles the row above it; that is the shape LZ77
+and Huffman are good at, and they are good at it without spending a bitplane
+on the paper.</p>
+<p>What this gives up is the one thing the wavelet was here for.  A JPEG 2000
+holds reduced resolutions in the file, so a viewer can show a picture a
+hundred thousand rows tall at 1/32 scale without decoding the full size; a
+PNG has no such thing, and whatever opens one of these decodes all of it.
+That is a real loss, taken deliberately: a picture a viewer can open at one
+scale beats a picture it cannot open at six.</p>
 <h3 id="folding-transactions-together"><a class="doc-anchor" href="#folding-transactions-together">§</a>Folding transactions together</h3>
 <p>A row per transaction is a row per record, and a real run has more records
 than any screen has pixels — a million rows is already a picture nothing will
@@ -60,31 +69,48 @@ binned picture is the same picture at a coarser scale rather than a sampled
 or averaged one, and nothing that was inked can go white.  The last bin is
 whatever is left over, and it is drawn like any other.</p>
 <h3 id="why-both-dimensions-are-settled-before-the-first-row"><a class="doc-anchor" href="#why-both-dimensions-are-settled-before-the-first-row">§</a>Why both dimensions are settled before the first row</h3>
-<p>A JPEG 2000 states its size in front of its first sample and never revisits
-it, so neither number can be discovered along the way and neither can be
-stamped in afterwards the way a netpbm header’s height could be.  The width
-is the number of blocks and the height is the number of records divided by
-the bin, and the driver reads the records once to count both before it colors
-any of them — see <code>main</code>’s <code>survey</code>.  That is why a picture wants an input it
-can rewind and a pipe will not do, and why <code>--blocks &lt;n&gt;</code>, which still
-overrides the width, no longer excuses that pass: the height needs it too.</p>
-<p>Having promised a height, the writer keeps it.  <a href="struct.Writer.html#method.finish" title="method coloring_bt_transactions::image::Writer::finish"><code>Writer::finish</code></a> pads the
-picture out with blank rows if the records ran out early, and
-<a href="struct.Writer.html#method.end_transaction" title="method coloring_bt_transactions::image::Writer::end_transaction"><code>Writer::end_transaction</code></a> refuses a row past the last rather than handing
-the encoder a tile it did not ask for and writing a file no reader will open.</p>
-<h3 id="bands-and-tiles"><a class="doc-anchor" href="#bands-and-tiles">§</a>Bands and tiles</h3>
-<p>Rows arrive one at a time and the encoder takes whole tiles, so the rows are
-held a band of <a href="constant.TILE.html" title="constant coloring_bt_transactions::image::TILE"><code>TILE</code></a> of them at a time, packed eight pixels to the byte,
-and the band’s tiles go out in the order the encoder counts them — across,
-then down — as soon as the band is full.  The working set is that band and
-the one tile being unpacked into samples, <code>TILE * (width / 8 + TILE)</code> bytes,
-however tall the picture: a drawing far past the size of memory is still
-written a megabyte at a time.</p>
-<p>The codestream is not written straight through either — the encoder goes back
-to stamp lengths into markers it has already emitted — so the output is a
-file it can seek in rather than a sink of the caller’s choosing.</p>
-</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Writer.html" title="struct coloring_bt_transactions::image::Writer">Writer</a></dt><dd>A picture being drawn a transaction at a time.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.INK.html" title="constant coloring_bt_transactions::image::INK">INK</a></dt><dd>A block that is in the color: at one bit a sample, black.</dd><dt><a class="constant" href="constant.PAPER.html" title="constant coloring_bt_transactions::image::PAPER">PAPER</a></dt><dd>One that is not: white.</dd><dt><a class="constant" href="constant.RESOLUTIONS.html" title="constant coloring_bt_transactions::image::RESOLUTIONS">RESOLUTIONS</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Wavelet decomposition levels.  Six is the encoder’s own default, and it is
-also what lets a viewer open one of these at 1/32 scale without decoding the
-full-size picture — which, for a picture whose rows outnumber a screen’s by
-three orders of magnitude, is how it gets looked at at all.</dd><dt><a class="constant" href="constant.SAMPLES.html" title="constant coloring_bt_transactions::image::SAMPLES">SAMPLES</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The eight samples a packed byte stands for, leftmost pixel in the most
-significant bit.</dd><dt><a class="constant" href="constant.TILE.html" title="constant coloring_bt_transactions::image::TILE">TILE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The side of the square the picture is written in.</dd></dl></section></div></main></body></html>
+<p>A PNG states its size in <code>IHDR</code>, in the twenty-five bytes that come before
+the first scanline, so neither number can be discovered along the way.  The
+width is the number of blocks and the height is the number of records divided
+by the bin, and the driver reads the records once to count both before it
+colors any of them — see <code>main</code>’s <code>survey</code>.  That is why a picture wants an
+input it can rewind and a pipe will not do, and why <code>--blocks &lt;n&gt;</code>, which
+still overrides the width, does not excuse that pass: the height needs it
+too.</p>
+<p><code>IHDR</code> does sit at a fixed offset, so a writer willing to seek could stamp
+the height in at the end and let the records arrive down a pipe.  This one
+does not, and what that would cost is the reason: a height counted in front
+of the picture is a height the rows are then <em>checked against</em>.
+<a href="struct.Writer.html#method.end_transaction" title="method coloring_bt_transactions::image::Writer::end_transaction"><code>Writer::end_transaction</code></a> refuses a row past the last, and
+<a href="struct.Writer.html#method.finish" title="method coloring_bt_transactions::image::Writer::finish"><code>Writer::finish</code></a> pads the picture out with blank rows if the records ran
+out early — so a run whose two passes disagree is an error rather than a
+picture quietly of the wrong shape.</p>
+<h3 id="one-scanline-at-a-time"><a class="doc-anchor" href="#one-scanline-at-a-time">§</a>One scanline at a time</h3>
+<p>A PNG’s pixels are a single deflate stream over the scanlines, each preceded
+by the byte naming the filter it was written with, and deflate takes them as
+they come.  So a row is packed into the writer’s <code>row</code> as it is drawn, handed
+to the compressor when it closes, and the compressed bytes go out as an
+<code>IDAT</code> every <a href="constant.IDAT.html" title="constant coloring_bt_transactions::image::IDAT"><code>IDAT</code></a> of them.  The working set is one scanline and one
+chunk’s worth of output — <code>width / 8 + 1 MiB</code> bytes, however tall the picture
+— so a drawing far past the size of memory is still written a megabyte at a
+time.</p>
+<p>That row buffer holds the scanline itself rather than something to be turned
+into one.  Paper is a 1 and ink a 0, so a row starts as all 1s and
+<a href="struct.Writer.html#method.set" title="method coloring_bt_transactions::image::Writer::set"><code>Writer::set</code></a> <em>clears</em> a bit; the bytes the compressor sees are the bytes
+<code>set</code> wrote, and nothing is unpacked or copied on the way.</p>
+<p>Every row is filtered with <code>None</code>.  PNG’s filters predict a byte from its
+neighbours, and these rows do resemble the row above — but at one bit a
+sample a row is packed eight pixels to the byte, and subtracting one packed
+byte from another turns two nearly identical rows into a difference deflate
+can no longer match against anything.  On the run above, filtering every row
+with <code>Up</code> instead came to 402 kB against <code>None</code>’s 309 kB.</p>
+<p>Nothing here is written twice — unlike the codestream this replaces, which
+went back to stamp lengths into markers it had already emitted — so the
+output could be any sink the caller has.  It is a path because that is where
+the file gets created and nothing has yet wanted otherwise.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Writer.html" title="struct coloring_bt_transactions::image::Writer">Writer</a></dt><dd>A picture being drawn a transaction at a time.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.BLANK.html" title="constant coloring_bt_transactions::image::BLANK">BLANK</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A byte of blank paper: eight <a href="constant.PAPER.html" title="constant coloring_bt_transactions::image::PAPER"><code>PAPER</code></a> pixels.  What a row starts as, what a
+closed row is blanked back to, and what the slack bits past the last column
+stay as for the whole picture.</dd><dt><a class="constant" href="constant.IDAT.html" title="constant coloring_bt_transactions::image::IDAT">IDAT</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How much compressed output to gather before it goes out as an <code>IDAT</code> chunk.</dd><dt><a class="constant" href="constant.INK.html" title="constant coloring_bt_transactions::image::INK">INK</a></dt><dd>A block that is in the color: at one bit a sample, black.</dd><dt><a class="constant" href="constant.NO_FILTER.html" title="constant coloring_bt_transactions::image::NO_FILTER">NO_<wbr>FILTER</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The filter byte in front of every scanline.  See the module docs for why it
+is always this one.</dd><dt><a class="constant" href="constant.PAPER.html" title="constant coloring_bt_transactions::image::PAPER">PAPER</a></dt><dd>One that is not: 1, the largest a one-bit sample can be, and so white.</dd><dt><a class="constant" href="constant.SIGNATURE.html" title="constant coloring_bt_transactions::image::SIGNATURE">SIGNATURE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The eight bytes every PNG begins with.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.chunk.html" title="fn coloring_bt_transactions::image::chunk">chunk</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>One PNG chunk: its length, its four-byte name, its data, and a CRC-32 over
+the name and the data — the length deliberately not among them, since it is
+what a reader has to trust before it can check anything.</dd></dl></section></div></main></body></html>

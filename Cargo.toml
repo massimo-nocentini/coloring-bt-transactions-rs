@@ -15,6 +15,16 @@ gtk4 = { version = "0.11", optional = true }
 # it, so unlike GTK it needs nothing installed on the machine and can be an
 # ordinary dependency.
 openjp2 = "0.6"
+# `image`'s, which is a PNG and so is deflate and a CRC-32 and nothing else --
+# both of which this brings, the second as `flate2::Crc`.  The default backend
+# is miniz_oxide, so this is Rust the whole way down like the one above.
+flate2 = "1.1"
+
+[dev-dependencies]
+# `image`'s round trips are asserted against a decoder that shares no code with
+# the writer, which is the only way they say anything.  Only the tests read a
+# PNG, so it is here rather than above.
+png = "0.18"
 
 [features]
 # The windowed viewers, `tree-view` and `tx-view`.  `cargo run --features gui

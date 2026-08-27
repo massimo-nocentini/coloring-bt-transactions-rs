@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["INK","PAPER","RESOLUTIONS","SAMPLES","TILE"],"struct":["Writer"]};
+window.SIDEBAR_ITEMS = {"constant":["BLANK","IDAT","INK","NO_FILTER","PAPER","SIGNATURE"],"fn":["chunk"],"struct":["Writer"]};
