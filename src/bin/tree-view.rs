@@ -167,7 +167,8 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
-    use viewer::{frame, MIN_CIRCLE_PX};
+    use camera::Camera;
+    use viewer::{export, frame, MIN_CIRCLE_PX, MIN_HOLLOW_PX};
 
     /// A view on the forest of `graph_of(n, arcs)`, laid out and indexed, with
     /// the camera framing all of it in a window `width` by `height`.
@@ -321,6 +322,86 @@ mod tests {
         let mut view = viewing(n, &arcs, 400.0, 300.0);
         let pixels = frame(&mut view, 1, 1);
         assert_eq!(pixels.len(), 1);
+    }
+
+    /// A node with nothing hanging off it is a ring: white in the middle, its
+    /// own colour on the rim.  A node with something hanging off it is solid.
+    #[test]
+    fn a_leaf_is_a_circle_with_nothing_in_it() {
+        let (n, arcs) = small();
+        let mut view = viewing(n, &arcs, 400.0, 300.0);
+
+        let pixels = frame(&mut view, 400, 300);
+        let radius_px = view.scene.radius() * view.camera.scale();
+        assert!(radius_px >= MIN_HOLLOW_PX, "{radius_px} px: too small to be hollow");
+
+        // The pixels are blue, green, red, alpha; everything here is grey, so
+        // the first of them is the whole story.
+        let sample = |pixels: &[[u8; 4]], camera: Camera, x: f64, y: f64| {
+            let (sx, sy) = camera.to_screen(x, y);
+            pixels[sy.round() as usize * 400 + sx.round() as usize][0]
+        };
+
+        let (mut leaves, mut inner) = (0, 0);
+        for i in 0..view.scene.len() as u32 {
+            let [x, y] = view.scene.at(i);
+            // The panel is drawn over the bottom of the window, and a node
+            // under it says nothing about how nodes are drawn.
+            if view.camera.to_screen(x, y).1 > 190.0 {
+                continue;
+            }
+            if view.scene.is_leaf(i) {
+                leaves += 1;
+                assert_eq!(sample(&pixels, view.camera, x, y), 255, "leaf {i} is filled in");
+                // On the rim, half an outline either side of the radius: the
+                // ink that makes it a circle rather than nothing at all.
+                let rim = (radius_px - 0.5) / view.camera.scale();
+                assert!(sample(&pixels, view.camera, x + rim, y) < 220, "leaf {i} has no edge");
+            } else {
+                inner += 1;
+                assert!(sample(&pixels, view.camera, x, y) < 64, "node {i} is not filled in");
+            }
+        }
+        assert!(leaves > 0 && inner > 0, "{leaves} leaves and {inner} others were looked at");
+
+        // Zoomed out until a ring would close up into a smudge, a leaf goes
+        // back to being a dot of its own colour.
+        view.camera.zoom(1.5 / radius_px, 200.0, 150.0);
+        let pixels = frame(&mut view, 400, 300);
+        let small = view.scene.radius() * view.camera.scale();
+        assert!((MIN_CIRCLE_PX..MIN_HOLLOW_PX).contains(&small), "{small} px");
+
+        let leaf = (0..view.scene.len() as u32).find(|&i| view.scene.is_leaf(i)).unwrap();
+        let [x, y] = view.scene.at(leaf);
+        assert!(sample(&pixels, view.camera, x, y) < 220, "a leaf too small to be hollow is still a node");
+    }
+
+    /// `e` writes the camera to a PDF, and never over one already there.
+    #[test]
+    fn the_camera_can_be_written_to_a_page() {
+        let (n, arcs) = small();
+        let mut view = viewing(n, &arcs, 400.0, 300.0);
+
+        // Somewhere of its own: the name is `<stem>-NNN.pdf`, and a stem may be
+        // a path as well as a word.
+        let dir = env::temp_dir().join(format!("tree-view-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stem = dir.join("page");
+        let stem = stem.to_str().unwrap();
+
+        let first = export(&mut view, stem).expect("a page");
+        let second = export(&mut view, stem).expect("another page");
+        assert_ne!(first, second, "the second export wrote over the first");
+
+        for path in [&first, &second] {
+            let bytes = std::fs::read(path).unwrap();
+            assert!(bytes.starts_with(b"%PDF"), "{path} is not a PDF");
+            // A five-node drawing is a few objects and a font; anything much
+            // smaller than this is a page with nothing on it.
+            assert!(bytes.len() > 512, "{path} is {} bytes", bytes.len());
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Leaves and the rest are drawn apart, which is the whole of what this

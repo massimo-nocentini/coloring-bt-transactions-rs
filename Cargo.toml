@@ -11,6 +11,12 @@ non-layered-tidy-trees = { git = "https://github.com/massimo-nocentini/non-layer
 # this crate has no reason to require.  Optional, so that `cargo test` and
 # `cargo doc` keep working where they are not installed -- see the `gui` feature.
 gtk4 = { version = "0.11", optional = true }
+# The same Cairo `gtk4` already pulls in, named here only to turn its `pdf`
+# feature on: the bindings to `cairo_pdf_surface_create` are behind it, and the
+# viewers' `e` writes a page with them.  Not a second copy of anything -- cargo
+# unifies the features of one crate, so this is the surface type appearing on
+# the `gtk4::cairo` the viewers already use.
+cairo-rs = { version = "0.22", optional = true }
 # `tree-jp2`'s codec.  This is the Rust port of OpenJPEG rather than a binding to
 # it, so unlike GTK it needs nothing installed on the machine and can be an
 # ordinary dependency.
@@ -29,7 +35,7 @@ png = "0.18"
 [features]
 # The windowed viewers, `tree-view` and `tx-view`.  `cargo run --features gui
 # --bin tree-view -- <graph>`, or `make view GRAPH=<graph>`.
-gui = ["dep:gtk4"]
+gui = ["dep:gtk4", "cairo-rs/pdf"]
 
 # Named here only to say that they do not build without GTK; the rest of the
 # binaries under src/bin/ are found by cargo on its own.

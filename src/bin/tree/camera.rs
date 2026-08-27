@@ -250,6 +250,22 @@ impl Camera {
         self.zoom(ZOOM_PER_NOTCH.powf(-notches), sx, sy);
     }
 
+    /// The node coordinate the middle of the window is on.
+    pub fn eye(self) -> (f64, f64) {
+        (self.x, self.y)
+    }
+
+    /// Puts `(x, y)` in the middle of the window, at the scale already reached.
+    ///
+    /// What [`Camera::frame`] would do if it were not also allowed to zoom, and
+    /// the reason both are here: framing a single node has to invent a size to
+    /// show it at, whereas centring one keeps whatever the eye was already used
+    /// to and only moves it.
+    pub fn look_at(&mut self, x: f64, y: f64) {
+        self.x = x;
+        self.y = y;
+    }
+
     /// Puts `subject` in the middle of the window, as large as it will go.
     ///
     /// An empty rectangle is not something one can look at, and leaves the
@@ -274,6 +290,26 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Centring moves the eye and nothing else, which is what tells it apart
+    /// from framing: the zoom one climbed to survives it.
+    #[test]
+    fn looking_at_a_point_keeps_the_zoom() {
+        let mut camera = Camera::framing(Rect::new(0.0, 0.0, 100.0, 100.0), 400.0, 300.0);
+        let was = camera.scale();
+
+        camera.look_at(7.0, 9.0);
+
+        assert_eq!(camera.scale(), was, "the scale moved");
+        assert_eq!(camera.eye(), (7.0, 9.0));
+        assert_eq!(camera.to_screen(7.0, 9.0), (200.0, 150.0), "not in the middle");
+        assert!(camera.visible().contains(7.0, 9.0));
+
+        // And framing the same point would not have: a single point has no
+        // extent, so it is shown at a size of its own invention.
+        camera.frame(Rect::square(7.0, 9.0, 0.0));
+        assert!(camera.scale() > was);
+    }
 
     /// A bounding box built from nothing is empty, and holds whatever is added.
     #[test]

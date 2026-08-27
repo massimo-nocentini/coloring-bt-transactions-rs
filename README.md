@@ -135,8 +135,21 @@ many blocks are in it — what mixing looks like, over a chain.
 | `p` | select the parent of the selection |
 | arrow keys | move the camera a tenth of the window |
 | `+`, `-` | zoom about the middle of the window |
+| `c` | put the selection in the middle, without moving the zoom |
+| `e` | write what is on screen to `tree-view-NNN.pdf` (`tx-view-NNN.pdf`) |
 | `Escape` | select nothing |
 | `q` | close |
+
+A node drawn big enough to have an inside is filled when something hangs off it
+and hollow — its colour on the rim, paper in the middle — when nothing does, so
+the leaves of the tree read as a fringe rather than as more of the trunk.
+
+`e` writes the camera, not the drawing: Cairo's PDF is a page description, so
+every node on screen becomes an arc that a reader can zoom into without it going
+soft, and every node off screen costs nothing because the same quadtree walk
+never reaches it.  The way to get more of the tree onto a page is to zoom out
+before pressing it.  The file is the first free number in the working directory,
+so nothing is ever written over.
 
 ## Building
 

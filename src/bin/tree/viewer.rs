@@ -19,6 +19,8 @@
 //! | `p` | select the parent of the selection |
 //! | arrow keys | move the camera a tenth of the window |
 //! | `+`, `-` | zoom about the middle of the window |
+//! | `c` | put the selection in the middle, without moving the zoom |
+//! | `e` | write what is on screen to a PDF beside the program |
 //! | `Escape` | select nothing |
 //! | `q` | close |
 //!
@@ -58,6 +60,17 @@
 //! there is no seam at it: zooming in opens cells, and the last thing a cell
 //! opens into is its nodes.
 //!
+//! # A leaf is a circle with nothing in it
+//!
+//! Once a circle is big enough to have an inside — [`MIN_HOLLOW_PX`] — a node
+//! with no successors is drawn as an outline around white paper rather than as a
+//! solid disc.  A tree is mostly leaves, so this is the difference between a
+//! drawing that is a mass of ink with a shape somewhere in it and one where the
+//! trunk is solid and the fringe is a chain of rings: what is *filled* is
+//! exactly what something hangs off.  Below that size the ring closes up into a
+//! smudge and would only be a paler dot, so under it leaves are filled as
+//! everything else is.
+//!
 //! # As few fills as there are colours
 //!
 //! Naming a colour to Cairo once per circle is most of the cost of a frame that
@@ -65,7 +78,10 @@
 //! nodes into *buckets*, one per colour it draws in, and a frame builds one path
 //! per bucket and fills it once.  `tree-view` has two buckets, leaves and the
 //! rest; `tx-view` has a few hundred, one per quantised colour.  Either way the
-//! fills are counted in colours and the nodes are touched once each.
+//! fills are counted in colours rather than in nodes: a fill a bucket, plus —
+//! where the leaves are hollow — a stroke a bucket and the one white fill they
+//! all share.  What that costs is walking a batch twice instead of once, which
+//! is a comparison a node against a Cairo call a node.
 //!
 //! # Where the selection lives
 //!
@@ -127,6 +143,13 @@ pub const MIN_LINK_PX: f64 = 3.0;
 /// are at most about `(window / SUMMARY_PX)^2` of them however many nodes the
 /// drawing has.
 pub const SUMMARY_PX: f64 = 2.0;
+
+/// A node's radius, in pixels, at or above which a leaf is drawn hollow: its
+/// colour as an outline, with the paper showing through the middle.
+///
+/// A ring needs a couple of pixels to be a ring at all, and below that a leaf
+/// goes back to being filled — see the module's own docs.
+pub const MIN_HOLLOW_PX: f64 = 2.5;
 
 /// How far from the pointer, in pixels, a click will reach for a node.
 const PICK_PX: f64 = 12.0;
@@ -206,6 +229,9 @@ pub struct View<P: Paint> {
     /// The selected node; its subtree is [`Scene::subtree`] of it.
     pub chosen: Option<u32>,
     pub last: Frame,
+    /// The last thing the window has to say for itself — where a PDF went, or
+    /// why it did not — shown in the panel until something else is said.
+    pub note: Option<String>,
     /// The three working buffers of a frame, kept between frames so that drawing
     /// one allocates nothing: what the quadtree named, what it summarised, and
     /// the named nodes sorted by the colour they are drawn in.
@@ -226,6 +252,7 @@ impl<P: Paint> View<P> {
             dragged: (0.0, 0.0),
             chosen: None,
             last: Frame::default(),
+            note: None,
             nodes: Vec::new(),
             squares: Vec::new(),
             batches: Vec::new(),
@@ -249,12 +276,21 @@ impl<P: Paint> View<P> {
     }
 }
 
+/// Draws a frame with the panel over it: what the window shows.
+pub fn draw<P: Paint>(view: &mut View<P>, cr: &cairo::Context, width: f64, height: f64) {
+    render(view, cr, width, height);
+    panel(view, cr, width, height);
+}
+
 /// Draws a frame, and remembers what it drew.
 ///
 /// The whole of the viewer's work per frame is here, and all of it starts from
 /// the one walk of the quadtree in the middle: nothing outside the window is
 /// ever touched.
-pub fn draw<P: Paint>(view: &mut View<P>, cr: &cairo::Context, width: f64, height: f64) {
+///
+/// Everything but the panel, which is about the window rather than about the
+/// drawing and so has no business on an exported page — see [`export`].
+pub fn render<P: Paint>(view: &mut View<P>, cr: &cairo::Context, width: f64, height: f64) {
     view.camera.resize(width, height);
     if !view.framed {
         // The first frame is the first time the real size of the window is
@@ -268,6 +304,9 @@ pub fn draw<P: Paint>(view: &mut View<P>, cr: &cairo::Context, width: f64, heigh
     let seen = camera.visible();
     let radius_px = view.scene.radius() * scale;
     let circles = radius_px >= MIN_CIRCLE_PX;
+    // A node with nothing hanging off it is a circle with nothing in it, once
+    // there is an inside to leave empty.
+    let hollow = radius_px >= MIN_HOLLOW_PX;
 
     cr.set_source_rgb(PAPER.0, PAPER.1, PAPER.2);
     ink(cr.paint());
@@ -350,16 +389,34 @@ pub fn draw<P: Paint>(view: &mut View<P>, cr: &cairo::Context, width: f64, heigh
     if !circles {
         cr.set_antialias(cairo::Antialias::None);
     }
+
+    // Every leaf's white middle in one fill, whatever bucket it fell in: what a
+    // hollow leaf is drawn in is its outline, and the paper inside it is the
+    // same colour for all of them.  Before the outlines, and before the solid
+    // nodes, so that neither is rubbed out by a leaf overlapping it.
+    if hollow {
+        cr.set_source_rgb(PAPER.0, PAPER.1, PAPER.2);
+        path(cr, camera, scene, &nodes, radius_px, true, |i| {
+            !is_chosen(i) && scene.is_leaf(i)
+        });
+        ink(cr.fill());
+        cr.set_line_width(outline(radius_px));
+    }
+
     for (bucket, batch) in batches.iter().enumerate() {
         if batch.is_empty() {
             continue;
         }
         let colour = paint.colour(bucket);
         cr.set_source_rgb(colour.0, colour.1, colour.2);
-        for &i in batch.iter() {
-            spot(cr, camera, scene.at(i), radius_px, circles);
-        }
+        path(cr, camera, scene, batch, radius_px, circles, |i| {
+            !hollow || !scene.is_leaf(i)
+        });
         ink(cr.fill());
+        if hollow {
+            path(cr, camera, scene, batch, radius_px, true, |i| scene.is_leaf(i));
+            ink(cr.stroke());
+        }
     }
     if !circles {
         cr.set_antialias(cairo::Antialias::Default);
@@ -368,17 +425,23 @@ pub fn draw<P: Paint>(view: &mut View<P>, cr: &cairo::Context, width: f64, heigh
     // The selection on top of the rest, so that a subtree stands out of the
     // drawing it is part of rather than being buried in it.
     if chosen.is_some() {
+        // Never below a pixel: a selection one cannot see is not a selection,
+        // however far out the camera is.
+        let radius_px = radius_px.max(MIN_CIRCLE_PX);
         cr.set_source_rgb(CHOSEN.0, CHOSEN.1, CHOSEN.2);
-        let mut any = false;
-        for &i in nodes.iter() {
-            if !is_chosen(i) {
-                continue;
-            }
-            any = true;
-            spot(cr, camera, scene.at(i), radius_px.max(MIN_CIRCLE_PX), true);
-        }
-        if any {
+        path(cr, camera, scene, &nodes, radius_px, true, |i| {
+            is_chosen(i) && !(hollow && scene.is_leaf(i))
+        });
+        ink(cr.fill());
+        if hollow {
+            let leaf = |i: u32| is_chosen(i) && scene.is_leaf(i);
+            cr.set_source_rgb(PAPER.0, PAPER.1, PAPER.2);
+            path(cr, camera, scene, &nodes, radius_px, true, leaf);
             ink(cr.fill());
+            cr.set_source_rgb(CHOSEN.0, CHOSEN.1, CHOSEN.2);
+            cr.set_line_width(outline(radius_px));
+            path(cr, camera, scene, &nodes, radius_px, true, leaf);
+            ink(cr.stroke());
         }
     }
     if let Some(i) = view.chosen {
@@ -404,7 +467,33 @@ pub fn draw<P: Paint>(view: &mut View<P>, cr: &cairo::Context, width: f64, heigh
     view.batches = batches;
 
     view.paint.overlay(cr, width, height);
-    panel(view, cr, width, height);
+}
+
+/// Adds to the path the circles of those of `these` that `keep` says.
+///
+/// Every fill and every stroke of a frame is one of these followed by one
+/// Cairo call: the nodes are walked more than once when leaves are hollow, but
+/// the colour is named as many times as there are colours either way.
+fn path(
+    cr: &cairo::Context,
+    camera: Camera,
+    scene: &Scene,
+    these: &[u32],
+    radius_px: f64,
+    circles: bool,
+    keep: impl Fn(u32) -> bool,
+) {
+    for &i in these.iter() {
+        if keep(i) {
+            spot(cr, camera, scene.at(i), radius_px, circles);
+        }
+    }
+}
+
+/// How thick the outline of a hollow leaf is drawn, given its radius: enough of
+/// the circle left empty to read as empty, and never thinner than a hairline.
+fn outline(radius_px: f64) -> f64 {
+    (radius_px / 3.0).clamp(0.75, 2.5)
 }
 
 /// Adds one node to the path: a circle when there is room for one, and a single
@@ -433,6 +522,59 @@ pub fn crowding(count: u32) -> f64 {
     0.72 * (1.0 - t)
 }
 
+/// Writes what the camera is showing to a PDF of its own, and says where.
+///
+/// The page is the window: the same [`render`] onto a `PdfSurface` the size of
+/// the drawing area, so that what comes out is what was being looked at, at the
+/// zoom it was being looked at.  What it is *not* is a picture of the window —
+/// the panel is about the window and stays behind, while [`Paint::overlay`],
+/// which is about the drawing, comes along.
+///
+/// Cairo's PDF is a page description rather than an image, so a circle is an
+/// arc and not a ring of pixels: a page of a few thousand nodes is a few
+/// hundred kilobytes, and zooming into it in a reader gets sharper.  The other
+/// side of that is that a page of a *million* is a million arcs, which is why
+/// this exports the camera rather than the drawing — what is off screen is
+/// culled by the same quadtree walk as ever, and the way to get more of the
+/// tree on the page is to zoom out first.
+///
+/// The file is never one that exists: the first free `<stem>-NNN.pdf` in the
+/// working directory, so pressing the key twice leaves two pages rather than
+/// one.
+pub fn export<P: Paint>(view: &mut View<P>, stem: &str) -> Result<String, String> {
+    let width = view.camera.width();
+    let height = view.camera.height();
+
+    let path = free_name(stem);
+    // Cairo measures a page in points, and is told the window's pixels: a
+    // 1200-pixel window becomes a 1200-point page, which is a big sheet of
+    // paper at the same shape and the same proportions.
+    let surface = cairo::PdfSurface::new(width, height, &path)
+        .map_err(|e| format!("{path}: the page could not be started ({e})"))?;
+    {
+        let cr = cairo::Context::new(&surface)
+            .map_err(|e| format!("{path}: nothing to draw with ({e})"))?;
+        render(view, &cr, width, height);
+    }
+    surface.finish();
+    Ok(path)
+}
+
+/// The first `<stem>-NNN.pdf` that is not already there.
+///
+/// A race with anything else writing the same names, and worth nothing against
+/// one; what it is for is the same window exporting twice, where the second
+/// page silently replacing the first is the only real way to lose one.
+fn free_name(stem: &str) -> String {
+    for n in 1u32.. {
+        let name = format!("{stem}-{n:03}.pdf");
+        if !std::path::Path::new(&name).exists() {
+            return name;
+        }
+    }
+    unreachable!("a u32 of names is more than a working directory holds")
+}
+
 /// The panel in the corner: what is on screen, and what is selected.
 fn panel<P: Paint>(view: &View<P>, cr: &cairo::Context, width: f64, height: f64) {
     let scene = &view.scene;
@@ -455,15 +597,19 @@ fn panel<P: Paint>(view: &View<P>, cr: &cairo::Context, width: f64, height: f64)
         ),
     ];
     lines.extend(view.paint.describe(scene, view.chosen));
+    if let Some(note) = &view.note {
+        lines.push(note.clone());
+    }
     lines.push(
-        "wheel zoom · drag/arrows move · f fit · a all · p parent · esc clear · q quit".into(),
+        "wheel zoom · drag/arrows move · f fit · c centre · a all · p parent · e pdf · esc clear · q quit"
+            .into(),
     );
 
     let leading = 16.0;
     let top = height - leading * lines.len() as f64 - 12.0;
 
     cr.set_source_rgba(PAPER.0, PAPER.1, PAPER.2, 0.86);
-    cr.rectangle(0.0, top - 6.0, width.min(640.0), height - top + 6.0);
+    cr.rectangle(0.0, top - 6.0, width.min(700.0), height - top + 6.0);
     ink(cr.fill());
 
     cr.select_font_face("monospace", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
@@ -490,6 +636,7 @@ fn open<P: Paint + 'static>(
     width: i32,
     height: i32,
     title: &str,
+    stem: &str,
 ) {
     let area = DrawingArea::new();
 
@@ -581,6 +728,7 @@ fn open<P: Paint + 'static>(
         let view = view.clone();
         let area = area.clone();
         let window = window.clone();
+        let stem = stem.to_string();
         keys.connect_key_pressed(move |_, key, _, _| {
             {
                 let view = &mut *view.borrow_mut();
@@ -596,6 +744,28 @@ fn open<P: Paint + 'static>(
                     gdk::Key::a | gdk::Key::Home => {
                         let whole = view.scene.bounds();
                         view.camera.frame(whole);
+                    }
+                    gdk::Key::c => {
+                        // Bringing the selection back under the eye without
+                        // giving up the zoom one climbed to: `f` would refit,
+                        // which for a single node means flying back out to a
+                        // size it was never being looked at.
+                        let (x, y) = match view.chosen {
+                            Some(i) => {
+                                let [x, y] = view.scene.at(i);
+                                (x, y)
+                            }
+                            None => view.scene.bounds().centre(),
+                        };
+                        view.camera.look_at(x, y);
+                    }
+                    gdk::Key::e => {
+                        // The window is not redrawn until this returns, so the
+                        // page is of the frame that is still on the screen.
+                        view.note = Some(match export(view, &stem) {
+                            Ok(path) => format!("written to {path}"),
+                            Err(why) => why,
+                        });
                     }
                     gdk::Key::p => {
                         // Climbing out of a subtree one dived into.  A root has
@@ -660,7 +830,10 @@ pub fn show<P: Paint + 'static>(
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
 
-    app.connect_activate(move |app| open(app, &view, width, height, &title));
+    // `argv0` is also what the exported pages are named after, so that two
+    // viewers open in one directory do not write over each other.
+    let stem = argv0.to_string();
+    app.connect_activate(move |app| open(app, &view, width, height, &title, &stem));
 
     // The arguments the program was given are its own, and GTK would refuse
     // them; it is given a command line with nothing in it but the name.
