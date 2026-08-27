@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["BUF_SIZE","HEADER_FIELDS","INPUT_FIELDS","OUTPUT_FIELDS"],"struct":["Input","Reader","Record"]};

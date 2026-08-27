@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["SENTINEL_KEY"],"fn":["exp_of","key_of"],"struct":["Arena","Node"],"type":["Coeff","Exp","Idx","Key"]};

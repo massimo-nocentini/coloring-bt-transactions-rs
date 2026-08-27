@@ -3,759 +3,721 @@
 <a href=#3 id=3 data-nosnippet>3</a>//! The text output names every block in every color, which on a real run is
 <a href=#4 id=4 data-nosnippet>4</a>//! tens of gigabytes of `(block . 1)` pairs.  The same answer drawn instead of
 <a href=#5 id=5 data-nosnippet>5</a>//! spelled: one **row** per transaction, in the order the transactions arrive,
-<a href=#6 id=6 data-nosnippet>6</a>//! one **column** per block id, counting up from 0, and a black pixel wherever
+<a href=#6 id=6 data-nosnippet>6</a>//! one **column** per block id, counting up from 0, and an inked pixel wherever
 <a href=#7 id=7 data-nosnippet>7</a>//! that block is in that transaction's color.  A color of a thousand blocks is a
 <a href=#8 id=8 data-nosnippet>8</a>//! thousand bits rather than fourteen thousand bytes, and how far back a
 <a href=#9 id=9 data-nosnippet>9</a>//! transaction's coins reach is something you can then look at.
 <a href=#10 id=10 data-nosnippet>10</a>//!
 <a href=#11 id=11 data-nosnippet>11</a>//! What the picture drops is the coefficients.  For the unweighted backends
 <a href=#12 id=12 data-nosnippet>12</a>//! there is nothing to drop — every coefficient is 1, so the color *is* its set
-<a href=#13 id=13 data-nosnippet>13</a>//! of blocks and the bitmap is the whole answer.  Under `--weighted` a pixel
+<a href=#13 id=13 data-nosnippet>13</a>//! of blocks and the picture is the whole answer.  Under `--weighted` a pixel
 <a href=#14 id=14 data-nosnippet>14</a>//! says only that some of the transaction's value came from that block, not how
-<a href=#15 id=15 data-nosnippet>15</a>//! much; a weight too small to print as anything but `0.000000` is a black pixel
-<a href=#16 id=16 data-nosnippet>16</a>//! like any other, which is one thing the picture shows better than the text.
-<a href=#17 id=17 data-nosnippet>17</a>//!
-<a href=#18 id=18 data-nosnippet>18</a>//! ## Two formats, and which one is smaller
-<a href=#19 id=19 data-nosnippet>19</a>//!
-<a href=#20 id=20 data-nosnippet>20</a>//! [`Format::Pbm`] is netpbm's binary bitmap, `P4`: a short text header, then the
-<a href=#21 id=21 data-nosnippet>21</a>//! rows packed eight pixels to the byte with the leftmost pixel in the *most*
-<a href=#22 id=22 data-nosnippet>22</a>//! significant bit and each row padded out to a whole byte.  A 1 bit is black,
-<a href=#23 id=23 data-nosnippet>23</a>//! which is what makes "the ones in the output" and "the black pixels" the same
-<a href=#24 id=24 data-nosnippet>24</a>//! statement.  Every image tool reads it.  A row costs `width / 8` bytes and
-<a href=#25 id=25 data-nosnippet>25</a>//! nothing else: the same whether it is empty or solid.
+<a href=#15 id=15 data-nosnippet>15</a>//! much; a weight too small to print as anything but `0.000000` is an inked
+<a href=#16 id=16 data-nosnippet>16</a>//! pixel like any other, which is one thing the picture shows better than the
+<a href=#17 id=17 data-nosnippet>17</a>//! text.
+<a href=#18 id=18 data-nosnippet>18</a>//!
+<a href=#19 id=19 data-nosnippet>19</a>//! ## A lossless, bilevel JPEG 2000
+<a href=#20 id=20 data-nosnippet>20</a>//!
+<a href=#21 id=21 data-nosnippet>21</a>//! One component, one bit a sample: [`INK`] where the block is in the color and
+<a href=#22 id=22 data-nosnippet>22</a>//! [`PAPER`] where it is not.  A greyscale sample of 0 is black and the largest
+<a href=#23 id=23 data-nosnippet>23</a>//! it can be is white, so at a precision of one bit those two numbers *are*
+<a href=#24 id=24 data-nosnippet>24</a>//! black on white, and "the ones in the output" and "the black pixels" stay the
+<a href=#25 id=25 data-nosnippet>25</a>//! same statement.
 <a href=#26 id=26 data-nosnippet>26</a>//!
-<a href=#27 id=27 data-nosnippet>27</a>//! [`Format::Svg`] draws the same rows as horizontal strokes, one per *run* of
-<a href=#28 id=28 data-nosnippet>28</a>//! adjacent blocks.  A row then costs about [`SVG_BYTES_PER_RUN`] bytes per run
-<a href=#29 id=29 data-nosnippet>29</a>//! and nothing at all for the white between them, so the two formats scale
-<a href=#30 id=30 data-nosnippet>30</a>//! against different things:
-<a href=#31 id=31 data-nosnippet>31</a>//!
-<a href=#32 id=32 data-nosnippet>32</a>//! ```text
-<a href=#33 id=33 data-nosnippet>33</a>//!     SVG is smaller  &lt;=&gt;  runs per row  &lt;  width / 56
-<a href=#34 id=34 data-nosnippet>34</a>//! ```
-<a href=#35 id=35 data-nosnippet>35</a>//!
-<a href=#36 id=36 data-nosnippet>36</a>//! Which side of that a real chain falls on is a question about the records
-<a href=#37 id=37 data-nosnippet>37</a>//! rather than about the formats, so `--stats` measures it and says what the
-<a href=#38 id=38 data-nosnippet>38</a>//! other format would have cost — see [`Writer::runs`].  Colors that reach back
-<a href=#39 id=39 data-nosnippet>39</a>//! in a few long stretches are a handful of runs however wide the image, and
-<a href=#40 id=40 data-nosnippet>40</a>//! drawing those is far cheaper than packing rows that are mostly white; on
-<a href=#41 id=41 data-nosnippet>41</a>//! synthetic runs here the same records came out
-<a href=#42 id=42 data-nosnippet>42</a>//!
-<a href=#43 id=43 data-nosnippet>43</a>//! ```text
-<a href=#44 id=44 data-nosnippet>44</a>//!     width   runs/row     PBM        SVG    smaller by
-<a href=#45 id=45 data-nosnippet>45</a>//!     50,000       6.3   625 MB     5.2 MB       120x
-<a href=#46 id=46 data-nosnippet>46</a>//!     10,000     176.0   125 MB   112.4 MB       1.11x
-<a href=#47 id=47 data-nosnippet>47</a>//!      5,000      48.1   125 MB    60.4 MB       2.07x
-<a href=#48 id=48 data-nosnippet>48</a>//! ```
-<a href=#49 id=49 data-nosnippet>49</a>//!
-<a href=#50 id=50 data-nosnippet>50</a>//! and it takes a color shot through with gaps — a run every fifty-six columns,
-<a href=#51 id=51 data-nosnippet>51</a>//! all the way across — before the bitmap starts to win.
-<a href=#52 id=52 data-nosnippet>52</a>//!
-<a href=#53 id=53 data-nosnippet>53</a>//! What the vector picture gives up is that it is one enormous `&lt;path&gt;`.  Every
-<a href=#54 id=54 data-nosnippet>54</a>//! image tool reads a `P4`; an SVG of a million rows is a file a browser has to
-<a href=#55 id=55 data-nosnippet>55</a>//! be willing to parse before it will show anything.
-<a href=#56 id=56 data-nosnippet>56</a>//!
-<a href=#57 id=57 data-nosnippet>57</a>//! Neither is compressed, and both compress well; the bitmap of a 200,000-record
-<a href=#58 id=58 data-nosnippet>58</a>//! run goes from 125 MB to 8.8 MB through `gzip` and 6.5 MB through `zstd`.  If
-<a href=#59 id=59 data-nosnippet>59</a>//! the output is only ever going to be read back by a program, that is a bigger
-<a href=#60 id=60 data-nosnippet>60</a>//! win than the choice of format, and it composes with either.
-<a href=#61 id=61 data-nosnippet>61</a>//!
-<a href=#62 id=62 data-nosnippet>62</a>//! ## Folding transactions together
+<a href=#27 id=27 data-nosnippet>27</a>//! Lossless, and not as a preference.  A pixel here is a whole fact — these
+<a href=#28 id=28 data-nosnippet>28</a>//! coins did or did not come through that block — so there is no approximation
+<a href=#29 id=29 data-nosnippet>29</a>//! of one that is still an answer, and at one bit a sample there is nothing to
+<a href=#30 id=30 data-nosnippet>30</a>//! approximate with in any case.  The encoder is set up for the reversible path
+<a href=#31 id=31 data-nosnippet>31</a>//! accordingly: the 5/3 integer wavelet, no quantisation, one quality layer at
+<a href=#32 id=32 data-nosnippet>32</a>//! no rate cap.  `the_picture_round_trips_losslessly` asserts that against the
+<a href=#33 id=33 data-nosnippet>33</a>//! decoder rather than trusting the setting.
+<a href=#34 id=34 data-nosnippet>34</a>//!
+<a href=#35 id=35 data-nosnippet>35</a>//! What that buys over the packed raster this used to write is the compression a
+<a href=#36 id=36 data-nosnippet>36</a>//! bitmap has no way to express.  A row is a stretch of ink and then the white
+<a href=#37 id=37 data-nosnippet>37</a>//! past the block its transaction was mined in, and the wavelet plus EBCOT
+<a href=#38 id=38 data-nosnippet>38</a>//! charge almost nothing for a flat stretch of either tone, so on a synthetic
+<a href=#39 id=39 data-nosnippet>39</a>//! run of 42,000 records over 2,000 blocks — 447 pixels in a thousand inked —
+<a href=#40 id=40 data-nosnippet>40</a>//! the same picture came to
+<a href=#41 id=41 data-nosnippet>41</a>//!
+<a href=#42 id=42 data-nosnippet>42</a>//! ```text
+<a href=#43 id=43 data-nosnippet>43</a>//!     packed raster       10.5 MB
+<a href=#44 id=44 data-nosnippet>44</a>//!     the same, gzip -9   56.7 kB
+<a href=#45 id=45 data-nosnippet>45</a>//!     JPEG 2000          103.0 kB
+<a href=#46 id=46 data-nosnippet>46</a>//! ```
+<a href=#47 id=47 data-nosnippet>47</a>//!
+<a href=#48 id=48 data-nosnippet>48</a>//! which is the shape of the trade rather than a win outright.  A raster whose
+<a href=#49 id=49 data-nosnippet>49</a>//! rows resemble one another is exactly what a general-purpose compressor is
+<a href=#50 id=50 data-nosnippet>50</a>//! good at, and on records as regular as those it beats this comfortably.  What
+<a href=#51 id=51 data-nosnippet>51</a>//! it does not leave behind is an image.  This is one, every tool opens it, and
+<a href=#52 id=52 data-nosnippet>52</a>//! [`RESOLUTIONS`] reduced resolutions are in the file: a viewer can show a
+<a href=#53 id=53 data-nosnippet>53</a>//! picture a hundred thousand rows tall at 1/32 scale without decoding the full
+<a href=#54 id=54 data-nosnippet>54</a>//! size, which for these is the difference between looking at it and not.
+<a href=#55 id=55 data-nosnippet>55</a>//!
+<a href=#56 id=56 data-nosnippet>56</a>//! What it costs is time.  Writing a raster is a memcpy; this runs a wavelet and
+<a href=#57 id=57 data-nosnippet>57</a>//! an arithmetic coder over every sample, paper included, and the paper is most
+<a href=#58 id=58 data-nosnippet>58</a>//! of them — on the run above, 84 million samples for about 0.07s over what the
+<a href=#59 id=59 data-nosnippet>59</a>//! same colouring cost written as text.  The number to watch is that one: the
+<a href=#60 id=60 data-nosnippet>60</a>//! picture is `width * rows` samples whatever is drawn in it, so it is `--bin`,
+<a href=#61 id=61 data-nosnippet>61</a>//! which is the only thing that changes how many samples there are, that decides
+<a href=#62 id=62 data-nosnippet>62</a>//! what a long run pays here.
 <a href=#63 id=63 data-nosnippet>63</a>//!
-<a href=#64 id=64 data-nosnippet>64</a>//! A row per transaction is a row per record, and a real run has more records
-<a href=#65 id=65 data-nosnippet>65</a>//! than any screen has pixels — a million rows is already a picture nothing will
-<a href=#66 id=66 data-nosnippet>66</a>//! show you whole.  So a row may stand for more than one transaction:
-<a href=#67 id=67 data-nosnippet>67</a>//! [`Writer::new`]'s `bin` is how many consecutive transactions share a row, and
-<a href=#68 id=68 data-nosnippet>68</a>//! the row they share is the union of their colors, black where *any* of them
-<a href=#69 id=69 data-nosnippet>69</a>//! reaches that block.  Union is what the driver is computing anyway, so a
-<a href=#70 id=70 data-nosnippet>70</a>//! binned picture is the same picture at a coarser scale rather than a sampled
-<a href=#71 id=71 data-nosnippet>71</a>//! or averaged one, and nothing that was black can go white.  The last bin is
-<a href=#72 id=72 data-nosnippet>72</a>//! whatever is left over, and it is written like any other.
-<a href=#73 id=73 data-nosnippet>73</a>//!
-<a href=#74 id=74 data-nosnippet>74</a>//! ## Why the header is padded, and why this wants a file
+<a href=#64 id=64 data-nosnippet>64</a>//! ## Folding transactions together
+<a href=#65 id=65 data-nosnippet>65</a>//!
+<a href=#66 id=66 data-nosnippet>66</a>//! A row per transaction is a row per record, and a real run has more records
+<a href=#67 id=67 data-nosnippet>67</a>//! than any screen has pixels — a million rows is already a picture nothing will
+<a href=#68 id=68 data-nosnippet>68</a>//! show you whole.  So a row may stand for more than one transaction:
+<a href=#69 id=69 data-nosnippet>69</a>//! [`Writer::new`]'s `bin` is how many consecutive transactions share a row, and
+<a href=#70 id=70 data-nosnippet>70</a>//! the row they share is the union of their colors, inked where *any* of them
+<a href=#71 id=71 data-nosnippet>71</a>//! reaches that block.  Union is what the driver is computing anyway, so a
+<a href=#72 id=72 data-nosnippet>72</a>//! binned picture is the same picture at a coarser scale rather than a sampled
+<a href=#73 id=73 data-nosnippet>73</a>//! or averaged one, and nothing that was inked can go white.  The last bin is
+<a href=#74 id=74 data-nosnippet>74</a>//! whatever is left over, and it is drawn like any other.
 <a href=#75 id=75 data-nosnippet>75</a>//!
-<a href=#76 id=76 data-nosnippet>76</a>//! Both formats put the height in front of the picture, and the height is the
-<a href=#77 id=77 data-nosnippet>77</a>//! number of transactions — not known until the input has ended, by which time
-<a href=#78 id=78 data-nosnippet>78</a>//! the picture is written and gigabytes long.  So the header is written with a
-<a href=#79 id=79 data-nosnippet>79</a>//! placeholder and padded out to a length that cannot change, and
-<a href=#80 id=80 data-nosnippet>80</a>//! [`Writer::finish`] seeks back and stamps the real number into the hole.  A
-<a href=#81 id=81 data-nosnippet>81</a>//! `usize` never needs more than 20 digits, so what each format pads *with* is
-<a href=#82 id=82 data-nosnippet>82</a>//! the only difference: netpbm lets any run of whitespace separate two header
-<a href=#83 id=83 data-nosnippet>83</a>//! tokens, and XML lets any run of it separate two attributes.
-<a href=#84 id=84 data-nosnippet>84</a>//!
-<a href=#85 id=85 data-nosnippet>85</a>//! That seek is why this writes to a file rather than to stdout: a pipe cannot
-<a href=#86 id=86 data-nosnippet>86</a>//! be rewound.  The width has no such escape — it fixes the distance from one
-<a href=#87 id=87 data-nosnippet>87</a>//! row to the next, so it cannot be discovered along the way the height can, and
-<a href=#88 id=88 data-nosnippet>88</a>//! has to be settled before the first row is written.  `--blocks` says it
-<a href=#89 id=89 data-nosnippet>89</a>//! outright; without it the driver counts the blocks first, by reading the
-<a href=#90 id=90 data-nosnippet>90</a>//! records twice — see `main`'s `survey`.
-<a href=#91 id=91 data-nosnippet>91</a>
-<a href=#92 id=92 data-nosnippet>92</a></span><span class="kw">use </span>std::io::{<span class="self">self</span>, BufWriter, Seek, SeekFrom, Write};
-<a href=#93 id=93 data-nosnippet>93</a>
-<a href=#94 id=94 data-nosnippet>94</a><span class="doccomment">/// Blanks reserved for the row count in a `P4` header.
-<a href=#95 id=95 data-nosnippet>95</a>///
-<a href=#96 id=96 data-nosnippet>96</a>/// `usize::MAX` is 20 digits, so a field this wide fits any number of rows a run
-<a href=#97 id=97 data-nosnippet>97</a>/// could produce and the header's length is a function of the width alone.  That
-<a href=#98 id=98 data-nosnippet>98</a>/// is the whole trick — see the module docs.
-<a href=#99 id=99 data-nosnippet>99</a></span><span class="kw">const </span>HEIGHT_DIGITS: usize = <span class="number">20</span>;
-<a href=#100 id=100 data-nosnippet>100</a>
-<a href=#101 id=101 data-nosnippet>101</a><span class="doccomment">/// Which of the two pictures to draw.  The module docs say when each is smaller.
-<a href=#102 id=102 data-nosnippet>102</a></span><span class="attr">#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-<a href=#103 id=103 data-nosnippet>103</a></span><span class="kw">pub enum </span>Format {
-<a href=#104 id=104 data-nosnippet>104</a>    <span class="doccomment">/// Netpbm's binary bitmap: `width / 8` bytes a row, whatever is in it.
-<a href=#105 id=105 data-nosnippet>105</a>    </span>Pbm,
-<a href=#106 id=106 data-nosnippet>106</a>    <span class="doccomment">/// One stroke per run of adjacent blocks: nothing for the white.
-<a href=#107 id=107 data-nosnippet>107</a>    </span>Svg,
-<a href=#108 id=108 data-nosnippet>108</a>}
-<a href=#109 id=109 data-nosnippet>109</a>
-<a href=#110 id=110 data-nosnippet>110</a><span class="doccomment">/// What one run costs as a stroke, near enough for the note `--stats` prints
-<a href=#111 id=111 data-nosnippet>111</a>/// about the format that was not chosen.
-<a href=#112 id=112 data-nosnippet>112</a>///
-<a href=#113 id=113 data-nosnippet>113</a>/// Measured rather than counted up from the grammar: `m-4930 1h6` is ten bytes
-<a href=#114 id=114 data-nosnippet>114</a>/// and a run at the start of a row is six, and across four synthetic runs of
-<a href=#115 id=115 data-nosnippet>115</a>/// very different shapes the mean came out between 6.3 and 8.3.  It stays that
-<a href=#116 id=116 data-nosnippet>116</a>/// short however big the picture gets because every move but the first says how
-<a href=#117 id=117 data-nosnippet>117</a>/// far the pen went rather than where it landed, and a step is a few digits even
-<a href=#118 id=118 data-nosnippet>118</a>/// when the coordinates are seven.
-<a href=#119 id=119 data-nosnippet>119</a></span><span class="kw">const </span>SVG_BYTES_PER_RUN: usize = <span class="number">7</span>;
-<a href=#120 id=120 data-nosnippet>120</a>
-<a href=#121 id=121 data-nosnippet>121</a><span class="kw">impl </span>Format {
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Roughly what a row of `runs` runs costs in this format.
-<a href=#123 id=123 data-nosnippet>123</a>    </span><span class="kw">fn </span>row_bytes(<span class="self">self</span>, width: usize, runs: usize) -&gt; usize {
-<a href=#124 id=124 data-nosnippet>124</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#125 id=125 data-nosnippet>125</a>            Format::Pbm =&gt; width.div_ceil(<span class="number">8</span>),
-<a href=#126 id=126 data-nosnippet>126</a>            Format::Svg =&gt; SVG_BYTES_PER_RUN * runs,
-<a href=#127 id=127 data-nosnippet>127</a>        }
-<a href=#128 id=128 data-nosnippet>128</a>    }
-<a href=#129 id=129 data-nosnippet>129</a>}
-<a href=#130 id=130 data-nosnippet>130</a>
-<a href=#131 id=131 data-nosnippet>131</a><span class="doccomment">/// `P4`, `width` columns, `rows` rows, with the row count right-aligned in its
-<a href=#132 id=132 data-nosnippet>132</a>/// fixed-width field.
-<a href=#133 id=133 data-nosnippet>133</a></span><span class="kw">fn </span>pbm_header(width: usize, rows: usize) -&gt; String {
-<a href=#134 id=134 data-nosnippet>134</a>    <span class="macro">format!</span>(<span class="string">"P4\n{} {:&gt;field$}\n"</span>, width, rows, field = HEIGHT_DIGITS)
-<a href=#135 id=135 data-nosnippet>135</a>}
-<a href=#136 id=136 data-nosnippet>136</a>
-<a href=#137 id=137 data-nosnippet>137</a><span class="doccomment">/// The opening of an SVG `width` by `rows`, padded to a length that does not
-<a href=#138 id=138 data-nosnippet>138</a>/// depend on `rows`.
-<a href=#139 id=139 data-nosnippet>139</a>///
-<a href=#140 id=140 data-nosnippet>140</a>/// The padding is spaces before the tag's `&gt;`, which is whitespace between
-<a href=#141 id=141 data-nosnippet>141</a>/// attributes as far as any XML parser is concerned — nothing has to be told
-<a href=#142 id=142 data-nosnippet>142</a>/// about it, and unlike padding a number it cannot change what the number means.
-<a href=#143 id=143 data-nosnippet>143</a>///
-<a href=#144 id=144 data-nosnippet>144</a>/// Rows are strokes rather than rectangles, which is what keeps a run down to
-<a href=#145 id=145 data-nosnippet>145</a>/// about twelve bytes: a stroke is a move and a horizontal line, where a
-<a href=#146 id=146 data-nosnippet>146</a>/// rectangle is four numbers and a tag.  `stroke-width` 1 on a path shifted down
-<a href=#147 id=147 data-nosnippet>147</a>/// half a pixel puts the stroke exactly over the row, so every coordinate in the
-<a href=#148 id=148 data-nosnippet>148</a>/// path stays a whole number.
-<a href=#149 id=149 data-nosnippet>149</a></span><span class="kw">fn </span>svg_header(width: usize, rows: usize) -&gt; String {
-<a href=#150 id=150 data-nosnippet>150</a>    <span class="kw">let </span>tag = |height: usize| {
-<a href=#151 id=151 data-nosnippet>151</a>        <span class="macro">format!</span>(
-<a href=#152 id=152 data-nosnippet>152</a>            <span class="string">"&lt;svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}\" height=\"{1}\" \
-<a href=#153 id=153 data-nosnippet>153</a>             viewBox=\"0 0 {0} {1}\" shape-rendering=\"crispEdges\""</span>,
-<a href=#154 id=154 data-nosnippet>154</a>            width, height
-<a href=#155 id=155 data-nosnippet>155</a>        )
-<a href=#156 id=156 data-nosnippet>156</a>    };
-<a href=#157 id=157 data-nosnippet>157</a>    <span class="kw">let </span><span class="kw-2">mut </span>open = tag(rows);
-<a href=#158 id=158 data-nosnippet>158</a>    <span class="comment">// Every height that could replace this one is at most as long as the widest
-<a href=#159 id=159 data-nosnippet>159</a>    // a `usize` gets, so padding to that is padding to a fixed length.
-<a href=#160 id=160 data-nosnippet>160</a>    </span><span class="kw">let </span>padding = tag(usize::MAX).len() - open.len();
-<a href=#161 id=161 data-nosnippet>161</a>    open.extend(std::iter::repeat_n(<span class="string">' '</span>, padding));
-<a href=#162 id=162 data-nosnippet>162</a>    <span class="macro">format!</span>(
-<a href=#163 id=163 data-nosnippet>163</a>        <span class="string">"{}&gt;&lt;rect width=\"100%\" height=\"100%\" fill=\"#fff\"/&gt;\
-<a href=#164 id=164 data-nosnippet>164</a>         &lt;path fill=\"none\" stroke=\"#000\" stroke-width=\"1\" \
-<a href=#165 id=165 data-nosnippet>165</a>         transform=\"translate(0,.5)\" d=\""</span>,
-<a href=#166 id=166 data-nosnippet>166</a>        open
-<a href=#167 id=167 data-nosnippet>167</a>    )
-<a href=#168 id=168 data-nosnippet>168</a>}
-<a href=#169 id=169 data-nosnippet>169</a>
-<a href=#170 id=170 data-nosnippet>170</a><span class="doccomment">/// What closes an SVG, once the last stroke is in.
-<a href=#171 id=171 data-nosnippet>171</a></span><span class="kw">const </span>SVG_TAIL: <span class="kw-2">&amp;</span>str = <span class="string">"\"/&gt;&lt;/svg&gt;\n"</span>;
-<a href=#172 id=172 data-nosnippet>172</a>
-<a href=#173 id=173 data-nosnippet>173</a><span class="doccomment">/// Visit the maximal runs of black pixels in `row` as `(start, length)`.
-<a href=#174 id=174 data-nosnippet>174</a>///
-<a href=#175 id=175 data-nosnippet>175</a>/// Uniform bytes are stepped over eight pixels at a time, which is what makes
-<a href=#176 id=176 data-nosnippet>176</a>/// this cheap on the rows that matter: a color that reaches back a long way is
-<a href=#177 id=177 data-nosnippet>177</a>/// mostly solid `0xff` and empty `0x00`, and only the ends of its runs cost a
-<a href=#178 id=178 data-nosnippet>178</a>/// look at individual bits.
-<a href=#179 id=179 data-nosnippet>179</a></span><span class="kw">fn </span>for_each_run(row: <span class="kw-2">&amp;</span>[u8], <span class="kw-2">mut </span>visit: <span class="kw">impl </span>FnMut(usize, usize)) {
-<a href=#180 id=180 data-nosnippet>180</a>    <span class="kw">let </span>bits = row.len() * <span class="number">8</span>;
-<a href=#181 id=181 data-nosnippet>181</a>    <span class="kw">let </span>black = |x: usize| row[x / <span class="number">8</span>] &amp; (<span class="number">0x80 </span>&gt;&gt; (x % <span class="number">8</span>)) != <span class="number">0</span>;
-<a href=#182 id=182 data-nosnippet>182</a>
-<a href=#183 id=183 data-nosnippet>183</a>    <span class="comment">// The next pixel at or after `from` that is black, or is not.
-<a href=#184 id=184 data-nosnippet>184</a>    </span><span class="kw">let </span>find = |<span class="kw-2">mut </span>x: usize, want: bool| {
-<a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">let </span>skip = <span class="kw">if </span>want { <span class="number">0x00 </span>} <span class="kw">else </span>{ <span class="number">0xff </span>};
-<a href=#186 id=186 data-nosnippet>186</a>        <span class="kw">while </span>x &lt; bits {
-<a href=#187 id=187 data-nosnippet>187</a>            <span class="kw">if </span>x.is_multiple_of(<span class="number">8</span>) &amp;&amp; row[x / <span class="number">8</span>] == skip {
-<a href=#188 id=188 data-nosnippet>188</a>                x += <span class="number">8</span>;
-<a href=#189 id=189 data-nosnippet>189</a>            } <span class="kw">else if </span>black(x) == want {
-<a href=#190 id=190 data-nosnippet>190</a>                <span class="kw">return </span>x;
-<a href=#191 id=191 data-nosnippet>191</a>            } <span class="kw">else </span>{
-<a href=#192 id=192 data-nosnippet>192</a>                x += <span class="number">1</span>;
-<a href=#193 id=193 data-nosnippet>193</a>            }
-<a href=#194 id=194 data-nosnippet>194</a>        }
-<a href=#195 id=195 data-nosnippet>195</a>        bits
-<a href=#196 id=196 data-nosnippet>196</a>    };
-<a href=#197 id=197 data-nosnippet>197</a>
-<a href=#198 id=198 data-nosnippet>198</a>    <span class="kw">let </span><span class="kw-2">mut </span>x = find(<span class="number">0</span>, <span class="bool-val">true</span>);
-<a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">while </span>x &lt; bits {
-<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">let </span>end = find(x, <span class="bool-val">false</span>);
-<a href=#201 id=201 data-nosnippet>201</a>        visit(x, end - x);
-<a href=#202 id=202 data-nosnippet>202</a>        x = find(end, <span class="bool-val">true</span>);
-<a href=#203 id=203 data-nosnippet>203</a>    }
-<a href=#204 id=204 data-nosnippet>204</a>}
-<a href=#205 id=205 data-nosnippet>205</a>
-<a href=#206 id=206 data-nosnippet>206</a><span class="doccomment">/// A bitmap being written a row at a time.
-<a href=#207 id=207 data-nosnippet>207</a>///
-<a href=#208 id=208 data-nosnippet>208</a>/// A transaction is drawn by [`Writer::set`], once per block in its color, and
-<a href=#209 id=209 data-nosnippet>209</a>/// closed by [`Writer::end_transaction`]; every `bin` of those makes a row.  The
-<a href=#210 id=210 data-nosnippet>210</a>/// rows are streamed out as they are finished, so the memory here is one row's
-<a href=#211 id=211 data-nosnippet>211</a>/// worth however tall the image gets.
-<a href=#212 id=212 data-nosnippet>212</a></span><span class="kw">pub struct </span>Writer&lt;W: Write + Seek&gt; {
-<a href=#213 id=213 data-nosnippet>213</a>    out: BufWriter&lt;W&gt;,
-<a href=#214 id=214 data-nosnippet>214</a>    <span class="doccomment">/// Columns, i.e. how many block ids the image has room for.
-<a href=#215 id=215 data-nosnippet>215</a>    </span>width: usize,
-<a href=#216 id=216 data-nosnippet>216</a>    <span class="doccomment">/// Transactions to a row.  One is a row each, which is the plain picture.
-<a href=#217 id=217 data-nosnippet>217</a>    </span>bin: usize,
-<a href=#218 id=218 data-nosnippet>218</a>    <span class="doccomment">/// The row being built, eight pixels to the byte and rounded up to a whole
-<a href=#219 id=219 data-nosnippet>219</a>    /// one.  Zero outside `..dirty` at all times, which is the invariant that
-<a href=#220 id=220 data-nosnippet>220</a>    /// lets [`Writer::flush_row`] clear only a prefix.
-<a href=#221 id=221 data-nosnippet>221</a>    </span>row: Vec&lt;u8&gt;,
-<a href=#222 id=222 data-nosnippet>222</a>    dirty: usize,
-<a href=#223 id=223 data-nosnippet>223</a>    <span class="doccomment">/// Transactions drawn into the row so far, always below `bin`.
-<a href=#224 id=224 data-nosnippet>224</a>    </span>pending: usize,
-<a href=#225 id=225 data-nosnippet>225</a>    rows: usize,
-<a href=#226 id=226 data-nosnippet>226</a>    <span class="doccomment">/// The first block id seen that the image has no column for, if any.
-<a href=#227 id=227 data-nosnippet>227</a>    </span>escaped: <span class="prelude-ty">Option</span>&lt;usize&gt;,
-<a href=#228 id=228 data-nosnippet>228</a>    <span class="doccomment">/// Length of the placeholder header, which is also where the picture starts.
-<a href=#229 id=229 data-nosnippet>229</a>    </span>header_len: usize,
-<a href=#230 id=230 data-nosnippet>230</a>    format: Format,
-<a href=#231 id=231 data-nosnippet>231</a>    <span class="doccomment">/// Where the SVG path's pen is, once it has been put down.  Every move after
-<a href=#232 id=232 data-nosnippet>232</a>    /// the first is relative to it, which is what keeps the numbers short in an
-<a href=#233 id=233 data-nosnippet>233</a>    /// image whose coordinates run to seven digits.
-<a href=#234 id=234 data-nosnippet>234</a>    </span>pen: <span class="prelude-ty">Option</span>&lt;(usize, usize)&gt;,
-<a href=#235 id=235 data-nosnippet>235</a>    <span class="doccomment">/// The strokes of one row, built up before going out in a single write.
-<a href=#236 id=236 data-nosnippet>236</a>    /// Reused across rows, like the driver's line buffer.
-<a href=#237 id=237 data-nosnippet>237</a>    </span>strokes: Vec&lt;u8&gt;,
-<a href=#238 id=238 data-nosnippet>238</a>    <span class="doccomment">/// Runs counted so far, and whether to bother counting them.  Only `--stats`
-<a href=#239 id=239 data-nosnippet>239</a>    /// wants this, and for [`Format::Pbm`] counting means a scan of the row that
-<a href=#240 id=240 data-nosnippet>240</a>    /// writing it does not otherwise need.
-<a href=#241 id=241 data-nosnippet>241</a>    </span>runs: u64,
-<a href=#242 id=242 data-nosnippet>242</a>    measure: bool,
-<a href=#243 id=243 data-nosnippet>243</a>}
-<a href=#244 id=244 data-nosnippet>244</a>
-<a href=#245 id=245 data-nosnippet>245</a><span class="kw">impl</span>&lt;W: Write + Seek&gt; Writer&lt;W&gt; {
-<a href=#246 id=246 data-nosnippet>246</a>    <span class="doccomment">/// Start a picture `width` columns wide with `bin` transactions to the row,
-<a href=#247 id=247 data-nosnippet>247</a>    /// writing the placeholder header.
-<a href=#248 id=248 data-nosnippet>248</a>    </span><span class="kw">pub fn </span>new(
-<a href=#249 id=249 data-nosnippet>249</a>        inner: W,
-<a href=#250 id=250 data-nosnippet>250</a>        format: Format,
-<a href=#251 id=251 data-nosnippet>251</a>        width: usize,
-<a href=#252 id=252 data-nosnippet>252</a>        bin: usize,
-<a href=#253 id=253 data-nosnippet>253</a>        measure: bool,
-<a href=#254 id=254 data-nosnippet>254</a>    ) -&gt; io::Result&lt;<span class="self">Self</span>&gt; {
-<a href=#255 id=255 data-nosnippet>255</a>        <span class="macro">assert!</span>(bin &gt; <span class="number">0</span>, <span class="string">"a row has to stand for at least one transaction"</span>);
-<a href=#256 id=256 data-nosnippet>256</a>        <span class="kw">let </span><span class="kw-2">mut </span>out = BufWriter::with_capacity(<span class="number">1 </span>&lt;&lt; <span class="number">20</span>, inner);
-<a href=#257 id=257 data-nosnippet>257</a>        <span class="kw">let </span>placeholder = <span class="kw">match </span>format {
-<a href=#258 id=258 data-nosnippet>258</a>            Format::Pbm =&gt; pbm_header(width, <span class="number">0</span>),
-<a href=#259 id=259 data-nosnippet>259</a>            Format::Svg =&gt; svg_header(width, <span class="number">0</span>),
-<a href=#260 id=260 data-nosnippet>260</a>        };
-<a href=#261 id=261 data-nosnippet>261</a>        out.write_all(placeholder.as_bytes())<span class="question-mark">?</span>;
-<a href=#262 id=262 data-nosnippet>262</a>        <span class="prelude-val">Ok</span>(Writer {
-<a href=#263 id=263 data-nosnippet>263</a>            out,
-<a href=#264 id=264 data-nosnippet>264</a>            width,
-<a href=#265 id=265 data-nosnippet>265</a>            bin,
-<a href=#266 id=266 data-nosnippet>266</a>            row: <span class="macro">vec!</span>[<span class="number">0u8</span>; width.div_ceil(<span class="number">8</span>)],
-<a href=#267 id=267 data-nosnippet>267</a>            dirty: <span class="number">0</span>,
-<a href=#268 id=268 data-nosnippet>268</a>            pending: <span class="number">0</span>,
-<a href=#269 id=269 data-nosnippet>269</a>            rows: <span class="number">0</span>,
-<a href=#270 id=270 data-nosnippet>270</a>            escaped: <span class="prelude-val">None</span>,
-<a href=#271 id=271 data-nosnippet>271</a>            header_len: placeholder.len(),
-<a href=#272 id=272 data-nosnippet>272</a>            format,
-<a href=#273 id=273 data-nosnippet>273</a>            pen: <span class="prelude-val">None</span>,
-<a href=#274 id=274 data-nosnippet>274</a>            strokes: Vec::new(),
-<a href=#275 id=275 data-nosnippet>275</a>            runs: <span class="number">0</span>,
-<a href=#276 id=276 data-nosnippet>276</a>            measure: measure || format == Format::Svg,
-<a href=#277 id=277 data-nosnippet>277</a>        })
-<a href=#278 id=278 data-nosnippet>278</a>    }
-<a href=#279 id=279 data-nosnippet>279</a>
-<a href=#280 id=280 data-nosnippet>280</a>    <span class="doccomment">/// Blacken the pixel for `block` in the row being built.
-<a href=#281 id=281 data-nosnippet>281</a>    ///
-<a href=#282 id=282 data-nosnippet>282</a>    /// A block the image has no column for is remembered rather than reported:
-<a href=#283 id=283 data-nosnippet>283</a>    /// this runs inside the store's walk over the color's terms, which has
-<a href=#284 id=284 data-nosnippet>284</a>    /// nowhere to put an error.  [`Writer::end_transaction`] raises it, naming
-<a href=#285 id=285 data-nosnippet>285</a>    /// the first one — the first is the informative one, since the rest are
-<a href=#286 id=286 data-nosnippet>286</a>    /// whatever the run went on to see afterwards.
-<a href=#287 id=287 data-nosnippet>287</a>    </span><span class="attr">#[inline]
-<a href=#288 id=288 data-nosnippet>288</a>    </span><span class="kw">pub fn </span>set(<span class="kw-2">&amp;mut </span><span class="self">self</span>, block: usize) {
-<a href=#289 id=289 data-nosnippet>289</a>        <span class="kw">if </span>block &gt;= <span class="self">self</span>.width {
-<a href=#290 id=290 data-nosnippet>290</a>            <span class="self">self</span>.escaped.get_or_insert(block);
-<a href=#291 id=291 data-nosnippet>291</a>            <span class="kw">return</span>;
-<a href=#292 id=292 data-nosnippet>292</a>        }
-<a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">let </span>byte = block / <span class="number">8</span>;
-<a href=#294 id=294 data-nosnippet>294</a>        <span class="comment">// Leftmost pixel in the most significant bit, which is P4's order.
-<a href=#295 id=295 data-nosnippet>295</a>        </span><span class="self">self</span>.row[byte] |= <span class="number">0x80 </span>&gt;&gt; (block % <span class="number">8</span>);
-<a href=#296 id=296 data-nosnippet>296</a>        <span class="kw">if </span>byte &gt;= <span class="self">self</span>.dirty {
-<a href=#297 id=297 data-nosnippet>297</a>            <span class="self">self</span>.dirty = byte + <span class="number">1</span>;
+<a href=#76 id=76 data-nosnippet>76</a>//! ## Why both dimensions are settled before the first row
+<a href=#77 id=77 data-nosnippet>77</a>//!
+<a href=#78 id=78 data-nosnippet>78</a>//! A JPEG 2000 states its size in front of its first sample and never revisits
+<a href=#79 id=79 data-nosnippet>79</a>//! it, so neither number can be discovered along the way and neither can be
+<a href=#80 id=80 data-nosnippet>80</a>//! stamped in afterwards the way a netpbm header's height could be.  The width
+<a href=#81 id=81 data-nosnippet>81</a>//! is the number of blocks and the height is the number of records divided by
+<a href=#82 id=82 data-nosnippet>82</a>//! the bin, and the driver reads the records once to count both before it colors
+<a href=#83 id=83 data-nosnippet>83</a>//! any of them — see `main`'s `survey`.  That is why a picture wants an input it
+<a href=#84 id=84 data-nosnippet>84</a>//! can rewind and a pipe will not do, and why `--blocks &lt;n&gt;`, which still
+<a href=#85 id=85 data-nosnippet>85</a>//! overrides the width, no longer excuses that pass: the height needs it too.
+<a href=#86 id=86 data-nosnippet>86</a>//!
+<a href=#87 id=87 data-nosnippet>87</a>//! Having promised a height, the writer keeps it.  [`Writer::finish`] pads the
+<a href=#88 id=88 data-nosnippet>88</a>//! picture out with blank rows if the records ran out early, and
+<a href=#89 id=89 data-nosnippet>89</a>//! [`Writer::end_transaction`] refuses a row past the last rather than handing
+<a href=#90 id=90 data-nosnippet>90</a>//! the encoder a tile it did not ask for and writing a file no reader will open.
+<a href=#91 id=91 data-nosnippet>91</a>//!
+<a href=#92 id=92 data-nosnippet>92</a>//! ## Bands and tiles
+<a href=#93 id=93 data-nosnippet>93</a>//!
+<a href=#94 id=94 data-nosnippet>94</a>//! Rows arrive one at a time and the encoder takes whole tiles, so the rows are
+<a href=#95 id=95 data-nosnippet>95</a>//! held a band of [`TILE`] of them at a time, packed eight pixels to the byte,
+<a href=#96 id=96 data-nosnippet>96</a>//! and the band's tiles go out in the order the encoder counts them — across,
+<a href=#97 id=97 data-nosnippet>97</a>//! then down — as soon as the band is full.  The working set is that band and
+<a href=#98 id=98 data-nosnippet>98</a>//! the one tile being unpacked into samples, `TILE * (width / 8 + TILE)` bytes,
+<a href=#99 id=99 data-nosnippet>99</a>//! however tall the picture: a drawing far past the size of memory is still
+<a href=#100 id=100 data-nosnippet>100</a>//! written a megabyte at a time.
+<a href=#101 id=101 data-nosnippet>101</a>//!
+<a href=#102 id=102 data-nosnippet>102</a>//! The codestream is not written straight through either — the encoder goes back
+<a href=#103 id=103 data-nosnippet>103</a>//! to stamp lengths into markers it has already emitted — so the output is a
+<a href=#104 id=104 data-nosnippet>104</a>//! file it can seek in rather than a sink of the caller's choosing.
+<a href=#105 id=105 data-nosnippet>105</a>
+<a href=#106 id=106 data-nosnippet>106</a></span><span class="kw">use </span>std::io;
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a><span class="kw">use </span>openjp2::image::{opj_image, opj_image_comptparm};
+<a href=#109 id=109 data-nosnippet>109</a><span class="kw">use </span>openjp2::openjpeg::{opj_cparameters_t, OPJ_CLRSPC_GRAY, OPJ_CODEC_JP2, OPJ_LRCP};
+<a href=#110 id=110 data-nosnippet>110</a><span class="kw">use </span>openjp2::{Codec, Stream};
+<a href=#111 id=111 data-nosnippet>111</a>
+<a href=#112 id=112 data-nosnippet>112</a><span class="doccomment">/// The side of the square the picture is written in.
+<a href=#113 id=113 data-nosnippet>113</a>///
+<a href=#114 id=114 data-nosnippet>114</a>/// This is the working set: a tile is unpacked whole before it is handed over,
+<a href=#115 id=115 data-nosnippet>115</a>/// so the number trades memory against how much context the wavelet has to
+<a href=#116 id=116 data-nosnippet>116</a>/// compress with.  1024 is a mebibyte of samples a tile, and the same value
+<a href=#117 id=117 data-nosnippet>117</a>/// `tree-jp2` writes its pictures in.
+<a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">const </span>TILE: usize = <span class="number">1024</span>;
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a><span class="doccomment">/// Wavelet decomposition levels.  Six is the encoder's own default, and it is
+<a href=#121 id=121 data-nosnippet>121</a>/// also what lets a viewer open one of these at 1/32 scale without decoding the
+<a href=#122 id=122 data-nosnippet>122</a>/// full-size picture — which, for a picture whose rows outnumber a screen's by
+<a href=#123 id=123 data-nosnippet>123</a>/// three orders of magnitude, is how it gets looked at at all.
+<a href=#124 id=124 data-nosnippet>124</a></span><span class="kw">const </span>RESOLUTIONS: i32 = <span class="number">6</span>;
+<a href=#125 id=125 data-nosnippet>125</a>
+<a href=#126 id=126 data-nosnippet>126</a><span class="doccomment">/// A block that is in the color: at one bit a sample, black.
+<a href=#127 id=127 data-nosnippet>127</a></span><span class="kw">pub const </span>INK: u8 = <span class="number">0</span>;
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a><span class="doccomment">/// One that is not: white.
+<a href=#130 id=130 data-nosnippet>130</a></span><span class="kw">pub const </span>PAPER: u8 = <span class="number">1</span>;
+<a href=#131 id=131 data-nosnippet>131</a>
+<a href=#132 id=132 data-nosnippet>132</a><span class="doccomment">/// The eight samples a packed byte stands for, leftmost pixel in the most
+<a href=#133 id=133 data-nosnippet>133</a>/// significant bit.
+<a href=#134 id=134 data-nosnippet>134</a>///
+<a href=#135 id=135 data-nosnippet>135</a>/// A table rather than eight shifts and tests, because this is the one thing
+<a href=#136 id=136 data-nosnippet>136</a>/// unpacking a tile does to every pixel of it, and a tile is a million pixels of
+<a href=#137 id=137 data-nosnippet>137</a>/// which the great majority come out of the two entries for `0x00` and `0xff`.
+<a href=#138 id=138 data-nosnippet>138</a></span><span class="kw">const </span>SAMPLES: [[u8; <span class="number">8</span>]; <span class="number">256</span>] = {
+<a href=#139 id=139 data-nosnippet>139</a>    <span class="kw">let </span><span class="kw-2">mut </span>table = [[PAPER; <span class="number">8</span>]; <span class="number">256</span>];
+<a href=#140 id=140 data-nosnippet>140</a>    <span class="kw">let </span><span class="kw-2">mut </span>byte = <span class="number">0usize</span>;
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="kw">while </span>byte &lt; <span class="number">256 </span>{
+<a href=#142 id=142 data-nosnippet>142</a>        <span class="kw">let </span><span class="kw-2">mut </span>bit = <span class="number">0usize</span>;
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="kw">while </span>bit &lt; <span class="number">8 </span>{
+<a href=#144 id=144 data-nosnippet>144</a>            <span class="kw">if </span>byte &amp; (<span class="number">0x80 </span>&gt;&gt; bit) != <span class="number">0 </span>{
+<a href=#145 id=145 data-nosnippet>145</a>                table[byte][bit] = INK;
+<a href=#146 id=146 data-nosnippet>146</a>            }
+<a href=#147 id=147 data-nosnippet>147</a>            bit += <span class="number">1</span>;
+<a href=#148 id=148 data-nosnippet>148</a>        }
+<a href=#149 id=149 data-nosnippet>149</a>        byte += <span class="number">1</span>;
+<a href=#150 id=150 data-nosnippet>150</a>    }
+<a href=#151 id=151 data-nosnippet>151</a>    table
+<a href=#152 id=152 data-nosnippet>152</a>};
+<a href=#153 id=153 data-nosnippet>153</a>
+<a href=#154 id=154 data-nosnippet>154</a><span class="doccomment">/// A picture being drawn a transaction at a time.
+<a href=#155 id=155 data-nosnippet>155</a>///
+<a href=#156 id=156 data-nosnippet>156</a>/// A transaction is drawn by [`Writer::set`], once per block in its color, and
+<a href=#157 id=157 data-nosnippet>157</a>/// closed by [`Writer::end_transaction`]; every `bin` of those makes a row, and
+<a href=#158 id=158 data-nosnippet>158</a>/// every [`TILE`] rows make a band that goes out to the encoder.
+<a href=#159 id=159 data-nosnippet>159</a></span><span class="kw">pub struct </span>Writer {
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="doccomment">/// Boxed, and set up only once it is in the box.  The encoder keeps
+<a href=#161 id=161 data-nosnippet>161</a>    /// pointers into itself — the tile coder's `cp` is the address of the
+<a href=#162 id=162 data-nosnippet>162</a>    /// codec's own coding parameters — so an encoder that has been started and
+<a href=#163 id=163 data-nosnippet>163</a>    /// is then moved is an encoder reading whatever now lives where it used to
+<a href=#164 id=164 data-nosnippet>164</a>    /// be.  A box is an address that does not move when this struct does, and
+<a href=#165 id=165 data-nosnippet>165</a>    /// putting it there *before* [`Codec::setup_encoder`] is what makes the
+<a href=#166 id=166 data-nosnippet>166</a>    /// pointers it takes stay true.  Left on the stack it fails the way that
+<a href=#167 id=167 data-nosnippet>167</a>    /// costs the most to find: the debug build works.
+<a href=#168 id=168 data-nosnippet>168</a>    </span>codec: Box&lt;Codec&gt;,
+<a href=#169 id=169 data-nosnippet>169</a>    stream: Stream,
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="doccomment">/// The encoder was set up against this and reads it as it goes, so it
+<a href=#171 id=171 data-nosnippet>171</a>    /// outlives the setup call rather than being a local of it.
+<a href=#172 id=172 data-nosnippet>172</a>    </span>image: Box&lt;opj_image&gt;,
+<a href=#173 id=173 data-nosnippet>173</a>    <span class="doccomment">/// Columns, i.e. how many block ids the picture has room for.
+<a href=#174 id=174 data-nosnippet>174</a>    </span>width: usize,
+<a href=#175 id=175 data-nosnippet>175</a>    <span class="doccomment">/// Rows, as promised to the encoder before the first sample.
+<a href=#176 id=176 data-nosnippet>176</a>    </span>height: usize,
+<a href=#177 id=177 data-nosnippet>177</a>    <span class="doccomment">/// Transactions to a row.  One is a row each, which is the plain picture.
+<a href=#178 id=178 data-nosnippet>178</a>    </span>bin: usize,
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="doccomment">/// Bytes a packed row: the distance from one row of `band` to the next.
+<a href=#180 id=180 data-nosnippet>180</a>    </span>stride: usize,
+<a href=#181 id=181 data-nosnippet>181</a>    <span class="doccomment">/// Tiles across the picture, which is also the stride of a tile index.
+<a href=#182 id=182 data-nosnippet>182</a>    </span>across: usize,
+<a href=#183 id=183 data-nosnippet>183</a>    <span class="doccomment">/// Up to [`TILE`] rows, packed eight pixels to the byte.  Zero outside
+<a href=#184 id=184 data-nosnippet>184</a>    /// `..dirty` of each row at all times, which is the invariant that lets
+<a href=#185 id=185 data-nosnippet>185</a>    /// [`Writer::flush_band`] clear only a prefix of each.
+<a href=#186 id=186 data-nosnippet>186</a>    </span>band: Vec&lt;u8&gt;,
+<a href=#187 id=187 data-nosnippet>187</a>    dirty: usize,
+<a href=#188 id=188 data-nosnippet>188</a>    <span class="doccomment">/// Rows finished in the band so far, always below [`TILE`].
+<a href=#189 id=189 data-nosnippet>189</a>    </span>filled: usize,
+<a href=#190 id=190 data-nosnippet>190</a>    <span class="doccomment">/// Transactions drawn into the row being built, always below `bin`.
+<a href=#191 id=191 data-nosnippet>191</a>    </span>pending: usize,
+<a href=#192 id=192 data-nosnippet>192</a>    <span class="doccomment">/// Rows finished in the picture so far, at most `height`.
+<a href=#193 id=193 data-nosnippet>193</a>    </span>rows: usize,
+<a href=#194 id=194 data-nosnippet>194</a>    <span class="doccomment">/// Bands sent, which is the tile row the next one will be.
+<a href=#195 id=195 data-nosnippet>195</a>    </span>bands: usize,
+<a href=#196 id=196 data-nosnippet>196</a>    <span class="doccomment">/// The first block id seen that the picture has no column for, if any.
+<a href=#197 id=197 data-nosnippet>197</a>    </span>escaped: <span class="prelude-ty">Option</span>&lt;usize&gt;,
+<a href=#198 id=198 data-nosnippet>198</a>}
+<a href=#199 id=199 data-nosnippet>199</a>
+<a href=#200 id=200 data-nosnippet>200</a><span class="kw">impl </span>Writer {
+<a href=#201 id=201 data-nosnippet>201</a>    <span class="doccomment">/// Open `path` for a picture `width` columns by `height` rows, with `bin`
+<a href=#202 id=202 data-nosnippet>202</a>    /// transactions to the row, and start the codestream.
+<a href=#203 id=203 data-nosnippet>203</a>    ///
+<a href=#204 id=204 data-nosnippet>204</a>    /// Both dimensions are final here: see the module docs for why a JPEG 2000
+<a href=#205 id=205 data-nosnippet>205</a>    /// cannot be told either of them later.
+<a href=#206 id=206 data-nosnippet>206</a>    </span><span class="kw">pub fn </span>new(path: <span class="kw-2">&amp;</span>str, width: usize, height: usize, bin: usize) -&gt; io::Result&lt;<span class="self">Self</span>&gt; {
+<a href=#207 id=207 data-nosnippet>207</a>        <span class="macro">assert!</span>(bin &gt; <span class="number">0</span>, <span class="string">"a row has to stand for at least one transaction"</span>);
+<a href=#208 id=208 data-nosnippet>208</a>        <span class="kw">if </span>width == <span class="number">0 </span>|| height == <span class="number">0 </span>{
+<a href=#209 id=209 data-nosnippet>209</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::other(
+<a href=#210 id=210 data-nosnippet>210</a>                <span class="string">"an image needs a column and a row, and this one has none"</span>,
+<a href=#211 id=211 data-nosnippet>211</a>            ));
+<a href=#212 id=212 data-nosnippet>212</a>        }
+<a href=#213 id=213 data-nosnippet>213</a>
+<a href=#214 id=214 data-nosnippet>214</a>        <span class="kw">let </span>comp = opj_image_comptparm {
+<a href=#215 id=215 data-nosnippet>215</a>            dx: <span class="number">1</span>,
+<a href=#216 id=216 data-nosnippet>216</a>            dy: <span class="number">1</span>,
+<a href=#217 id=217 data-nosnippet>217</a>            w: width <span class="kw">as </span>u32,
+<a href=#218 id=218 data-nosnippet>218</a>            h: height <span class="kw">as </span>u32,
+<a href=#219 id=219 data-nosnippet>219</a>            x0: <span class="number">0</span>,
+<a href=#220 id=220 data-nosnippet>220</a>            y0: <span class="number">0</span>,
+<a href=#221 id=221 data-nosnippet>221</a>            prec: <span class="number">1</span>,
+<a href=#222 id=222 data-nosnippet>222</a>            bpp: <span class="number">1</span>,
+<a href=#223 id=223 data-nosnippet>223</a>            sgnd: <span class="number">0</span>,
+<a href=#224 id=224 data-nosnippet>224</a>        };
+<a href=#225 id=225 data-nosnippet>225</a>        <span class="comment">// `tile_create` rather than `create`: it describes the picture without
+<a href=#226 id=226 data-nosnippet>226</a>        // allocating a sample for every pixel of it, which is the whole point of
+<a href=#227 id=227 data-nosnippet>227</a>        // handing the encoder one tile at a time.  The extent is not in the
+<a href=#228 id=228 data-nosnippet>228</a>        // component parameters, so it is set here.
+<a href=#229 id=229 data-nosnippet>229</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>image = opj_image::tile_create(<span class="kw-2">&amp;</span>[comp], OPJ_CLRSPC_GRAY)
+<a href=#230 id=230 data-nosnippet>230</a>            .ok_or_else(|| io::Error::other(<span class="string">"could not describe the image"</span>))<span class="question-mark">?</span>;
+<a href=#231 id=231 data-nosnippet>231</a>        image.x1 = width <span class="kw">as </span>u32;
+<a href=#232 id=232 data-nosnippet>232</a>        image.y1 = height <span class="kw">as </span>u32;
+<a href=#233 id=233 data-nosnippet>233</a>
+<a href=#234 id=234 data-nosnippet>234</a>        <span class="kw">let </span><span class="kw-2">mut </span>params = opj_cparameters_t::default();
+<a href=#235 id=235 data-nosnippet>235</a>        params.tile_size_on = <span class="number">1</span>;
+<a href=#236 id=236 data-nosnippet>236</a>        params.cp_tdx = TILE <span class="kw">as </span>i32;
+<a href=#237 id=237 data-nosnippet>237</a>        params.cp_tdy = TILE <span class="kw">as </span>i32;
+<a href=#238 id=238 data-nosnippet>238</a>        params.numresolution = RESOLUTIONS;
+<a href=#239 id=239 data-nosnippet>239</a>        params.prog_order = OPJ_LRCP;
+<a href=#240 id=240 data-nosnippet>240</a>        <span class="comment">// Lossless: the reversible 5/3 wavelet, and one quality layer whose rate
+<a href=#241 id=241 data-nosnippet>241</a>        // is 0 — the encoder's spelling of "do not throw anything away".
+<a href=#242 id=242 data-nosnippet>242</a>        </span>params.irreversible = <span class="number">0</span>;
+<a href=#243 id=243 data-nosnippet>243</a>        params.tcp_numlayers = <span class="number">1</span>;
+<a href=#244 id=244 data-nosnippet>244</a>        params.tcp_rates[<span class="number">0</span>] = <span class="number">0.0</span>;
+<a href=#245 id=245 data-nosnippet>245</a>        params.cp_disto_alloc = <span class="number">1</span>;
+<a href=#246 id=246 data-nosnippet>246</a>
+<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">let </span><span class="kw-2">mut </span>codec = Box::new(
+<a href=#248 id=248 data-nosnippet>248</a>            Codec::new_encoder(OPJ_CODEC_JP2)
+<a href=#249 id=249 data-nosnippet>249</a>                .ok_or_else(|| io::Error::other(<span class="string">"could not open a JPEG 2000 encoder"</span>))<span class="question-mark">?</span>,
+<a href=#250 id=250 data-nosnippet>250</a>        );
+<a href=#251 id=251 data-nosnippet>251</a>        <span class="comment">// The encoder seeks back over what it has written, so this is a file
+<a href=#252 id=252 data-nosnippet>252</a>        // rather than the caller's choice of sink.
+<a href=#253 id=253 data-nosnippet>253</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>stream = Stream::new_file(path, <span class="number">1 </span>&lt;&lt; <span class="number">20</span>, <span class="bool-val">false</span>)<span class="question-mark">?</span>;
+<a href=#254 id=254 data-nosnippet>254</a>
+<a href=#255 id=255 data-nosnippet>255</a>        <span class="kw">if </span>codec.setup_encoder(<span class="kw-2">&amp;mut </span>params, <span class="kw-2">&amp;mut </span>image) == <span class="number">0 </span>{
+<a href=#256 id=256 data-nosnippet>256</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::other(<span class="string">"the encoder would not take these settings"</span>));
+<a href=#257 id=257 data-nosnippet>257</a>        }
+<a href=#258 id=258 data-nosnippet>258</a>        <span class="kw">if </span>codec.start_compress(<span class="kw-2">&amp;mut </span>image, <span class="kw-2">&amp;mut </span>stream) == <span class="number">0 </span>{
+<a href=#259 id=259 data-nosnippet>259</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::other(<span class="string">"could not start the codestream"</span>));
+<a href=#260 id=260 data-nosnippet>260</a>        }
+<a href=#261 id=261 data-nosnippet>261</a>
+<a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">let </span>stride = width.div_ceil(<span class="number">8</span>);
+<a href=#263 id=263 data-nosnippet>263</a>        <span class="prelude-val">Ok</span>(Writer {
+<a href=#264 id=264 data-nosnippet>264</a>            codec,
+<a href=#265 id=265 data-nosnippet>265</a>            stream,
+<a href=#266 id=266 data-nosnippet>266</a>            image,
+<a href=#267 id=267 data-nosnippet>267</a>            width,
+<a href=#268 id=268 data-nosnippet>268</a>            height,
+<a href=#269 id=269 data-nosnippet>269</a>            bin,
+<a href=#270 id=270 data-nosnippet>270</a>            stride,
+<a href=#271 id=271 data-nosnippet>271</a>            across: width.div_ceil(TILE),
+<a href=#272 id=272 data-nosnippet>272</a>            <span class="comment">// A band, and one row of slack past it.  Rows are drawn into
+<a href=#273 id=273 data-nosnippet>273</a>            // before they are closed, so a record arriving past the last row of
+<a href=#274 id=274 data-nosnippet>274</a>            // a picture shorter than a band needs somewhere to land in the
+<a href=#275 id=275 data-nosnippet>275</a>            // moment before `end_transaction` refuses it.
+<a href=#276 id=276 data-nosnippet>276</a>            </span>band: <span class="macro">vec!</span>[<span class="number">0u8</span>; stride * (height + <span class="number">1</span>).min(TILE)],
+<a href=#277 id=277 data-nosnippet>277</a>            dirty: <span class="number">0</span>,
+<a href=#278 id=278 data-nosnippet>278</a>            filled: <span class="number">0</span>,
+<a href=#279 id=279 data-nosnippet>279</a>            pending: <span class="number">0</span>,
+<a href=#280 id=280 data-nosnippet>280</a>            rows: <span class="number">0</span>,
+<a href=#281 id=281 data-nosnippet>281</a>            bands: <span class="number">0</span>,
+<a href=#282 id=282 data-nosnippet>282</a>            escaped: <span class="prelude-val">None</span>,
+<a href=#283 id=283 data-nosnippet>283</a>        })
+<a href=#284 id=284 data-nosnippet>284</a>    }
+<a href=#285 id=285 data-nosnippet>285</a>
+<a href=#286 id=286 data-nosnippet>286</a>    <span class="doccomment">/// Ink the pixel for `block` in the row being built.
+<a href=#287 id=287 data-nosnippet>287</a>    ///
+<a href=#288 id=288 data-nosnippet>288</a>    /// A block the picture has no column for is remembered rather than reported:
+<a href=#289 id=289 data-nosnippet>289</a>    /// this runs inside the store's walk over the color's terms, which has
+<a href=#290 id=290 data-nosnippet>290</a>    /// nowhere to put an error.  [`Writer::end_transaction`] raises it, naming
+<a href=#291 id=291 data-nosnippet>291</a>    /// the first one — the first is the informative one, since the rest are
+<a href=#292 id=292 data-nosnippet>292</a>    /// whatever the run went on to see afterwards.
+<a href=#293 id=293 data-nosnippet>293</a>    </span><span class="attr">#[inline]
+<a href=#294 id=294 data-nosnippet>294</a>    </span><span class="kw">pub fn </span>set(<span class="kw-2">&amp;mut </span><span class="self">self</span>, block: usize) {
+<a href=#295 id=295 data-nosnippet>295</a>        <span class="kw">if </span>block &gt;= <span class="self">self</span>.width {
+<a href=#296 id=296 data-nosnippet>296</a>            <span class="self">self</span>.escaped.get_or_insert(block);
+<a href=#297 id=297 data-nosnippet>297</a>            <span class="kw">return</span>;
 <a href=#298 id=298 data-nosnippet>298</a>        }
-<a href=#299 id=299 data-nosnippet>299</a>    }
-<a href=#300 id=300 data-nosnippet>300</a>
-<a href=#301 id=301 data-nosnippet>301</a>    <span class="doccomment">/// Finish one transaction, emitting the row if it completes a bin.
-<a href=#302 id=302 data-nosnippet>302</a>    </span><span class="kw">pub fn </span>end_transaction(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; io::Result&lt;()&gt; {
-<a href=#303 id=303 data-nosnippet>303</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(block) = <span class="self">self</span>.escaped {
-<a href=#304 id=304 data-nosnippet>304</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::new(
-<a href=#305 id=305 data-nosnippet>305</a>                io::ErrorKind::InvalidData,
-<a href=#306 id=306 data-nosnippet>306</a>                <span class="macro">format!</span>(
-<a href=#307 id=307 data-nosnippet>307</a>                    <span class="string">"block {} has no column in a {}-column picture; \
-<a href=#308 id=308 data-nosnippet>308</a>                     rerun with --blocks {} or more"</span>,
-<a href=#309 id=309 data-nosnippet>309</a>                    block,
-<a href=#310 id=310 data-nosnippet>310</a>                    <span class="self">self</span>.width,
-<a href=#311 id=311 data-nosnippet>311</a>                    block + <span class="number">1
-<a href=#312 id=312 data-nosnippet>312</a>                </span>),
-<a href=#313 id=313 data-nosnippet>313</a>            ));
-<a href=#314 id=314 data-nosnippet>314</a>        }
-<a href=#315 id=315 data-nosnippet>315</a>        <span class="self">self</span>.pending += <span class="number">1</span>;
-<a href=#316 id=316 data-nosnippet>316</a>        <span class="kw">if </span><span class="self">self</span>.pending == <span class="self">self</span>.bin {
-<a href=#317 id=317 data-nosnippet>317</a>            <span class="comment">// Nothing is cleared until here, so a bin's transactions have been
-<a href=#318 id=318 data-nosnippet>318</a>            // drawing into the same row all along: the row is their union
-<a href=#319 id=319 data-nosnippet>319</a>            // without any of them being asked to compute one.
-<a href=#320 id=320 data-nosnippet>320</a>            </span><span class="self">self</span>.flush_row()<span class="question-mark">?</span>;
+<a href=#299 id=299 data-nosnippet>299</a>        <span class="kw">let </span>byte = block / <span class="number">8</span>;
+<a href=#300 id=300 data-nosnippet>300</a>        <span class="comment">// Leftmost pixel in the most significant bit, so that block ids read
+<a href=#301 id=301 data-nosnippet>301</a>        // left to right across the row.
+<a href=#302 id=302 data-nosnippet>302</a>        </span><span class="self">self</span>.band[<span class="self">self</span>.filled * <span class="self">self</span>.stride + byte] |= <span class="number">0x80 </span>&gt;&gt; (block % <span class="number">8</span>);
+<a href=#303 id=303 data-nosnippet>303</a>        <span class="kw">if </span>byte &gt;= <span class="self">self</span>.dirty {
+<a href=#304 id=304 data-nosnippet>304</a>            <span class="self">self</span>.dirty = byte + <span class="number">1</span>;
+<a href=#305 id=305 data-nosnippet>305</a>        }
+<a href=#306 id=306 data-nosnippet>306</a>    }
+<a href=#307 id=307 data-nosnippet>307</a>
+<a href=#308 id=308 data-nosnippet>308</a>    <span class="doccomment">/// Finish one transaction, closing the row if it completes a bin.
+<a href=#309 id=309 data-nosnippet>309</a>    </span><span class="kw">pub fn </span>end_transaction(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; io::Result&lt;()&gt; {
+<a href=#310 id=310 data-nosnippet>310</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(block) = <span class="self">self</span>.escaped {
+<a href=#311 id=311 data-nosnippet>311</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::new(
+<a href=#312 id=312 data-nosnippet>312</a>                io::ErrorKind::InvalidData,
+<a href=#313 id=313 data-nosnippet>313</a>                <span class="macro">format!</span>(
+<a href=#314 id=314 data-nosnippet>314</a>                    <span class="string">"block {} has no column in a {}-column picture; \
+<a href=#315 id=315 data-nosnippet>315</a>                     rerun with --blocks {} or more"</span>,
+<a href=#316 id=316 data-nosnippet>316</a>                    block,
+<a href=#317 id=317 data-nosnippet>317</a>                    <span class="self">self</span>.width,
+<a href=#318 id=318 data-nosnippet>318</a>                    block + <span class="number">1
+<a href=#319 id=319 data-nosnippet>319</a>                </span>),
+<a href=#320 id=320 data-nosnippet>320</a>            ));
 <a href=#321 id=321 data-nosnippet>321</a>        }
-<a href=#322 id=322 data-nosnippet>322</a>        <span class="prelude-val">Ok</span>(())
-<a href=#323 id=323 data-nosnippet>323</a>    }
-<a href=#324 id=324 data-nosnippet>324</a>
-<a href=#325 id=325 data-nosnippet>325</a>    <span class="doccomment">/// Write the row being built and start the next one.
-<a href=#326 id=326 data-nosnippet>326</a>    </span><span class="kw">fn </span>flush_row(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; io::Result&lt;()&gt; {
-<a href=#327 id=327 data-nosnippet>327</a>        <span class="kw">match </span><span class="self">self</span>.format {
-<a href=#328 id=328 data-nosnippet>328</a>            Format::Pbm =&gt; {
-<a href=#329 id=329 data-nosnippet>329</a>                <span class="self">self</span>.out.write_all(<span class="kw-2">&amp;</span><span class="self">self</span>.row)<span class="question-mark">?</span>;
-<a href=#330 id=330 data-nosnippet>330</a>                <span class="kw">if </span><span class="self">self</span>.measure {
-<a href=#331 id=331 data-nosnippet>331</a>                    <span class="comment">// Nothing here needs the runs; this is only so `--stats` can
-<a href=#332 id=332 data-nosnippet>332</a>                    // say what the row would have cost drawn the other way.
-<a href=#333 id=333 data-nosnippet>333</a>                    </span><span class="kw">let </span>runs = <span class="kw-2">&amp;mut </span><span class="self">self</span>.runs;
-<a href=#334 id=334 data-nosnippet>334</a>                    for_each_run(<span class="kw-2">&amp;</span><span class="self">self</span>.row[..<span class="self">self</span>.dirty], |<span class="kw">_</span>, <span class="kw">_</span>| <span class="kw-2">*</span>runs += <span class="number">1</span>);
-<a href=#335 id=335 data-nosnippet>335</a>                }
-<a href=#336 id=336 data-nosnippet>336</a>            }
-<a href=#337 id=337 data-nosnippet>337</a>            Format::Svg =&gt; {
-<a href=#338 id=338 data-nosnippet>338</a>                <span class="comment">// Split the borrow: the runs come out of `row` while the strokes
-<a href=#339 id=339 data-nosnippet>339</a>                // go into `strokes`, and both live in `self`.
-<a href=#340 id=340 data-nosnippet>340</a>                </span><span class="kw">let </span>Writer {
-<a href=#341 id=341 data-nosnippet>341</a>                    row,
-<a href=#342 id=342 data-nosnippet>342</a>                    dirty,
-<a href=#343 id=343 data-nosnippet>343</a>                    strokes,
-<a href=#344 id=344 data-nosnippet>344</a>                    pen,
-<a href=#345 id=345 data-nosnippet>345</a>                    rows,
-<a href=#346 id=346 data-nosnippet>346</a>                    runs,
-<a href=#347 id=347 data-nosnippet>347</a>                    ..
-<a href=#348 id=348 data-nosnippet>348</a>                } = <span class="self">self</span>;
-<a href=#349 id=349 data-nosnippet>349</a>                strokes.clear();
-<a href=#350 id=350 data-nosnippet>350</a>                for_each_run(<span class="kw-2">&amp;</span>row[..<span class="kw-2">*</span>dirty], |start, length| {
-<a href=#351 id=351 data-nosnippet>351</a>                    <span class="kw-2">*</span>runs += <span class="number">1</span>;
-<a href=#352 id=352 data-nosnippet>352</a>                    <span class="kw">match </span>pen.replace((start + length, <span class="kw-2">*</span>rows)) {
-<a href=#353 id=353 data-nosnippet>353</a>                        <span class="comment">// The pen has to be put down somewhere absolute once.
-<a href=#354 id=354 data-nosnippet>354</a>                        </span><span class="prelude-val">None </span>=&gt; {
-<a href=#355 id=355 data-nosnippet>355</a>                            strokes.push(<span class="string">b'M'</span>);
-<a href=#356 id=356 data-nosnippet>356</a>                            push_int(strokes, start);
-<a href=#357 id=357 data-nosnippet>357</a>                            strokes.push(<span class="string">b' '</span>);
-<a href=#358 id=358 data-nosnippet>358</a>                            push_int(strokes, <span class="kw-2">*</span>rows);
-<a href=#359 id=359 data-nosnippet>359</a>                        }
-<a href=#360 id=360 data-nosnippet>360</a>                        <span class="comment">// Everywhere after that, say how far it moved.  Within a
-<a href=#361 id=361 data-nosnippet>361</a>                        // row that is the width of the gap; between rows it is a
-<a href=#362 id=362 data-nosnippet>362</a>                        // long step back and one down, and either way it is far
-<a href=#363 id=363 data-nosnippet>363</a>                        // fewer digits than saying where it landed.
-<a href=#364 id=364 data-nosnippet>364</a>                        </span><span class="prelude-val">Some</span>((x, y)) =&gt; {
-<a href=#365 id=365 data-nosnippet>365</a>                            strokes.push(<span class="string">b'm'</span>);
-<a href=#366 id=366 data-nosnippet>366</a>                            push_delta(strokes, start <span class="kw">as </span>isize - x <span class="kw">as </span>isize);
-<a href=#367 id=367 data-nosnippet>367</a>                            strokes.push(<span class="string">b' '</span>);
-<a href=#368 id=368 data-nosnippet>368</a>                            push_delta(strokes, <span class="kw-2">*</span>rows <span class="kw">as </span>isize - y <span class="kw">as </span>isize);
-<a href=#369 id=369 data-nosnippet>369</a>                        }
-<a href=#370 id=370 data-nosnippet>370</a>                    }
-<a href=#371 id=371 data-nosnippet>371</a>                    strokes.push(<span class="string">b'h'</span>);
-<a href=#372 id=372 data-nosnippet>372</a>                    push_int(strokes, length);
-<a href=#373 id=373 data-nosnippet>373</a>                });
-<a href=#374 id=374 data-nosnippet>374</a>                <span class="self">self</span>.out.write_all(<span class="kw-2">&amp;</span><span class="self">self</span>.strokes)<span class="question-mark">?</span>;
-<a href=#375 id=375 data-nosnippet>375</a>            }
-<a href=#376 id=376 data-nosnippet>376</a>        }
-<a href=#377 id=377 data-nosnippet>377</a>        <span class="comment">// Bits are only ever set below `dirty`, so that prefix is the only part
-<a href=#378 id=378 data-nosnippet>378</a>        // that can be non-zero and the rest is still the zeroes it started as.
-<a href=#379 id=379 data-nosnippet>379</a>        // Colors are sets of *ancestor* blocks and the chain only grows, so
-<a href=#380 id=380 data-nosnippet>380</a>        // early rows reach nowhere near the right-hand edge and this is the
-<a href=#381 id=381 data-nosnippet>381</a>        // difference between clearing the row and clearing the image.
-<a href=#382 id=382 data-nosnippet>382</a>        </span><span class="self">self</span>.row[..<span class="self">self</span>.dirty].fill(<span class="number">0</span>);
-<a href=#383 id=383 data-nosnippet>383</a>        <span class="self">self</span>.dirty = <span class="number">0</span>;
-<a href=#384 id=384 data-nosnippet>384</a>        <span class="self">self</span>.pending = <span class="number">0</span>;
-<a href=#385 id=385 data-nosnippet>385</a>        <span class="self">self</span>.rows += <span class="number">1</span>;
-<a href=#386 id=386 data-nosnippet>386</a>        <span class="prelude-val">Ok</span>(())
-<a href=#387 id=387 data-nosnippet>387</a>    }
-<a href=#388 id=388 data-nosnippet>388</a>
-<a href=#389 id=389 data-nosnippet>389</a>    <span class="doccomment">/// `(columns, rows)` as the header will end up reading, counting the bin in
-<a href=#390 id=390 data-nosnippet>390</a>    /// progress as the row it is going to become.
-<a href=#391 id=391 data-nosnippet>391</a>    </span><span class="kw">pub fn </span>dimensions(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (usize, usize) {
-<a href=#392 id=392 data-nosnippet>392</a>        (<span class="self">self</span>.width, <span class="self">self</span>.rows + usize::from(<span class="self">self</span>.pending &gt; <span class="number">0</span>))
-<a href=#393 id=393 data-nosnippet>393</a>    }
-<a href=#394 id=394 data-nosnippet>394</a>
-<a href=#395 id=395 data-nosnippet>395</a>    <span class="doccomment">/// How many runs of adjacent blocks the picture is made of, and what it
-<a href=#396 id=396 data-nosnippet>396</a>    /// would have cost in each format — the numbers behind the module docs'
-<a href=#397 id=397 data-nosnippet>397</a>    /// question of which one is smaller.
-<a href=#398 id=398 data-nosnippet>398</a>    ///
-<a href=#399 id=399 data-nosnippet>399</a>    /// Only meaningful when the writer was asked to `measure`; the runs of a
-<a href=#400 id=400 data-nosnippet>400</a>    /// bitmap are not otherwise counted, since nothing about writing one needs
-<a href=#401 id=401 data-nosnippet>401</a>    /// to know them.
-<a href=#402 id=402 data-nosnippet>402</a>    </span><span class="kw">pub fn </span>runs(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (u64, usize, usize) {
-<a href=#403 id=403 data-nosnippet>403</a>        <span class="kw">let </span>per_row = |format: Format| {
-<a href=#404 id=404 data-nosnippet>404</a>            <span class="kw">let </span>(<span class="kw">_</span>, rows) = <span class="self">self</span>.dimensions();
-<a href=#405 id=405 data-nosnippet>405</a>            <span class="kw">let </span>mean = <span class="kw">if </span>rows == <span class="number">0 </span>{
-<a href=#406 id=406 data-nosnippet>406</a>                <span class="number">0
-<a href=#407 id=407 data-nosnippet>407</a>            </span>} <span class="kw">else </span>{
-<a href=#408 id=408 data-nosnippet>408</a>                (<span class="self">self</span>.runs / rows <span class="kw">as </span>u64) <span class="kw">as </span>usize
-<a href=#409 id=409 data-nosnippet>409</a>            };
-<a href=#410 id=410 data-nosnippet>410</a>            format.row_bytes(<span class="self">self</span>.width, mean)
-<a href=#411 id=411 data-nosnippet>411</a>        };
-<a href=#412 id=412 data-nosnippet>412</a>        (<span class="self">self</span>.runs, per_row(Format::Pbm), per_row(Format::Svg))
-<a href=#413 id=413 data-nosnippet>413</a>    }
-<a href=#414 id=414 data-nosnippet>414</a>
-<a href=#415 id=415 data-nosnippet>415</a>    <span class="doccomment">/// Close the picture, stamp the real height into the header, and answer the
-<a href=#416 id=416 data-nosnippet>416</a>    /// writer it was stamped into.
-<a href=#417 id=417 data-nosnippet>417</a>    </span><span class="kw">pub fn </span>finish(<span class="kw-2">mut </span><span class="self">self</span>) -&gt; io::Result&lt;W&gt; {
-<a href=#418 id=418 data-nosnippet>418</a>        <span class="comment">// A bin that never filled up is still a row: the run does not owe the
-<a href=#419 id=419 data-nosnippet>419</a>        // image a whole bin's worth of transactions at the end of the records.
-<a href=#420 id=420 data-nosnippet>420</a>        </span><span class="kw">if </span><span class="self">self</span>.pending &gt; <span class="number">0 </span>{
-<a href=#421 id=421 data-nosnippet>421</a>            <span class="self">self</span>.flush_row()<span class="question-mark">?</span>;
-<a href=#422 id=422 data-nosnippet>422</a>        }
-<a href=#423 id=423 data-nosnippet>423</a>        <span class="kw">if </span><span class="self">self</span>.format == Format::Svg {
-<a href=#424 id=424 data-nosnippet>424</a>            <span class="self">self</span>.out.write_all(SVG_TAIL.as_bytes())<span class="question-mark">?</span>;
-<a href=#425 id=425 data-nosnippet>425</a>        }
-<a href=#426 id=426 data-nosnippet>426</a>        <span class="self">self</span>.out.flush()<span class="question-mark">?</span>;
-<a href=#427 id=427 data-nosnippet>427</a>
-<a href=#428 id=428 data-nosnippet>428</a>        <span class="kw">let </span>final_header = <span class="kw">match </span><span class="self">self</span>.format {
-<a href=#429 id=429 data-nosnippet>429</a>            Format::Pbm =&gt; pbm_header(<span class="self">self</span>.width, <span class="self">self</span>.rows),
-<a href=#430 id=430 data-nosnippet>430</a>            Format::Svg =&gt; svg_header(<span class="self">self</span>.width, <span class="self">self</span>.rows),
-<a href=#431 id=431 data-nosnippet>431</a>        };
-<a href=#432 id=432 data-nosnippet>432</a>        <span class="comment">// The padding exists precisely so this holds; if it ever did not, the
-<a href=#433 id=433 data-nosnippet>433</a>        // write below would shift the picture by a byte and quietly shear the
-<a href=#434 id=434 data-nosnippet>434</a>        // whole image, so it is worth saying out loud.
-<a href=#435 id=435 data-nosnippet>435</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#436 id=436 data-nosnippet>436</a>            final_header.len(),
-<a href=#437 id=437 data-nosnippet>437</a>            <span class="self">self</span>.header_len,
-<a href=#438 id=438 data-nosnippet>438</a>            <span class="string">"the padded header changed length, which would shift the picture"
-<a href=#439 id=439 data-nosnippet>439</a>        </span>);
-<a href=#440 id=440 data-nosnippet>440</a>        <span class="comment">// Past the buffer rather than through it: the picture has just been
-<a href=#441 id=441 data-nosnippet>441</a>        // flushed, and a buffered write here would be a write at the end of the
-<a href=#442 id=442 data-nosnippet>442</a>        // file, not at the front of it.
-<a href=#443 id=443 data-nosnippet>443</a>        </span><span class="kw">let </span>inner = <span class="self">self</span>.out.get_mut();
-<a href=#444 id=444 data-nosnippet>444</a>        inner.seek(SeekFrom::Start(<span class="number">0</span>))<span class="question-mark">?</span>;
-<a href=#445 id=445 data-nosnippet>445</a>        inner.write_all(final_header.as_bytes())<span class="question-mark">?</span>;
-<a href=#446 id=446 data-nosnippet>446</a>        inner.flush()<span class="question-mark">?</span>;
-<a href=#447 id=447 data-nosnippet>447</a>        <span class="self">self</span>.out.into_inner().map_err(|e| e.into_error())
-<a href=#448 id=448 data-nosnippet>448</a>    }
-<a href=#449 id=449 data-nosnippet>449</a>}
-<a href=#450 id=450 data-nosnippet>450</a>
-<a href=#451 id=451 data-nosnippet>451</a><span class="doccomment">/// Decimal, straight into the buffer — the driver's [`crate::push_int`], which
-<a href=#452 id=452 data-nosnippet>452</a>/// exists for the same reason: this runs once per number in a path with tens of
-<a href=#453 id=453 data-nosnippet>453</a>/// millions of them.
-<a href=#454 id=454 data-nosnippet>454</a></span><span class="kw">fn </span>push_int(out: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, value: usize) {
-<a href=#455 id=455 data-nosnippet>455</a>    <span class="kw">crate</span>::push_int(out, value);
-<a href=#456 id=456 data-nosnippet>456</a>}
-<a href=#457 id=457 data-nosnippet>457</a>
-<a href=#458 id=458 data-nosnippet>458</a><span class="doccomment">/// The same, signed, since every move but the first is a step that can go back
-<a href=#459 id=459 data-nosnippet>459</a>/// up the row or back to the left of it.
-<a href=#460 id=460 data-nosnippet>460</a></span><span class="kw">fn </span>push_delta(out: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, value: isize) {
-<a href=#461 id=461 data-nosnippet>461</a>    <span class="kw">if </span>value &lt; <span class="number">0 </span>{
-<a href=#462 id=462 data-nosnippet>462</a>        out.push(<span class="string">b'-'</span>);
-<a href=#463 id=463 data-nosnippet>463</a>    }
-<a href=#464 id=464 data-nosnippet>464</a>    push_int(out, value.unsigned_abs());
-<a href=#465 id=465 data-nosnippet>465</a>}
-<a href=#466 id=466 data-nosnippet>466</a>
-<a href=#467 id=467 data-nosnippet>467</a><span class="attr">#[cfg(test)]
-<a href=#468 id=468 data-nosnippet>468</a></span><span class="kw">mod </span>tests {
-<a href=#469 id=469 data-nosnippet>469</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#470 id=470 data-nosnippet>470</a>    <span class="kw">use </span>std::io::Cursor;
-<a href=#471 id=471 data-nosnippet>471</a>
-<a href=#472 id=472 data-nosnippet>472</a>    <span class="doccomment">/// Draw one transaction per row and answer the finished bitmap, header
-<a href=#473 id=473 data-nosnippet>473</a>    /// stamping and all.
-<a href=#474 id=474 data-nosnippet>474</a>    </span><span class="kw">fn </span>draw(width: usize, transactions: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]]) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
-<a href=#475 id=475 data-nosnippet>475</a>        binned(width, <span class="number">1</span>, transactions)
-<a href=#476 id=476 data-nosnippet>476</a>    }
-<a href=#477 id=477 data-nosnippet>477</a>
-<a href=#478 id=478 data-nosnippet>478</a>    <span class="doccomment">/// The same, with `bin` transactions to the row.
-<a href=#479 id=479 data-nosnippet>479</a>    </span><span class="kw">fn </span>binned(width: usize, bin: usize, transactions: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]]) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
-<a href=#480 id=480 data-nosnippet>480</a>        drawn(Format::Pbm, width, bin, transactions)
-<a href=#481 id=481 data-nosnippet>481</a>    }
-<a href=#482 id=482 data-nosnippet>482</a>
-<a href=#483 id=483 data-nosnippet>483</a>    <span class="kw">fn </span>drawn(
-<a href=#484 id=484 data-nosnippet>484</a>        format: Format,
-<a href=#485 id=485 data-nosnippet>485</a>        width: usize,
-<a href=#486 id=486 data-nosnippet>486</a>        bin: usize,
-<a href=#487 id=487 data-nosnippet>487</a>        transactions: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]],
-<a href=#488 id=488 data-nosnippet>488</a>    ) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
-<a href=#489 id=489 data-nosnippet>489</a>        <span class="kw">let </span><span class="kw-2">mut </span>w = Writer::new(Cursor::new(Vec::new()), format, width, bin, <span class="bool-val">true</span>)<span class="question-mark">?</span>;
-<a href=#490 id=490 data-nosnippet>490</a>        <span class="kw">for </span>color <span class="kw">in </span>transactions {
-<a href=#491 id=491 data-nosnippet>491</a>            <span class="kw">for </span><span class="kw-2">&amp;</span>block <span class="kw">in </span><span class="kw-2">*</span>color {
-<a href=#492 id=492 data-nosnippet>492</a>                w.set(block);
-<a href=#493 id=493 data-nosnippet>493</a>            }
-<a href=#494 id=494 data-nosnippet>494</a>            w.end_transaction()<span class="question-mark">?</span>;
-<a href=#495 id=495 data-nosnippet>495</a>        }
-<a href=#496 id=496 data-nosnippet>496</a>        <span class="prelude-val">Ok</span>(w.finish()<span class="question-mark">?</span>.into_inner())
-<a href=#497 id=497 data-nosnippet>497</a>    }
-<a href=#498 id=498 data-nosnippet>498</a>
-<a href=#499 id=499 data-nosnippet>499</a>    <span class="doccomment">/// The `d` attribute of the one path in an SVG.
-<a href=#500 id=500 data-nosnippet>500</a>    </span><span class="kw">fn </span>path_of(image: <span class="kw-2">&amp;</span>[u8]) -&gt; String {
-<a href=#501 id=501 data-nosnippet>501</a>        <span class="kw">let </span>text = std::str::from_utf8(image).unwrap();
-<a href=#502 id=502 data-nosnippet>502</a>        <span class="kw">let </span>start = text.find(<span class="string">" d=\""</span>).unwrap() + <span class="number">4</span>;
-<a href=#503 id=503 data-nosnippet>503</a>        text[start..].split(<span class="string">'"'</span>).next().unwrap().to_string()
-<a href=#504 id=504 data-nosnippet>504</a>    }
-<a href=#505 id=505 data-nosnippet>505</a>
-<a href=#506 id=506 data-nosnippet>506</a>    <span class="doccomment">/// Read a path back into the pixels it draws, so an SVG can be compared with
-<a href=#507 id=507 data-nosnippet>507</a>    /// the bitmap of the same records.
-<a href=#508 id=508 data-nosnippet>508</a>    ///
-<a href=#509 id=509 data-nosnippet>509</a>    /// Only the two commands this writer emits are understood, which is the
-<a href=#510 id=510 data-nosnippet>510</a>    /// point: it re-derives the picture from the file rather than from anything
-<a href=#511 id=511 data-nosnippet>511</a>    /// the writer still has in hand.
-<a href=#512 id=512 data-nosnippet>512</a>    </span><span class="kw">fn </span>rasterize(image: <span class="kw-2">&amp;</span>[u8], width: usize) -&gt; Vec&lt;Vec&lt;bool&gt;&gt; {
-<a href=#513 id=513 data-nosnippet>513</a>        <span class="kw">let </span><span class="kw-2">mut </span>rows: Vec&lt;Vec&lt;bool&gt;&gt; = Vec::new();
-<a href=#514 id=514 data-nosnippet>514</a>        <span class="kw">let </span>(<span class="kw-2">mut </span>x, <span class="kw-2">mut </span>y) = (<span class="number">0isize</span>, <span class="number">0isize</span>);
-<a href=#515 id=515 data-nosnippet>515</a>        <span class="kw">let </span>d = path_of(image);
-<a href=#516 id=516 data-nosnippet>516</a>        <span class="kw">let </span><span class="kw-2">mut </span>tokens = d
-<a href=#517 id=517 data-nosnippet>517</a>            .replace(<span class="string">'M'</span>, <span class="string">" M "</span>)
-<a href=#518 id=518 data-nosnippet>518</a>            .replace(<span class="string">'m'</span>, <span class="string">" m "</span>)
-<a href=#519 id=519 data-nosnippet>519</a>            .replace(<span class="string">'h'</span>, <span class="string">" h "</span>)
-<a href=#520 id=520 data-nosnippet>520</a>            .split_whitespace()
-<a href=#521 id=521 data-nosnippet>521</a>            .map(String::from)
-<a href=#522 id=522 data-nosnippet>522</a>            .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
-<a href=#523 id=523 data-nosnippet>523</a>            .into_iter()
-<a href=#524 id=524 data-nosnippet>524</a>            .peekable();
-<a href=#525 id=525 data-nosnippet>525</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(token) = tokens.next() {
-<a href=#526 id=526 data-nosnippet>526</a>            <span class="kw">let </span><span class="kw-2">mut </span>number = || tokens.next().unwrap().parse::&lt;isize&gt;().unwrap();
-<a href=#527 id=527 data-nosnippet>527</a>            <span class="kw">match </span>token.as_str() {
-<a href=#528 id=528 data-nosnippet>528</a>                <span class="string">"M" </span>=&gt; {
-<a href=#529 id=529 data-nosnippet>529</a>                    x = number();
-<a href=#530 id=530 data-nosnippet>530</a>                    y = number();
-<a href=#531 id=531 data-nosnippet>531</a>                }
-<a href=#532 id=532 data-nosnippet>532</a>                <span class="string">"m" </span>=&gt; {
-<a href=#533 id=533 data-nosnippet>533</a>                    x += number();
-<a href=#534 id=534 data-nosnippet>534</a>                    y += number();
-<a href=#535 id=535 data-nosnippet>535</a>                }
-<a href=#536 id=536 data-nosnippet>536</a>                <span class="string">"h" </span>=&gt; {
-<a href=#537 id=537 data-nosnippet>537</a>                    <span class="kw">let </span>length = number();
-<a href=#538 id=538 data-nosnippet>538</a>                    <span class="kw">while </span>rows.len() &lt;= y <span class="kw">as </span>usize {
-<a href=#539 id=539 data-nosnippet>539</a>                        rows.push(<span class="macro">vec!</span>[<span class="bool-val">false</span>; width]);
-<a href=#540 id=540 data-nosnippet>540</a>                    }
-<a href=#541 id=541 data-nosnippet>541</a>                    <span class="kw">for </span>column <span class="kw">in </span>x..x + length {
-<a href=#542 id=542 data-nosnippet>542</a>                        rows[y <span class="kw">as </span>usize][column <span class="kw">as </span>usize] = <span class="bool-val">true</span>;
-<a href=#543 id=543 data-nosnippet>543</a>                    }
-<a href=#544 id=544 data-nosnippet>544</a>                    x += length;
-<a href=#545 id=545 data-nosnippet>545</a>                }
-<a href=#546 id=546 data-nosnippet>546</a>                other =&gt; <span class="macro">panic!</span>(<span class="string">"unexpected path command {:?}"</span>, other),
-<a href=#547 id=547 data-nosnippet>547</a>            }
-<a href=#548 id=548 data-nosnippet>548</a>        }
-<a href=#549 id=549 data-nosnippet>549</a>        rows
-<a href=#550 id=550 data-nosnippet>550</a>    }
-<a href=#551 id=551 data-nosnippet>551</a>
-<a href=#552 id=552 data-nosnippet>552</a>    <span class="doccomment">/// The rows of a `P4` image as booleans, for comparing against a path.
-<a href=#553 id=553 data-nosnippet>553</a>    </span><span class="kw">fn </span>unpack(image: <span class="kw-2">&amp;</span>[u8], width: usize) -&gt; Vec&lt;Vec&lt;bool&gt;&gt; {
-<a href=#554 id=554 data-nosnippet>554</a>        <span class="kw">let </span>(head, raster) = split(image);
-<a href=#555 id=555 data-nosnippet>555</a>        <span class="kw">let </span>rows: usize = std::str::from_utf8(head)
-<a href=#556 id=556 data-nosnippet>556</a>            .unwrap()
-<a href=#557 id=557 data-nosnippet>557</a>            .split_whitespace()
-<a href=#558 id=558 data-nosnippet>558</a>            .nth(<span class="number">2</span>)
-<a href=#559 id=559 data-nosnippet>559</a>            .unwrap()
-<a href=#560 id=560 data-nosnippet>560</a>            .parse()
-<a href=#561 id=561 data-nosnippet>561</a>            .unwrap();
-<a href=#562 id=562 data-nosnippet>562</a>        <span class="kw">let </span>stride = width.div_ceil(<span class="number">8</span>);
-<a href=#563 id=563 data-nosnippet>563</a>        (<span class="number">0</span>..rows)
-<a href=#564 id=564 data-nosnippet>564</a>            .map(|r| {
-<a href=#565 id=565 data-nosnippet>565</a>                (<span class="number">0</span>..width)
-<a href=#566 id=566 data-nosnippet>566</a>                    .map(|c| raster[r * stride + c / <span class="number">8</span>] &amp; (<span class="number">0x80 </span>&gt;&gt; (c % <span class="number">8</span>)) != <span class="number">0</span>)
-<a href=#567 id=567 data-nosnippet>567</a>                    .collect()
-<a href=#568 id=568 data-nosnippet>568</a>            })
-<a href=#569 id=569 data-nosnippet>569</a>            .collect()
-<a href=#570 id=570 data-nosnippet>570</a>    }
-<a href=#571 id=571 data-nosnippet>571</a>
-<a href=#572 id=572 data-nosnippet>572</a>    <span class="kw">fn </span>split(image: <span class="kw-2">&amp;</span>[u8]) -&gt; (<span class="kw-2">&amp;</span>[u8], <span class="kw-2">&amp;</span>[u8]) {
-<a href=#573 id=573 data-nosnippet>573</a>        <span class="kw">let </span>end = image.iter().position(|<span class="kw-2">&amp;</span>b| b == <span class="string">b'\n'</span>).unwrap();
-<a href=#574 id=574 data-nosnippet>574</a>        <span class="kw">let </span>end = image[end + <span class="number">1</span>..].iter().position(|<span class="kw-2">&amp;</span>b| b == <span class="string">b'\n'</span>).unwrap() + end + <span class="number">2</span>;
-<a href=#575 id=575 data-nosnippet>575</a>        image.split_at(end)
+<a href=#322 id=322 data-nosnippet>322</a>        <span class="self">self</span>.pending += <span class="number">1</span>;
+<a href=#323 id=323 data-nosnippet>323</a>        <span class="kw">if </span><span class="self">self</span>.pending == <span class="self">self</span>.bin {
+<a href=#324 id=324 data-nosnippet>324</a>            <span class="comment">// Nothing is cleared until the band goes out, so a bin's
+<a href=#325 id=325 data-nosnippet>325</a>            // transactions have been drawing into the same row all along: the
+<a href=#326 id=326 data-nosnippet>326</a>            // row is their union without any of them being asked to compute one.
+<a href=#327 id=327 data-nosnippet>327</a>            </span><span class="self">self</span>.end_row()<span class="question-mark">?</span>;
+<a href=#328 id=328 data-nosnippet>328</a>        }
+<a href=#329 id=329 data-nosnippet>329</a>        <span class="prelude-val">Ok</span>(())
+<a href=#330 id=330 data-nosnippet>330</a>    }
+<a href=#331 id=331 data-nosnippet>331</a>
+<a href=#332 id=332 data-nosnippet>332</a>    <span class="doccomment">/// Close the row being built and start the next one, sending the band if
+<a href=#333 id=333 data-nosnippet>333</a>    /// that filled it.
+<a href=#334 id=334 data-nosnippet>334</a>    </span><span class="kw">fn </span>end_row(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; io::Result&lt;()&gt; {
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">if </span><span class="self">self</span>.rows == <span class="self">self</span>.height {
+<a href=#336 id=336 data-nosnippet>336</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::new(
+<a href=#337 id=337 data-nosnippet>337</a>                io::ErrorKind::InvalidData,
+<a href=#338 id=338 data-nosnippet>338</a>                <span class="macro">format!</span>(
+<a href=#339 id=339 data-nosnippet>339</a>                    <span class="string">"the picture was opened {} rows tall and the records have filled it; \
+<a href=#340 id=340 data-nosnippet>340</a>                     the count they were measured by is not the count they are arriving at"</span>,
+<a href=#341 id=341 data-nosnippet>341</a>                    <span class="self">self</span>.height
+<a href=#342 id=342 data-nosnippet>342</a>                ),
+<a href=#343 id=343 data-nosnippet>343</a>            ));
+<a href=#344 id=344 data-nosnippet>344</a>        }
+<a href=#345 id=345 data-nosnippet>345</a>        <span class="self">self</span>.pending = <span class="number">0</span>;
+<a href=#346 id=346 data-nosnippet>346</a>        <span class="self">self</span>.filled += <span class="number">1</span>;
+<a href=#347 id=347 data-nosnippet>347</a>        <span class="self">self</span>.rows += <span class="number">1</span>;
+<a href=#348 id=348 data-nosnippet>348</a>        <span class="kw">if </span><span class="self">self</span>.filled == TILE {
+<a href=#349 id=349 data-nosnippet>349</a>            <span class="self">self</span>.flush_band()<span class="question-mark">?</span>;
+<a href=#350 id=350 data-nosnippet>350</a>        }
+<a href=#351 id=351 data-nosnippet>351</a>        <span class="prelude-val">Ok</span>(())
+<a href=#352 id=352 data-nosnippet>352</a>    }
+<a href=#353 id=353 data-nosnippet>353</a>
+<a href=#354 id=354 data-nosnippet>354</a>    <span class="doccomment">/// Hand the finished band to the encoder, a tile at a time, and clear it.
+<a href=#355 id=355 data-nosnippet>355</a>    ///
+<a href=#356 id=356 data-nosnippet>356</a>    /// The band is as tall as the tile row it stands for — full bands are
+<a href=#357 id=357 data-nosnippet>357</a>    /// [`TILE`] rows and the last one is whatever is left of the height, which
+<a href=#358 id=358 data-nosnippet>358</a>    /// [`Writer::finish`] arranges by padding — so its rows are exactly the
+<a href=#359 id=359 data-nosnippet>359</a>    /// samples the encoder is expecting for these tile indices.
+<a href=#360 id=360 data-nosnippet>360</a>    </span><span class="kw">fn </span>flush_band(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; io::Result&lt;()&gt; {
+<a href=#361 id=361 data-nosnippet>361</a>        <span class="kw">let </span>rows = <span class="self">self</span>.filled;
+<a href=#362 id=362 data-nosnippet>362</a>        <span class="macro">debug_assert_eq!</span>(
+<a href=#363 id=363 data-nosnippet>363</a>            rows,
+<a href=#364 id=364 data-nosnippet>364</a>            TILE.min(<span class="self">self</span>.height - <span class="self">self</span>.bands * TILE),
+<a href=#365 id=365 data-nosnippet>365</a>            <span class="string">"a band is the height of the tile row it is"
+<a href=#366 id=366 data-nosnippet>366</a>        </span>);
+<a href=#367 id=367 data-nosnippet>367</a>        <span class="kw">for </span>tx <span class="kw">in </span><span class="number">0</span>..<span class="self">self</span>.across {
+<a href=#368 id=368 data-nosnippet>368</a>            <span class="kw">let </span>x0 = tx * TILE;
+<a href=#369 id=369 data-nosnippet>369</a>            <span class="kw">let </span>x1 = ((tx + <span class="number">1</span>) * TILE).min(<span class="self">self</span>.width);
+<a href=#370 id=370 data-nosnippet>370</a>            <span class="kw">let </span>tile = <span class="self">self</span>.tile_bytes(x0, x1, rows);
+<a href=#371 id=371 data-nosnippet>371</a>            <span class="comment">// Tiles go out across and then down, which is the order the encoder
+<a href=#372 id=372 data-nosnippet>372</a>            // counts them in and the only one it accepts.
+<a href=#373 id=373 data-nosnippet>373</a>            </span><span class="kw">let </span>index = (<span class="self">self</span>.bands * <span class="self">self</span>.across + tx) <span class="kw">as </span>u32;
+<a href=#374 id=374 data-nosnippet>374</a>            <span class="kw">if </span><span class="self">self</span>.codec.write_tile(index, <span class="kw-2">&amp;</span>tile, <span class="kw-2">&amp;mut </span><span class="self">self</span>.stream) == <span class="number">0 </span>{
+<a href=#375 id=375 data-nosnippet>375</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::other(<span class="macro">format!</span>(<span class="string">"could not write tile {}"</span>, index)));
+<a href=#376 id=376 data-nosnippet>376</a>            }
+<a href=#377 id=377 data-nosnippet>377</a>        }
+<a href=#378 id=378 data-nosnippet>378</a>        <span class="comment">// Bits are only ever set below `dirty`, so that prefix is the only part
+<a href=#379 id=379 data-nosnippet>379</a>        // of a row that can be non-zero and the rest is still the zeroes it
+<a href=#380 id=380 data-nosnippet>380</a>        // started as.  Colors are sets of *ancestor* blocks and the chain only
+<a href=#381 id=381 data-nosnippet>381</a>        // grows, so early bands reach nowhere near the right-hand edge and this
+<a href=#382 id=382 data-nosnippet>382</a>        // is the difference between clearing a band and clearing the picture.
+<a href=#383 id=383 data-nosnippet>383</a>        </span><span class="kw">for </span>row <span class="kw">in </span><span class="number">0</span>..rows {
+<a href=#384 id=384 data-nosnippet>384</a>            <span class="kw">let </span>at = row * <span class="self">self</span>.stride;
+<a href=#385 id=385 data-nosnippet>385</a>            <span class="self">self</span>.band[at..at + <span class="self">self</span>.dirty].fill(<span class="number">0</span>);
+<a href=#386 id=386 data-nosnippet>386</a>        }
+<a href=#387 id=387 data-nosnippet>387</a>        <span class="self">self</span>.dirty = <span class="number">0</span>;
+<a href=#388 id=388 data-nosnippet>388</a>        <span class="self">self</span>.filled = <span class="number">0</span>;
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="self">self</span>.bands += <span class="number">1</span>;
+<a href=#390 id=390 data-nosnippet>390</a>        <span class="prelude-val">Ok</span>(())
+<a href=#391 id=391 data-nosnippet>391</a>    }
+<a href=#392 id=392 data-nosnippet>392</a>
+<a href=#393 id=393 data-nosnippet>393</a>    <span class="doccomment">/// One tile of the band as the samples the encoder wants: row-major, a byte
+<a href=#394 id=394 data-nosnippet>394</a>    /// a sample, `[x0, x1)` of each of the band's first `rows` rows.
+<a href=#395 id=395 data-nosnippet>395</a>    ///
+<a href=#396 id=396 data-nosnippet>396</a>    /// `x0` is a multiple of [`TILE`] and so of 8, which is what lets a whole
+<a href=#397 id=397 data-nosnippet>397</a>    /// packed byte become eight samples in one copy; only the far edge of the
+<a href=#398 id=398 data-nosnippet>398</a>    /// picture, where `x1` need not be a multiple of anything, is trimmed.
+<a href=#399 id=399 data-nosnippet>399</a>    </span><span class="kw">fn </span>tile_bytes(<span class="kw-2">&amp;</span><span class="self">self</span>, x0: usize, x1: usize, rows: usize) -&gt; Vec&lt;u8&gt; {
+<a href=#400 id=400 data-nosnippet>400</a>        <span class="kw">let </span>w = x1 - x0;
+<a href=#401 id=401 data-nosnippet>401</a>        <span class="kw">let </span><span class="kw-2">mut </span>tile = <span class="macro">vec!</span>[PAPER; w * rows];
+<a href=#402 id=402 data-nosnippet>402</a>        <span class="kw">for </span>row <span class="kw">in </span><span class="number">0</span>..rows {
+<a href=#403 id=403 data-nosnippet>403</a>            <span class="comment">// `dirty` bounds every row of the band, so a tile past it is paper
+<a href=#404 id=404 data-nosnippet>404</a>            // and is never looked at.
+<a href=#405 id=405 data-nosnippet>405</a>            </span><span class="kw">let </span>packed = <span class="kw-2">&amp;</span><span class="self">self</span>.band[row * <span class="self">self</span>.stride..row * <span class="self">self</span>.stride + <span class="self">self</span>.dirty];
+<a href=#406 id=406 data-nosnippet>406</a>            <span class="kw">let </span>out = <span class="kw-2">&amp;mut </span>tile[row * w..(row + <span class="number">1</span>) * w];
+<a href=#407 id=407 data-nosnippet>407</a>            <span class="kw">for </span>at <span class="kw">in </span>(<span class="number">0</span>..w).step_by(<span class="number">8</span>) {
+<a href=#408 id=408 data-nosnippet>408</a>                <span class="kw">let </span>byte = x0 / <span class="number">8 </span>+ at / <span class="number">8</span>;
+<a href=#409 id=409 data-nosnippet>409</a>                <span class="kw">if </span>byte &gt;= packed.len() {
+<a href=#410 id=410 data-nosnippet>410</a>                    <span class="kw">break</span>;
+<a href=#411 id=411 data-nosnippet>411</a>                }
+<a href=#412 id=412 data-nosnippet>412</a>                <span class="kw">let </span>bits = packed[byte];
+<a href=#413 id=413 data-nosnippet>413</a>                <span class="kw">if </span>bits == <span class="number">0 </span>{
+<a href=#414 id=414 data-nosnippet>414</a>                    <span class="kw">continue</span>;
+<a href=#415 id=415 data-nosnippet>415</a>                }
+<a href=#416 id=416 data-nosnippet>416</a>                <span class="kw">let </span>n = (w - at).min(<span class="number">8</span>);
+<a href=#417 id=417 data-nosnippet>417</a>                out[at..at + n].copy_from_slice(<span class="kw-2">&amp;</span>SAMPLES[bits <span class="kw">as </span>usize][..n]);
+<a href=#418 id=418 data-nosnippet>418</a>            }
+<a href=#419 id=419 data-nosnippet>419</a>        }
+<a href=#420 id=420 data-nosnippet>420</a>        tile
+<a href=#421 id=421 data-nosnippet>421</a>    }
+<a href=#422 id=422 data-nosnippet>422</a>
+<a href=#423 id=423 data-nosnippet>423</a>    <span class="doccomment">/// `(columns, rows)` as the picture was opened for, which is what it will be
+<a href=#424 id=424 data-nosnippet>424</a>    /// however many records turn up.
+<a href=#425 id=425 data-nosnippet>425</a>    </span><span class="kw">pub fn </span>dimensions(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (usize, usize) {
+<a href=#426 id=426 data-nosnippet>426</a>        (<span class="self">self</span>.width, <span class="self">self</span>.height)
+<a href=#427 id=427 data-nosnippet>427</a>    }
+<a href=#428 id=428 data-nosnippet>428</a>
+<a href=#429 id=429 data-nosnippet>429</a>    <span class="doccomment">/// Close the picture: finish the row in hand, pad out to the promised
+<a href=#430 id=430 data-nosnippet>430</a>    /// height, send what is left of the band, and close the codestream.
+<a href=#431 id=431 data-nosnippet>431</a>    </span><span class="kw">pub fn </span>finish(<span class="kw-2">mut </span><span class="self">self</span>) -&gt; io::Result&lt;()&gt; {
+<a href=#432 id=432 data-nosnippet>432</a>        <span class="comment">// A bin that never filled up is still a row: the run does not owe the
+<a href=#433 id=433 data-nosnippet>433</a>        // picture a whole bin's worth of transactions at the end of the records.
+<a href=#434 id=434 data-nosnippet>434</a>        </span><span class="kw">if </span><span class="self">self</span>.pending &gt; <span class="number">0 </span>{
+<a href=#435 id=435 data-nosnippet>435</a>            <span class="self">self</span>.end_row()<span class="question-mark">?</span>;
+<a href=#436 id=436 data-nosnippet>436</a>        }
+<a href=#437 id=437 data-nosnippet>437</a>        <span class="comment">// The height went into the file before the first sample, so the encoder
+<a href=#438 id=438 data-nosnippet>438</a>        // is owed exactly that many rows.  Short of them the file would be a
+<a href=#439 id=439 data-nosnippet>439</a>        // codestream missing its last tiles, which is not an image; blank rows
+<a href=#440 id=440 data-nosnippet>440</a>        // are at least an honest picture of records that were not there.
+<a href=#441 id=441 data-nosnippet>441</a>        </span><span class="kw">while </span><span class="self">self</span>.rows &lt; <span class="self">self</span>.height {
+<a href=#442 id=442 data-nosnippet>442</a>            <span class="self">self</span>.end_row()<span class="question-mark">?</span>;
+<a href=#443 id=443 data-nosnippet>443</a>        }
+<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">if </span><span class="self">self</span>.filled &gt; <span class="number">0 </span>{
+<a href=#445 id=445 data-nosnippet>445</a>            <span class="self">self</span>.flush_band()<span class="question-mark">?</span>;
+<a href=#446 id=446 data-nosnippet>446</a>        }
+<a href=#447 id=447 data-nosnippet>447</a>        <span class="kw">if </span><span class="self">self</span>.codec.end_compress(<span class="kw-2">&amp;mut </span><span class="self">self</span>.stream) == <span class="number">0 </span>{
+<a href=#448 id=448 data-nosnippet>448</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::other(<span class="string">"could not close the codestream"</span>));
+<a href=#449 id=449 data-nosnippet>449</a>        }
+<a href=#450 id=450 data-nosnippet>450</a>        <span class="comment">// The encoder points at the image for as long as it is writing, so it
+<a href=#451 id=451 data-nosnippet>451</a>        // goes first.  Nothing runs between here and the end of the scope that
+<a href=#452 id=452 data-nosnippet>452</a>        // would notice, but the order the two are in is not an accident and
+<a href=#453 id=453 data-nosnippet>453</a>        // saying so is cheaper than rediscovering it.
+<a href=#454 id=454 data-nosnippet>454</a>        </span>drop(<span class="self">self</span>.codec);
+<a href=#455 id=455 data-nosnippet>455</a>        drop(<span class="self">self</span>.image);
+<a href=#456 id=456 data-nosnippet>456</a>        <span class="prelude-val">Ok</span>(())
+<a href=#457 id=457 data-nosnippet>457</a>    }
+<a href=#458 id=458 data-nosnippet>458</a>}
+<a href=#459 id=459 data-nosnippet>459</a>
+<a href=#460 id=460 data-nosnippet>460</a><span class="attr">#[cfg(test)]
+<a href=#461 id=461 data-nosnippet>461</a></span><span class="kw">mod </span>tests {
+<a href=#462 id=462 data-nosnippet>462</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#463 id=463 data-nosnippet>463</a>    <span class="kw">use </span>openjp2::openjpeg::opj_dparameters_t;
+<a href=#464 id=464 data-nosnippet>464</a>
+<a href=#465 id=465 data-nosnippet>465</a>    <span class="doccomment">/// A path under the test runner's temporary directory, distinct per test so
+<a href=#466 id=466 data-nosnippet>466</a>    /// that the tests can run in the same directory at the same time.
+<a href=#467 id=467 data-nosnippet>467</a>    </span><span class="kw">fn </span>scratch(name: <span class="kw-2">&amp;</span>str) -&gt; String {
+<a href=#468 id=468 data-nosnippet>468</a>        std::env::temp_dir()
+<a href=#469 id=469 data-nosnippet>469</a>            .join(<span class="macro">format!</span>(<span class="string">"colors-{}-{name}.jp2"</span>, std::process::id()))
+<a href=#470 id=470 data-nosnippet>470</a>            .to_string_lossy()
+<a href=#471 id=471 data-nosnippet>471</a>            .into_owned()
+<a href=#472 id=472 data-nosnippet>472</a>    }
+<a href=#473 id=473 data-nosnippet>473</a>
+<a href=#474 id=474 data-nosnippet>474</a>    <span class="doccomment">/// The picture at `path`, read back with the decoder: its size and its
+<a href=#475 id=475 data-nosnippet>475</a>    /// samples, row-major.
+<a href=#476 id=476 data-nosnippet>476</a>    </span><span class="kw">fn </span>decode(path: <span class="kw-2">&amp;</span>str) -&gt; (usize, usize, Vec&lt;u8&gt;) {
+<a href=#477 id=477 data-nosnippet>477</a>        <span class="kw">let </span><span class="kw-2">mut </span>params = opj_dparameters_t::default();
+<a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">let </span><span class="kw-2">mut </span>codec = Codec::new_decoder(OPJ_CODEC_JP2).unwrap();
+<a href=#479 id=479 data-nosnippet>479</a>        <span class="macro">assert!</span>(codec.setup_decoder(<span class="kw-2">&amp;mut </span>params) != <span class="number">0</span>);
+<a href=#480 id=480 data-nosnippet>480</a>
+<a href=#481 id=481 data-nosnippet>481</a>        <span class="kw">let </span><span class="kw-2">mut </span>stream = Stream::new_file(path, <span class="number">1 </span>&lt;&lt; <span class="number">20</span>, <span class="bool-val">true</span>).unwrap();
+<a href=#482 id=482 data-nosnippet>482</a>        <span class="kw">let </span><span class="kw-2">mut </span>image = codec.read_header(<span class="kw-2">&amp;mut </span>stream).expect(<span class="string">"a JP2 header"</span>);
+<a href=#483 id=483 data-nosnippet>483</a>        <span class="macro">assert!</span>(codec.decode(<span class="kw-2">&amp;mut </span>stream, <span class="kw-2">&amp;mut </span>image) != <span class="number">0</span>);
+<a href=#484 id=484 data-nosnippet>484</a>        <span class="macro">assert!</span>(codec.end_decompress(<span class="kw-2">&amp;mut </span>stream) != <span class="number">0</span>);
+<a href=#485 id=485 data-nosnippet>485</a>
+<a href=#486 id=486 data-nosnippet>486</a>        <span class="kw">let </span>(w, h) = (image.x1 <span class="kw">as </span>usize, image.y1 <span class="kw">as </span>usize);
+<a href=#487 id=487 data-nosnippet>487</a>        <span class="kw">let </span>comps = image.comps().unwrap();
+<a href=#488 id=488 data-nosnippet>488</a>        <span class="macro">assert_eq!</span>(comps.len(), <span class="number">1</span>, <span class="string">"one bilevel component"</span>);
+<a href=#489 id=489 data-nosnippet>489</a>        <span class="macro">assert_eq!</span>(comps[<span class="number">0</span>].prec, <span class="number">1</span>, <span class="string">"one bit a sample"</span>);
+<a href=#490 id=490 data-nosnippet>490</a>        <span class="kw">let </span>samples = comps[<span class="number">0</span>].data().unwrap().iter().map(|<span class="kw-2">&amp;</span>s| s <span class="kw">as </span>u8).collect();
+<a href=#491 id=491 data-nosnippet>491</a>        (w, h, samples)
+<a href=#492 id=492 data-nosnippet>492</a>    }
+<a href=#493 id=493 data-nosnippet>493</a>
+<a href=#494 id=494 data-nosnippet>494</a>    <span class="doccomment">/// Draw `transactions` with one to a row and answer the rows the file
+<a href=#495 id=495 data-nosnippet>495</a>    /// decodes back to, as `#` for ink and `.` for paper.
+<a href=#496 id=496 data-nosnippet>496</a>    </span><span class="kw">fn </span>draw(name: <span class="kw-2">&amp;</span>str, width: usize, rows: usize, colors: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]]) -&gt; Vec&lt;String&gt; {
+<a href=#497 id=497 data-nosnippet>497</a>        binned(name, width, rows, <span class="number">1</span>, colors)
+<a href=#498 id=498 data-nosnippet>498</a>    }
+<a href=#499 id=499 data-nosnippet>499</a>
+<a href=#500 id=500 data-nosnippet>500</a>    <span class="doccomment">/// The same, with `bin` transactions to the row.
+<a href=#501 id=501 data-nosnippet>501</a>    </span><span class="kw">fn </span>binned(
+<a href=#502 id=502 data-nosnippet>502</a>        name: <span class="kw-2">&amp;</span>str,
+<a href=#503 id=503 data-nosnippet>503</a>        width: usize,
+<a href=#504 id=504 data-nosnippet>504</a>        rows: usize,
+<a href=#505 id=505 data-nosnippet>505</a>        bin: usize,
+<a href=#506 id=506 data-nosnippet>506</a>        colors: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]],
+<a href=#507 id=507 data-nosnippet>507</a>    ) -&gt; Vec&lt;String&gt; {
+<a href=#508 id=508 data-nosnippet>508</a>        <span class="kw">let </span>path = scratch(name);
+<a href=#509 id=509 data-nosnippet>509</a>        write(<span class="kw-2">&amp;</span>path, width, rows, bin, colors).unwrap();
+<a href=#510 id=510 data-nosnippet>510</a>        <span class="kw">let </span>picture = rendered(<span class="kw-2">&amp;</span>path, width, rows);
+<a href=#511 id=511 data-nosnippet>511</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#512 id=512 data-nosnippet>512</a>        picture
+<a href=#513 id=513 data-nosnippet>513</a>    }
+<a href=#514 id=514 data-nosnippet>514</a>
+<a href=#515 id=515 data-nosnippet>515</a>    <span class="doccomment">/// Draw the colors into a file, leaving whatever error came of it to the
+<a href=#516 id=516 data-nosnippet>516</a>    /// caller — the tests that expect one need the writer's own message.
+<a href=#517 id=517 data-nosnippet>517</a>    </span><span class="kw">fn </span>write(
+<a href=#518 id=518 data-nosnippet>518</a>        path: <span class="kw-2">&amp;</span>str,
+<a href=#519 id=519 data-nosnippet>519</a>        width: usize,
+<a href=#520 id=520 data-nosnippet>520</a>        rows: usize,
+<a href=#521 id=521 data-nosnippet>521</a>        bin: usize,
+<a href=#522 id=522 data-nosnippet>522</a>        colors: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]],
+<a href=#523 id=523 data-nosnippet>523</a>    ) -&gt; io::Result&lt;()&gt; {
+<a href=#524 id=524 data-nosnippet>524</a>        <span class="kw">let </span><span class="kw-2">mut </span>w = Writer::new(path, width, rows, bin)<span class="question-mark">?</span>;
+<a href=#525 id=525 data-nosnippet>525</a>        <span class="kw">for </span>color <span class="kw">in </span>colors {
+<a href=#526 id=526 data-nosnippet>526</a>            <span class="kw">for </span><span class="kw-2">&amp;</span>block <span class="kw">in </span><span class="kw-2">*</span>color {
+<a href=#527 id=527 data-nosnippet>527</a>                w.set(block);
+<a href=#528 id=528 data-nosnippet>528</a>            }
+<a href=#529 id=529 data-nosnippet>529</a>            w.end_transaction()<span class="question-mark">?</span>;
+<a href=#530 id=530 data-nosnippet>530</a>        }
+<a href=#531 id=531 data-nosnippet>531</a>        w.finish()
+<a href=#532 id=532 data-nosnippet>532</a>    }
+<a href=#533 id=533 data-nosnippet>533</a>
+<a href=#534 id=534 data-nosnippet>534</a>    <span class="doccomment">/// The decoded file as one string a row, checked against the size it was
+<a href=#535 id=535 data-nosnippet>535</a>    /// asked for.
+<a href=#536 id=536 data-nosnippet>536</a>    </span><span class="kw">fn </span>rendered(path: <span class="kw-2">&amp;</span>str, width: usize, rows: usize) -&gt; Vec&lt;String&gt; {
+<a href=#537 id=537 data-nosnippet>537</a>        <span class="kw">let </span>(w, h, samples) = decode(path);
+<a href=#538 id=538 data-nosnippet>538</a>        <span class="macro">assert_eq!</span>((w, h), (width, rows), <span class="string">"the size the picture was opened for"</span>);
+<a href=#539 id=539 data-nosnippet>539</a>        samples
+<a href=#540 id=540 data-nosnippet>540</a>            .chunks(width)
+<a href=#541 id=541 data-nosnippet>541</a>            .map(|row| {
+<a href=#542 id=542 data-nosnippet>542</a>                row.iter()
+<a href=#543 id=543 data-nosnippet>543</a>                    .map(|<span class="kw-2">&amp;</span>s| <span class="kw">if </span>s == INK { <span class="string">'#' </span>} <span class="kw">else </span>{ <span class="string">'.' </span>})
+<a href=#544 id=544 data-nosnippet>544</a>                    .collect()
+<a href=#545 id=545 data-nosnippet>545</a>            })
+<a href=#546 id=546 data-nosnippet>546</a>            .collect()
+<a href=#547 id=547 data-nosnippet>547</a>    }
+<a href=#548 id=548 data-nosnippet>548</a>
+<a href=#549 id=549 data-nosnippet>549</a>    <span class="doccomment">/// Column 0 is the leftmost pixel and the top bit of byte 0: block ids read
+<a href=#550 id=550 data-nosnippet>550</a>    /// left to right across the row.
+<a href=#551 id=551 data-nosnippet>551</a>    </span><span class="attr">#[test]
+<a href=#552 id=552 data-nosnippet>552</a>    </span><span class="kw">fn </span>the_lowest_block_is_the_leftmost_pixel() {
+<a href=#553 id=553 data-nosnippet>553</a>        <span class="macro">assert_eq!</span>(
+<a href=#554 id=554 data-nosnippet>554</a>            draw(<span class="string">"leftmost"</span>, <span class="number">16</span>, <span class="number">4</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">7</span>], <span class="kw-2">&amp;</span>[<span class="number">8</span>], <span class="kw-2">&amp;</span>[<span class="number">15</span>]]),
+<a href=#555 id=555 data-nosnippet>555</a>            [
+<a href=#556 id=556 data-nosnippet>556</a>                <span class="string">"#..............."</span>,
+<a href=#557 id=557 data-nosnippet>557</a>                <span class="string">".......#........"</span>,
+<a href=#558 id=558 data-nosnippet>558</a>                <span class="string">"........#......."</span>,
+<a href=#559 id=559 data-nosnippet>559</a>                <span class="string">"...............#"</span>,
+<a href=#560 id=560 data-nosnippet>560</a>            ]
+<a href=#561 id=561 data-nosnippet>561</a>        );
+<a href=#562 id=562 data-nosnippet>562</a>    }
+<a href=#563 id=563 data-nosnippet>563</a>
+<a href=#564 id=564 data-nosnippet>564</a>    <span class="doccomment">/// Rows are cleared by a prefix, so the case that would catch a wrong prefix
+<a href=#565 id=565 data-nosnippet>565</a>    /// is a wide row followed by a narrow one.
+<a href=#566 id=566 data-nosnippet>566</a>    </span><span class="attr">#[test]
+<a href=#567 id=567 data-nosnippet>567</a>    </span><span class="kw">fn </span>a_row_does_not_inherit_the_one_before_it() {
+<a href=#568 id=568 data-nosnippet>568</a>        <span class="macro">assert_eq!</span>(
+<a href=#569 id=569 data-nosnippet>569</a>            draw(<span class="string">"inherit"</span>, <span class="number">24</span>, <span class="number">3</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">23</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[]]),
+<a href=#570 id=570 data-nosnippet>570</a>            [
+<a href=#571 id=571 data-nosnippet>571</a>                <span class="string">"#......................#"</span>,
+<a href=#572 id=572 data-nosnippet>572</a>                <span class="string">".#......................"</span>,
+<a href=#573 id=573 data-nosnippet>573</a>                <span class="string">"........................"</span>,
+<a href=#574 id=574 data-nosnippet>574</a>            ]
+<a href=#575 id=575 data-nosnippet>575</a>        );
 <a href=#576 id=576 data-nosnippet>576</a>    }
 <a href=#577 id=577 data-nosnippet>577</a>
-<a href=#578 id=578 data-nosnippet>578</a>    <span class="attr">#[test]
-<a href=#579 id=579 data-nosnippet>579</a>    </span><span class="kw">fn </span>the_header_names_the_width_and_the_rows_it_actually_wrote() {
-<a href=#580 id=580 data-nosnippet>580</a>        <span class="kw">let </span>image = draw(<span class="number">12</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[<span class="number">2</span>]]).unwrap();
-<a href=#581 id=581 data-nosnippet>581</a>        <span class="kw">let </span>(header, <span class="kw">_</span>) = split(<span class="kw-2">&amp;</span>image);
-<a href=#582 id=582 data-nosnippet>582</a>        <span class="macro">assert_eq!</span>(
-<a href=#583 id=583 data-nosnippet>583</a>            std::str::from_utf8(header).unwrap(),
-<a href=#584 id=584 data-nosnippet>584</a>            <span class="macro">format!</span>(<span class="string">"P4\n12 {:&gt;20}\n"</span>, <span class="number">3</span>)
-<a href=#585 id=585 data-nosnippet>585</a>        );
-<a href=#586 id=586 data-nosnippet>586</a>    }
-<a href=#587 id=587 data-nosnippet>587</a>
-<a href=#588 id=588 data-nosnippet>588</a>    <span class="doccomment">/// The height is not known when the header is written, so the placeholder
-<a href=#589 id=589 data-nosnippet>589</a>    /// has to be exactly as long as anything that could replace it — in both
-<a href=#590 id=590 data-nosnippet>590</a>    /// formats, which pad with different things for different reasons.
-<a href=#591 id=591 data-nosnippet>591</a>    </span><span class="attr">#[test]
-<a href=#592 id=592 data-nosnippet>592</a>    </span><span class="kw">fn </span>the_placeholder_header_is_the_length_of_the_finished_one() {
-<a href=#593 id=593 data-nosnippet>593</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>width <span class="kw">in </span><span class="kw-2">&amp;</span>[<span class="number">1usize</span>, <span class="number">12</span>, <span class="number">170_000</span>, usize::MAX] {
-<a href=#594 id=594 data-nosnippet>594</a>            <span class="macro">assert_eq!</span>(
-<a href=#595 id=595 data-nosnippet>595</a>                pbm_header(width, <span class="number">0</span>).len(),
-<a href=#596 id=596 data-nosnippet>596</a>                pbm_header(width, usize::MAX).len()
-<a href=#597 id=597 data-nosnippet>597</a>            );
-<a href=#598 id=598 data-nosnippet>598</a>            <span class="macro">assert_eq!</span>(
-<a href=#599 id=599 data-nosnippet>599</a>                svg_header(width, <span class="number">0</span>).len(),
-<a href=#600 id=600 data-nosnippet>600</a>                svg_header(width, usize::MAX).len()
-<a href=#601 id=601 data-nosnippet>601</a>            );
-<a href=#602 id=602 data-nosnippet>602</a>        }
+<a href=#578 id=578 data-nosnippet>578</a>    <span class="doccomment">/// A width that is not a multiple of eight leaves slack bits at the end of
+<a href=#579 id=579 data-nosnippet>579</a>    /// each packed row, and they have to stay out of the picture.
+<a href=#580 id=580 data-nosnippet>580</a>    </span><span class="attr">#[test]
+<a href=#581 id=581 data-nosnippet>581</a>    </span><span class="kw">fn </span>the_padding_bits_of_a_row_are_not_pixels() {
+<a href=#582 id=582 data-nosnippet>582</a>        <span class="macro">assert_eq!</span>(draw(<span class="string">"padding"</span>, <span class="number">3</span>, <span class="number">1</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">1</span>, <span class="number">2</span>]]), [<span class="string">"###"</span>]);
+<a href=#583 id=583 data-nosnippet>583</a>    }
+<a href=#584 id=584 data-nosnippet>584</a>
+<a href=#585 id=585 data-nosnippet>585</a>    <span class="doccomment">/// A bin's row is the union of its transactions' colors, which is the one
+<a href=#586 id=586 data-nosnippet>586</a>    /// thing that makes a compacted picture a coarser picture rather than a
+<a href=#587 id=587 data-nosnippet>587</a>    /// sampled one: a block inked at bin `n` is inked at every coarser bin too.
+<a href=#588 id=588 data-nosnippet>588</a>    </span><span class="attr">#[test]
+<a href=#589 id=589 data-nosnippet>589</a>    </span><span class="kw">fn </span>a_binned_row_is_the_union_of_the_transactions_in_it() {
+<a href=#590 id=590 data-nosnippet>590</a>        <span class="macro">assert_eq!</span>(
+<a href=#591 id=591 data-nosnippet>591</a>            binned(<span class="string">"union"</span>, <span class="number">24</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">9</span>], <span class="kw-2">&amp;</span>[<span class="number">23</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[<span class="number">2</span>], <span class="kw-2">&amp;</span>[<span class="number">3</span>]]),
+<a href=#592 id=592 data-nosnippet>592</a>            [<span class="string">"#........#.............#"</span>, <span class="string">".###...................."</span>]
+<a href=#593 id=593 data-nosnippet>593</a>        );
+<a href=#594 id=594 data-nosnippet>594</a>    }
+<a href=#595 id=595 data-nosnippet>595</a>
+<a href=#596 id=596 data-nosnippet>596</a>    <span class="doccomment">/// The records do not owe the picture a whole bin at the end of the run.
+<a href=#597 id=597 data-nosnippet>597</a>    </span><span class="attr">#[test]
+<a href=#598 id=598 data-nosnippet>598</a>    </span><span class="kw">fn </span>a_bin_left_part_full_is_still_a_row() {
+<a href=#599 id=599 data-nosnippet>599</a>        <span class="macro">assert_eq!</span>(
+<a href=#600 id=600 data-nosnippet>600</a>            binned(<span class="string">"part-full"</span>, <span class="number">8</span>, <span class="number">2</span>, <span class="number">4</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[<span class="number">2</span>], <span class="kw-2">&amp;</span>[<span class="number">3</span>], <span class="kw-2">&amp;</span>[<span class="number">6</span>], <span class="kw-2">&amp;</span>[<span class="number">7</span>]]),
+<a href=#601 id=601 data-nosnippet>601</a>            [<span class="string">"####...."</span>, <span class="string">"......##"</span>]
+<a href=#602 id=602 data-nosnippet>602</a>        );
 <a href=#603 id=603 data-nosnippet>603</a>    }
 <a href=#604 id=604 data-nosnippet>604</a>
-<a href=#605 id=605 data-nosnippet>605</a>    <span class="doccomment">/// The two formats are two spellings of one picture, so the surest thing to
-<a href=#606 id=606 data-nosnippet>606</a>    /// ask of the vector one is that it draws the raster one — read back out of
-<a href=#607 id=607 data-nosnippet>607</a>    /// the file, not out of the writer.
-<a href=#608 id=608 data-nosnippet>608</a>    </span><span class="attr">#[test]
-<a href=#609 id=609 data-nosnippet>609</a>    </span><span class="kw">fn </span>the_svg_draws_the_same_pixels_as_the_bitmap() {
-<a href=#610 id=610 data-nosnippet>610</a>        <span class="kw">let </span>colors: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]] = <span class="kw-2">&amp;</span>[
-<a href=#611 id=611 data-nosnippet>611</a>            <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">9</span>],
-<a href=#612 id=612 data-nosnippet>612</a>            <span class="kw-2">&amp;</span>[],
-<a href=#613 id=613 data-nosnippet>613</a>            <span class="kw-2">&amp;</span>[<span class="number">19</span>],
-<a href=#614 id=614 data-nosnippet>614</a>            <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">19</span>],
-<a href=#615 id=615 data-nosnippet>615</a>            <span class="kw-2">&amp;</span>[<span class="number">3</span>, <span class="number">4</span>, <span class="number">5</span>, <span class="number">6</span>, <span class="number">7</span>, <span class="number">8</span>, <span class="number">9</span>, <span class="number">10</span>],
-<a href=#616 id=616 data-nosnippet>616</a>            <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">2</span>, <span class="number">4</span>, <span class="number">6</span>, <span class="number">8</span>, <span class="number">10</span>, <span class="number">12</span>, <span class="number">14</span>, <span class="number">16</span>, <span class="number">18</span>],
-<a href=#617 id=617 data-nosnippet>617</a>        ];
-<a href=#618 id=618 data-nosnippet>618</a>        <span class="kw">for </span>bin <span class="kw">in </span>[<span class="number">1usize</span>, <span class="number">2</span>, <span class="number">4</span>, <span class="number">7</span>] {
-<a href=#619 id=619 data-nosnippet>619</a>            <span class="kw">let </span>svg = drawn(Format::Svg, <span class="number">20</span>, bin, colors).unwrap();
-<a href=#620 id=620 data-nosnippet>620</a>            <span class="kw">let </span>pbm = drawn(Format::Pbm, <span class="number">20</span>, bin, colors).unwrap();
-<a href=#621 id=621 data-nosnippet>621</a>            <span class="kw">let </span>(<span class="kw-2">mut </span>drawn_rows, wanted) = (rasterize(<span class="kw-2">&amp;</span>svg, <span class="number">20</span>), unpack(<span class="kw-2">&amp;</span>pbm, <span class="number">20</span>));
-<a href=#622 id=622 data-nosnippet>622</a>            <span class="comment">// A picture ending in blank rows draws nothing for them, so the path
-<a href=#623 id=623 data-nosnippet>623</a>            // stops early and the missing rows are white.
-<a href=#624 id=624 data-nosnippet>624</a>            </span>drawn_rows.resize(wanted.len(), <span class="macro">vec!</span>[<span class="bool-val">false</span>; <span class="number">20</span>]);
-<a href=#625 id=625 data-nosnippet>625</a>            <span class="macro">assert_eq!</span>(drawn_rows, wanted, <span class="string">"bin {}"</span>, bin);
-<a href=#626 id=626 data-nosnippet>626</a>        }
-<a href=#627 id=627 data-nosnippet>627</a>    }
-<a href=#628 id=628 data-nosnippet>628</a>
-<a href=#629 id=629 data-nosnippet>629</a>    <span class="doccomment">/// Runs are strokes, and a stroke is a move and a length: the first move is
-<a href=#630 id=630 data-nosnippet>630</a>    /// absolute and every one after it says how far the pen went, which is what
-<a href=#631 id=631 data-nosnippet>631</a>    /// keeps a run to about a dozen bytes however big the coordinates get.
+<a href=#605 id=605 data-nosnippet>605</a>    <span class="doccomment">/// Binning must not turn a picture into a smeared one: what a bin
+<a href=#606 id=606 data-nosnippet>606</a>    /// accumulates has to stop at the bin's edge.
+<a href=#607 id=607 data-nosnippet>607</a>    </span><span class="attr">#[test]
+<a href=#608 id=608 data-nosnippet>608</a>    </span><span class="kw">fn </span>a_bin_does_not_leak_into_the_next_one() {
+<a href=#609 id=609 data-nosnippet>609</a>        <span class="macro">assert_eq!</span>(
+<a href=#610 id=610 data-nosnippet>610</a>            binned(<span class="string">"leak"</span>, <span class="number">16</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">15</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[<span class="number">8</span>], <span class="kw-2">&amp;</span>[]]),
+<a href=#611 id=611 data-nosnippet>611</a>            [<span class="string">"##.............#"</span>, <span class="string">"........#......."</span>]
+<a href=#612 id=612 data-nosnippet>612</a>        );
+<a href=#613 id=613 data-nosnippet>613</a>    }
+<a href=#614 id=614 data-nosnippet>614</a>
+<a href=#615 id=615 data-nosnippet>615</a>    <span class="doccomment">/// Binning by one is the plain picture, not a special case of it.
+<a href=#616 id=616 data-nosnippet>616</a>    </span><span class="attr">#[test]
+<a href=#617 id=617 data-nosnippet>617</a>    </span><span class="kw">fn </span>binning_by_one_draws_what_no_binning_draws() {
+<a href=#618 id=618 data-nosnippet>618</a>        <span class="kw">let </span>colors: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]] = <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">5</span>], <span class="kw-2">&amp;</span>[<span class="number">3</span>], <span class="kw-2">&amp;</span>[], <span class="kw-2">&amp;</span>[<span class="number">7</span>]];
+<a href=#619 id=619 data-nosnippet>619</a>        <span class="macro">assert_eq!</span>(
+<a href=#620 id=620 data-nosnippet>620</a>            binned(<span class="string">"bin-one"</span>, <span class="number">8</span>, <span class="number">4</span>, <span class="number">1</span>, colors),
+<a href=#621 id=621 data-nosnippet>621</a>            draw(<span class="string">"no-bin"</span>, <span class="number">8</span>, <span class="number">4</span>, colors)
+<a href=#622 id=622 data-nosnippet>622</a>        );
+<a href=#623 id=623 data-nosnippet>623</a>    }
+<a href=#624 id=624 data-nosnippet>624</a>
+<a href=#625 id=625 data-nosnippet>625</a>    <span class="attr">#[test]
+<a href=#626 id=626 data-nosnippet>626</a>    </span><span class="kw">fn </span>an_empty_color_is_a_blank_row_rather_than_no_row() {
+<a href=#627 id=627 data-nosnippet>627</a>        <span class="macro">assert_eq!</span>(draw(<span class="string">"blank"</span>, <span class="number">8</span>, <span class="number">2</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[], <span class="kw-2">&amp;</span>[]]), [<span class="string">"........"</span>, <span class="string">"........"</span>]);
+<a href=#628 id=628 data-nosnippet>628</a>    }
+<a href=#629 id=629 data-nosnippet>629</a>
+<a href=#630 id=630 data-nosnippet>630</a>    <span class="doccomment">/// The picture cannot silently drop a block: one too narrow for the run is a
+<a href=#631 id=631 data-nosnippet>631</a>    /// truncated answer that looks like a whole one.
 <a href=#632 id=632 data-nosnippet>632</a>    </span><span class="attr">#[test]
-<a href=#633 id=633 data-nosnippet>633</a>    </span><span class="kw">fn </span>the_path_moves_relative_after_the_first_stroke() {
-<a href=#634 id=634 data-nosnippet>634</a>        <span class="kw">let </span>image = drawn(Format::Svg, <span class="number">40</span>, <span class="number">1</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">2</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">30</span>], <span class="kw-2">&amp;</span>[], <span class="kw-2">&amp;</span>[<span class="number">1</span>]]).unwrap();
-<a href=#635 id=635 data-nosnippet>635</a>        <span class="macro">assert_eq!</span>(path_of(<span class="kw-2">&amp;</span>image), <span class="string">"M2 0h3m25 0h1m-30 2h1"</span>);
-<a href=#636 id=636 data-nosnippet>636</a>    }
-<a href=#637 id=637 data-nosnippet>637</a>
-<a href=#638 id=638 data-nosnippet>638</a>    <span class="doccomment">/// An SVG says its size in three places and they have to agree, or a viewer
-<a href=#639 id=639 data-nosnippet>639</a>    /// scales the picture to a box the wrong shape.
-<a href=#640 id=640 data-nosnippet>640</a>    </span><span class="attr">#[test]
-<a href=#641 id=641 data-nosnippet>641</a>    </span><span class="kw">fn </span>the_svg_header_states_the_finished_size() {
-<a href=#642 id=642 data-nosnippet>642</a>        <span class="kw">let </span>image = drawn(Format::Svg, <span class="number">12</span>, <span class="number">2</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">5</span>], <span class="kw-2">&amp;</span>[<span class="number">7</span>]]).unwrap();
-<a href=#643 id=643 data-nosnippet>643</a>        <span class="kw">let </span>text = std::str::from_utf8(<span class="kw-2">&amp;</span>image).unwrap();
-<a href=#644 id=644 data-nosnippet>644</a>        <span class="macro">assert!</span>(text.contains(<span class="string">"width=\"12\""</span>), <span class="string">"{}"</span>, text);
-<a href=#645 id=645 data-nosnippet>645</a>        <span class="macro">assert!</span>(text.contains(<span class="string">"height=\"2\""</span>), <span class="string">"{}"</span>, text);
-<a href=#646 id=646 data-nosnippet>646</a>        <span class="macro">assert!</span>(text.contains(<span class="string">"viewBox=\"0 0 12 2\""</span>), <span class="string">"{}"</span>, text);
-<a href=#647 id=647 data-nosnippet>647</a>        <span class="macro">assert!</span>(text.ends_with(<span class="string">"\"/&gt;&lt;/svg&gt;\n"</span>), <span class="string">"{}"</span>, text);
-<a href=#648 id=648 data-nosnippet>648</a>    }
-<a href=#649 id=649 data-nosnippet>649</a>
-<a href=#650 id=650 data-nosnippet>650</a>    <span class="doccomment">/// An empty picture is still a well-formed one: a viewer should open it and
-<a href=#651 id=651 data-nosnippet>651</a>    /// show nothing, rather than choke on a path that was never closed.
-<a href=#652 id=652 data-nosnippet>652</a>    </span><span class="attr">#[test]
-<a href=#653 id=653 data-nosnippet>653</a>    </span><span class="kw">fn </span>an_svg_with_nothing_in_it_is_still_closed() {
-<a href=#654 id=654 data-nosnippet>654</a>        <span class="kw">let </span>image = drawn(Format::Svg, <span class="number">8</span>, <span class="number">1</span>, <span class="kw-2">&amp;</span>[]).unwrap();
-<a href=#655 id=655 data-nosnippet>655</a>        <span class="kw">let </span>text = std::str::from_utf8(<span class="kw-2">&amp;</span>image).unwrap();
-<a href=#656 id=656 data-nosnippet>656</a>        <span class="macro">assert!</span>(text.contains(<span class="string">"d=\"\"/&gt;"</span>), <span class="string">"{}"</span>, text);
-<a href=#657 id=657 data-nosnippet>657</a>        <span class="macro">assert!</span>(text.contains(<span class="string">"height=\"0\""</span>), <span class="string">"{}"</span>, text);
-<a href=#658 id=658 data-nosnippet>658</a>    }
-<a href=#659 id=659 data-nosnippet>659</a>
-<a href=#660 id=660 data-nosnippet>660</a>    <span class="doccomment">/// Column 0 is the top bit of byte 0: block ids read left to right across
-<a href=#661 id=661 data-nosnippet>661</a>    /// the row, which is what "columns are ordered incrementally" means.
-<a href=#662 id=662 data-nosnippet>662</a>    </span><span class="attr">#[test]
-<a href=#663 id=663 data-nosnippet>663</a>    </span><span class="kw">fn </span>the_lowest_block_is_the_leftmost_pixel() {
-<a href=#664 id=664 data-nosnippet>664</a>        <span class="kw">let </span>image = draw(<span class="number">16</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">7</span>], <span class="kw-2">&amp;</span>[<span class="number">8</span>], <span class="kw-2">&amp;</span>[<span class="number">15</span>]]).unwrap();
-<a href=#665 id=665 data-nosnippet>665</a>        <span class="kw">let </span>(<span class="kw">_</span>, raster) = split(<span class="kw-2">&amp;</span>image);
-<a href=#666 id=666 data-nosnippet>666</a>        <span class="macro">assert_eq!</span>(raster, <span class="kw-2">&amp;</span>[<span class="number">0x80</span>, <span class="number">0x00</span>, <span class="number">0x01</span>, <span class="number">0x00</span>, <span class="number">0x00</span>, <span class="number">0x80</span>, <span class="number">0x00</span>, <span class="number">0x01</span>]);
+<a href=#633 id=633 data-nosnippet>633</a>    </span><span class="kw">fn </span>a_block_past_the_last_column_is_an_error_naming_it() {
+<a href=#634 id=634 data-nosnippet>634</a>        <span class="kw">let </span>path = scratch(<span class="string">"narrow"</span>);
+<a href=#635 id=635 data-nosnippet>635</a>        <span class="kw">let </span><span class="kw-2">mut </span>w = Writer::new(<span class="kw-2">&amp;</span>path, <span class="number">10</span>, <span class="number">1</span>, <span class="number">1</span>).unwrap();
+<a href=#636 id=636 data-nosnippet>636</a>        w.set(<span class="number">3</span>);
+<a href=#637 id=637 data-nosnippet>637</a>        w.set(<span class="number">64</span>);
+<a href=#638 id=638 data-nosnippet>638</a>        w.set(<span class="number">70</span>);
+<a href=#639 id=639 data-nosnippet>639</a>        <span class="kw">let </span>e = w.end_transaction().unwrap_err();
+<a href=#640 id=640 data-nosnippet>640</a>        <span class="macro">assert_eq!</span>(e.kind(), io::ErrorKind::InvalidData);
+<a href=#641 id=641 data-nosnippet>641</a>        <span class="comment">// The first one over the edge, not the largest and not the last.
+<a href=#642 id=642 data-nosnippet>642</a>        </span><span class="macro">assert!</span>(e.to_string().contains(<span class="string">"block 64"</span>), <span class="string">"{}"</span>, e);
+<a href=#643 id=643 data-nosnippet>643</a>        <span class="macro">assert!</span>(e.to_string().contains(<span class="string">"--blocks 65"</span>), <span class="string">"{}"</span>, e);
+<a href=#644 id=644 data-nosnippet>644</a>        drop(w);
+<a href=#645 id=645 data-nosnippet>645</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#646 id=646 data-nosnippet>646</a>    }
+<a href=#647 id=647 data-nosnippet>647</a>
+<a href=#648 id=648 data-nosnippet>648</a>    <span class="doccomment">/// The height is a promise made before the first sample, so a record past
+<a href=#649 id=649 data-nosnippet>649</a>    /// the last row is refused rather than quietly dropped or half-written.
+<a href=#650 id=650 data-nosnippet>650</a>    </span><span class="attr">#[test]
+<a href=#651 id=651 data-nosnippet>651</a>    </span><span class="kw">fn </span>a_record_past_the_last_row_is_refused() {
+<a href=#652 id=652 data-nosnippet>652</a>        <span class="kw">let </span>path = scratch(<span class="string">"too-tall"</span>);
+<a href=#653 id=653 data-nosnippet>653</a>        <span class="kw">let </span>e = write(<span class="kw-2">&amp;</span>path, <span class="number">8</span>, <span class="number">2</span>, <span class="number">1</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[<span class="number">2</span>]]).unwrap_err();
+<a href=#654 id=654 data-nosnippet>654</a>        <span class="macro">assert_eq!</span>(e.kind(), io::ErrorKind::InvalidData);
+<a href=#655 id=655 data-nosnippet>655</a>        <span class="macro">assert!</span>(e.to_string().contains(<span class="string">"2 rows tall"</span>), <span class="string">"{}"</span>, e);
+<a href=#656 id=656 data-nosnippet>656</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#657 id=657 data-nosnippet>657</a>    }
+<a href=#658 id=658 data-nosnippet>658</a>
+<a href=#659 id=659 data-nosnippet>659</a>    <span class="doccomment">/// And short of the promise the picture is padded rather than left as a
+<a href=#660 id=660 data-nosnippet>660</a>    /// codestream missing its last tiles.
+<a href=#661 id=661 data-nosnippet>661</a>    </span><span class="attr">#[test]
+<a href=#662 id=662 data-nosnippet>662</a>    </span><span class="kw">fn </span>records_that_run_out_early_leave_blank_rows() {
+<a href=#663 id=663 data-nosnippet>663</a>        <span class="macro">assert_eq!</span>(
+<a href=#664 id=664 data-nosnippet>664</a>            draw(<span class="string">"short"</span>, <span class="number">8</span>, <span class="number">3</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">1</span>]]),
+<a href=#665 id=665 data-nosnippet>665</a>            [<span class="string">".#......"</span>, <span class="string">"........"</span>, <span class="string">"........"</span>]
+<a href=#666 id=666 data-nosnippet>666</a>        );
 <a href=#667 id=667 data-nosnippet>667</a>    }
 <a href=#668 id=668 data-nosnippet>668</a>
-<a href=#669 id=669 data-nosnippet>669</a>    <span class="doccomment">/// A width that is not a multiple of eight leaves slack bits at the end of
-<a href=#670 id=670 data-nosnippet>670</a>    /// each row, and they have to stay white.
-<a href=#671 id=671 data-nosnippet>671</a>    </span><span class="attr">#[test]
-<a href=#672 id=672 data-nosnippet>672</a>    </span><span class="kw">fn </span>the_padding_bits_of_a_row_stay_clear() {
-<a href=#673 id=673 data-nosnippet>673</a>        <span class="kw">let </span>image = draw(<span class="number">3</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">1</span>, <span class="number">2</span>]]).unwrap();
-<a href=#674 id=674 data-nosnippet>674</a>        <span class="kw">let </span>(<span class="kw">_</span>, raster) = split(<span class="kw-2">&amp;</span>image);
-<a href=#675 id=675 data-nosnippet>675</a>        <span class="macro">assert_eq!</span>(raster, <span class="kw-2">&amp;</span>[<span class="number">0b1110_0000</span>]);
-<a href=#676 id=676 data-nosnippet>676</a>    }
-<a href=#677 id=677 data-nosnippet>677</a>
-<a href=#678 id=678 data-nosnippet>678</a>    <span class="doccomment">/// Rows are cleared by a prefix, so the case that would catch a wrong
-<a href=#679 id=679 data-nosnippet>679</a>    /// prefix is a wide row followed by a narrow one.
-<a href=#680 id=680 data-nosnippet>680</a>    </span><span class="attr">#[test]
-<a href=#681 id=681 data-nosnippet>681</a>    </span><span class="kw">fn </span>a_row_does_not_inherit_the_one_before_it() {
-<a href=#682 id=682 data-nosnippet>682</a>        <span class="kw">let </span>image = draw(<span class="number">24</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">23</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[]]).unwrap();
-<a href=#683 id=683 data-nosnippet>683</a>        <span class="kw">let </span>(<span class="kw">_</span>, raster) = split(<span class="kw-2">&amp;</span>image);
-<a href=#684 id=684 data-nosnippet>684</a>        <span class="macro">assert_eq!</span>(
-<a href=#685 id=685 data-nosnippet>685</a>            raster,
-<a href=#686 id=686 data-nosnippet>686</a>            <span class="kw-2">&amp;</span>[<span class="number">0x80</span>, <span class="number">0x00</span>, <span class="number">0x01</span>, <span class="number">0x40</span>, <span class="number">0x00</span>, <span class="number">0x00</span>, <span class="number">0x00</span>, <span class="number">0x00</span>, <span class="number">0x00</span>]
-<a href=#687 id=687 data-nosnippet>687</a>        );
-<a href=#688 id=688 data-nosnippet>688</a>    }
-<a href=#689 id=689 data-nosnippet>689</a>
-<a href=#690 id=690 data-nosnippet>690</a>    <span class="doccomment">/// A bin's row is the union of its transactions' colors, which is the one
-<a href=#691 id=691 data-nosnippet>691</a>    /// thing that makes a compacted picture a coarser picture rather than a
-<a href=#692 id=692 data-nosnippet>692</a>    /// sampled one: a block black at bin `n` is black at every coarser bin too.
-<a href=#693 id=693 data-nosnippet>693</a>    </span><span class="attr">#[test]
-<a href=#694 id=694 data-nosnippet>694</a>    </span><span class="kw">fn </span>a_binned_row_is_the_union_of_the_transactions_in_it() {
-<a href=#695 id=695 data-nosnippet>695</a>        <span class="kw">let </span>image = binned(<span class="number">24</span>, <span class="number">3</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">9</span>], <span class="kw-2">&amp;</span>[<span class="number">23</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[<span class="number">2</span>], <span class="kw-2">&amp;</span>[<span class="number">3</span>]]).unwrap();
-<a href=#696 id=696 data-nosnippet>696</a>        <span class="kw">let </span>(header, raster) = split(<span class="kw-2">&amp;</span>image);
-<a href=#697 id=697 data-nosnippet>697</a>        <span class="macro">assert_eq!</span>(
-<a href=#698 id=698 data-nosnippet>698</a>            std::str::from_utf8(header).unwrap(),
-<a href=#699 id=699 data-nosnippet>699</a>            <span class="macro">format!</span>(<span class="string">"P4\n24 {:&gt;20}\n"</span>, <span class="number">2</span>)
-<a href=#700 id=700 data-nosnippet>700</a>        );
-<a href=#701 id=701 data-nosnippet>701</a>        <span class="macro">assert_eq!</span>(
-<a href=#702 id=702 data-nosnippet>702</a>            raster,
-<a href=#703 id=703 data-nosnippet>703</a>            <span class="kw-2">&amp;</span>[<span class="number">0x80</span>, <span class="number">0x40</span>, <span class="number">0x01</span>, <span class="comment">/* {0,9,23} */ </span><span class="number">0x70</span>, <span class="number">0x00</span>, <span class="number">0x00 </span><span class="comment">/* {1,2,3} */</span>]
-<a href=#704 id=704 data-nosnippet>704</a>        );
-<a href=#705 id=705 data-nosnippet>705</a>    }
-<a href=#706 id=706 data-nosnippet>706</a>
-<a href=#707 id=707 data-nosnippet>707</a>    <span class="doccomment">/// The records do not owe the image a whole bin at the end of the run.
-<a href=#708 id=708 data-nosnippet>708</a>    </span><span class="attr">#[test]
-<a href=#709 id=709 data-nosnippet>709</a>    </span><span class="kw">fn </span>a_bin_left_part_full_is_still_a_row() {
-<a href=#710 id=710 data-nosnippet>710</a>        <span class="kw">let </span>image = binned(<span class="number">8</span>, <span class="number">4</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[<span class="number">2</span>], <span class="kw-2">&amp;</span>[<span class="number">3</span>], <span class="kw-2">&amp;</span>[<span class="number">6</span>], <span class="kw-2">&amp;</span>[<span class="number">7</span>]]).unwrap();
-<a href=#711 id=711 data-nosnippet>711</a>        <span class="kw">let </span>(header, raster) = split(<span class="kw-2">&amp;</span>image);
-<a href=#712 id=712 data-nosnippet>712</a>        <span class="macro">assert_eq!</span>(
-<a href=#713 id=713 data-nosnippet>713</a>            std::str::from_utf8(header).unwrap(),
-<a href=#714 id=714 data-nosnippet>714</a>            <span class="macro">format!</span>(<span class="string">"P4\n8 {:&gt;20}\n"</span>, <span class="number">2</span>)
-<a href=#715 id=715 data-nosnippet>715</a>        );
-<a href=#716 id=716 data-nosnippet>716</a>        <span class="macro">assert_eq!</span>(raster, <span class="kw-2">&amp;</span>[<span class="number">0b1111_0000</span>, <span class="number">0b0000_0011</span>]);
-<a href=#717 id=717 data-nosnippet>717</a>    }
-<a href=#718 id=718 data-nosnippet>718</a>
-<a href=#719 id=719 data-nosnippet>719</a>    <span class="doccomment">/// Binning must not turn a picture into a smeared one: what a bin
-<a href=#720 id=720 data-nosnippet>720</a>    /// accumulates has to stop at the bin's edge.
-<a href=#721 id=721 data-nosnippet>721</a>    </span><span class="attr">#[test]
-<a href=#722 id=722 data-nosnippet>722</a>    </span><span class="kw">fn </span>a_bin_does_not_leak_into_the_next_one() {
-<a href=#723 id=723 data-nosnippet>723</a>        <span class="kw">let </span>image = binned(<span class="number">16</span>, <span class="number">2</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">15</span>], <span class="kw-2">&amp;</span>[<span class="number">1</span>], <span class="kw-2">&amp;</span>[<span class="number">8</span>], <span class="kw-2">&amp;</span>[]]).unwrap();
-<a href=#724 id=724 data-nosnippet>724</a>        <span class="kw">let </span>(<span class="kw">_</span>, raster) = split(<span class="kw-2">&amp;</span>image);
-<a href=#725 id=725 data-nosnippet>725</a>        <span class="macro">assert_eq!</span>(raster, <span class="kw-2">&amp;</span>[<span class="number">0xC0</span>, <span class="number">0x01</span>, <span class="number">0x00</span>, <span class="number">0x80</span>]);
-<a href=#726 id=726 data-nosnippet>726</a>    }
-<a href=#727 id=727 data-nosnippet>727</a>
-<a href=#728 id=728 data-nosnippet>728</a>    <span class="doccomment">/// Binning by one is the plain picture, not a special case of it.
-<a href=#729 id=729 data-nosnippet>729</a>    </span><span class="attr">#[test]
-<a href=#730 id=730 data-nosnippet>730</a>    </span><span class="kw">fn </span>binning_by_one_draws_what_no_binning_draws() {
-<a href=#731 id=731 data-nosnippet>731</a>        <span class="kw">let </span>colors: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]] = <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">5</span>], <span class="kw-2">&amp;</span>[<span class="number">3</span>], <span class="kw-2">&amp;</span>[], <span class="kw-2">&amp;</span>[<span class="number">7</span>]];
-<a href=#732 id=732 data-nosnippet>732</a>        <span class="macro">assert_eq!</span>(binned(<span class="number">8</span>, <span class="number">1</span>, colors).unwrap(), draw(<span class="number">8</span>, colors).unwrap());
-<a href=#733 id=733 data-nosnippet>733</a>    }
-<a href=#734 id=734 data-nosnippet>734</a>
-<a href=#735 id=735 data-nosnippet>735</a>    <span class="doccomment">/// The bitmap cannot silently drop a block: an image too narrow for the run
-<a href=#736 id=736 data-nosnippet>736</a>    /// is a truncated answer that looks like a whole one.
-<a href=#737 id=737 data-nosnippet>737</a>    </span><span class="attr">#[test]
-<a href=#738 id=738 data-nosnippet>738</a>    </span><span class="kw">fn </span>a_block_past_the_last_column_is_an_error_naming_it() {
-<a href=#739 id=739 data-nosnippet>739</a>        <span class="kw">let </span><span class="kw-2">mut </span>w = Writer::new(Cursor::new(Vec::new()), Format::Pbm, <span class="number">10</span>, <span class="number">1</span>, <span class="bool-val">false</span>).unwrap();
-<a href=#740 id=740 data-nosnippet>740</a>        w.set(<span class="number">3</span>);
-<a href=#741 id=741 data-nosnippet>741</a>        w.set(<span class="number">64</span>);
-<a href=#742 id=742 data-nosnippet>742</a>        w.set(<span class="number">70</span>);
-<a href=#743 id=743 data-nosnippet>743</a>        <span class="kw">let </span>e = w.end_transaction().unwrap_err();
-<a href=#744 id=744 data-nosnippet>744</a>        <span class="macro">assert_eq!</span>(e.kind(), io::ErrorKind::InvalidData);
-<a href=#745 id=745 data-nosnippet>745</a>        <span class="comment">// The first one over the edge, not the largest and not the last.
-<a href=#746 id=746 data-nosnippet>746</a>        </span><span class="macro">assert!</span>(e.to_string().contains(<span class="string">"block 64"</span>), <span class="string">"{}"</span>, e);
-<a href=#747 id=747 data-nosnippet>747</a>        <span class="macro">assert!</span>(e.to_string().contains(<span class="string">"--blocks 65"</span>), <span class="string">"{}"</span>, e);
-<a href=#748 id=748 data-nosnippet>748</a>    }
-<a href=#749 id=749 data-nosnippet>749</a>
-<a href=#750 id=750 data-nosnippet>750</a>    <span class="attr">#[test]
-<a href=#751 id=751 data-nosnippet>751</a>    </span><span class="kw">fn </span>an_empty_color_is_a_blank_row_rather_than_no_row() {
-<a href=#752 id=752 data-nosnippet>752</a>        <span class="kw">let </span>image = draw(<span class="number">8</span>, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[], <span class="kw-2">&amp;</span>[]]).unwrap();
-<a href=#753 id=753 data-nosnippet>753</a>        <span class="kw">let </span>(header, raster) = split(<span class="kw-2">&amp;</span>image);
-<a href=#754 id=754 data-nosnippet>754</a>        <span class="macro">assert_eq!</span>(
-<a href=#755 id=755 data-nosnippet>755</a>            std::str::from_utf8(header).unwrap(),
-<a href=#756 id=756 data-nosnippet>756</a>            <span class="macro">format!</span>(<span class="string">"P4\n8 {:&gt;20}\n"</span>, <span class="number">2</span>)
-<a href=#757 id=757 data-nosnippet>757</a>        );
-<a href=#758 id=758 data-nosnippet>758</a>        <span class="macro">assert_eq!</span>(raster, <span class="kw-2">&amp;</span>[<span class="number">0x00</span>, <span class="number">0x00</span>]);
-<a href=#759 id=759 data-nosnippet>759</a>    }
-<a href=#760 id=760 data-nosnippet>760</a>}
+<a href=#669 id=669 data-nosnippet>669</a>    <span class="doccomment">/// The claim the whole file rests on: what the writer inked is what the
+<a href=#670 id=670 data-nosnippet>670</a>    /// decoder gives back, pixel for pixel.  Nothing in the settings says
+<a href=#671 id=671 data-nosnippet>671</a>    /// lossless out loud, so it is asserted rather than assumed.
+<a href=#672 id=672 data-nosnippet>672</a>    </span><span class="attr">#[test]
+<a href=#673 id=673 data-nosnippet>673</a>    </span><span class="kw">fn </span>the_picture_round_trips_losslessly() {
+<a href=#674 id=674 data-nosnippet>674</a>        <span class="comment">// Deliberately awkward: a width that is not a multiple of eight, colors
+<a href=#675 id=675 data-nosnippet>675</a>        // that reach both edges, empty ones, and a lone pixel in the middle of
+<a href=#676 id=676 data-nosnippet>676</a>        // the paper — the first thing a quantiser would spend.
+<a href=#677 id=677 data-nosnippet>677</a>        </span><span class="kw">let </span>colors: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[usize]] = <span class="kw-2">&amp;</span>[
+<a href=#678 id=678 data-nosnippet>678</a>            <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">9</span>],
+<a href=#679 id=679 data-nosnippet>679</a>            <span class="kw-2">&amp;</span>[],
+<a href=#680 id=680 data-nosnippet>680</a>            <span class="kw-2">&amp;</span>[<span class="number">19</span>],
+<a href=#681 id=681 data-nosnippet>681</a>            <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">19</span>],
+<a href=#682 id=682 data-nosnippet>682</a>            <span class="kw-2">&amp;</span>[<span class="number">3</span>, <span class="number">4</span>, <span class="number">5</span>, <span class="number">6</span>, <span class="number">7</span>, <span class="number">8</span>, <span class="number">9</span>, <span class="number">10</span>],
+<a href=#683 id=683 data-nosnippet>683</a>            <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">2</span>, <span class="number">4</span>, <span class="number">6</span>, <span class="number">8</span>, <span class="number">10</span>, <span class="number">12</span>, <span class="number">14</span>, <span class="number">16</span>, <span class="number">18</span>],
+<a href=#684 id=684 data-nosnippet>684</a>            <span class="kw-2">&amp;</span>[<span class="number">10</span>],
+<a href=#685 id=685 data-nosnippet>685</a>        ];
+<a href=#686 id=686 data-nosnippet>686</a>        <span class="kw">let </span>width = <span class="number">21</span>;
+<a href=#687 id=687 data-nosnippet>687</a>        <span class="kw">let </span>picture = draw(<span class="string">"lossless"</span>, width, colors.len(), colors);
+<a href=#688 id=688 data-nosnippet>688</a>
+<a href=#689 id=689 data-nosnippet>689</a>        <span class="kw">let </span>wanted: Vec&lt;String&gt; = colors
+<a href=#690 id=690 data-nosnippet>690</a>            .iter()
+<a href=#691 id=691 data-nosnippet>691</a>            .map(|color| {
+<a href=#692 id=692 data-nosnippet>692</a>                (<span class="number">0</span>..width)
+<a href=#693 id=693 data-nosnippet>693</a>                    .map(|block| <span class="kw">if </span>color.contains(<span class="kw-2">&amp;</span>block) { <span class="string">'#' </span>} <span class="kw">else </span>{ <span class="string">'.' </span>})
+<a href=#694 id=694 data-nosnippet>694</a>                    .collect()
+<a href=#695 id=695 data-nosnippet>695</a>            })
+<a href=#696 id=696 data-nosnippet>696</a>            .collect();
+<a href=#697 id=697 data-nosnippet>697</a>        <span class="macro">assert_eq!</span>(picture, wanted, <span class="string">"every pixel survived"</span>);
+<a href=#698 id=698 data-nosnippet>698</a>    }
+<a href=#699 id=699 data-nosnippet>699</a>
+<a href=#700 id=700 data-nosnippet>700</a>    <span class="doccomment">/// A picture wider and taller than one tile, so that the tile loop runs more
+<a href=#701 id=701 data-nosnippet>701</a>    /// than once on each axis and the seams have to line up.
+<a href=#702 id=702 data-nosnippet>702</a>    </span><span class="attr">#[test]
+<a href=#703 id=703 data-nosnippet>703</a>    </span><span class="kw">fn </span>a_picture_of_many_tiles_round_trips() {
+<a href=#704 id=704 data-nosnippet>704</a>        <span class="kw">let </span>width = TILE + <span class="number">300</span>;
+<a href=#705 id=705 data-nosnippet>705</a>        <span class="comment">// One inked pixel a row, walking across and down, so that a tile drawn
+<a href=#706 id=706 data-nosnippet>706</a>        // from the wrong band or the wrong columns cannot pass.
+<a href=#707 id=707 data-nosnippet>707</a>        </span><span class="kw">let </span>colors: Vec&lt;Vec&lt;usize&gt;&gt; = (<span class="number">0</span>..TILE + <span class="number">200</span>).map(|r| <span class="macro">vec!</span>[r % width]).collect();
+<a href=#708 id=708 data-nosnippet>708</a>        <span class="kw">let </span>borrowed: Vec&lt;<span class="kw-2">&amp;</span>[usize]&gt; = colors.iter().map(|c| c.as_slice()).collect();
+<a href=#709 id=709 data-nosnippet>709</a>
+<a href=#710 id=710 data-nosnippet>710</a>        <span class="kw">let </span>picture = binned(<span class="string">"tiles"</span>, width, colors.len(), <span class="number">1</span>, <span class="kw-2">&amp;</span>borrowed);
+<a href=#711 id=711 data-nosnippet>711</a>        <span class="kw">for </span>(r, row) <span class="kw">in </span>picture.iter().enumerate() {
+<a href=#712 id=712 data-nosnippet>712</a>            <span class="macro">assert_eq!</span>(row.len(), width);
+<a href=#713 id=713 data-nosnippet>713</a>            <span class="macro">assert_eq!</span>(
+<a href=#714 id=714 data-nosnippet>714</a>                row.find(<span class="string">'#'</span>),
+<a href=#715 id=715 data-nosnippet>715</a>                <span class="prelude-val">Some</span>(r % width),
+<a href=#716 id=716 data-nosnippet>716</a>                <span class="string">"row {} has its pixel in the wrong column"</span>,
+<a href=#717 id=717 data-nosnippet>717</a>                r
+<a href=#718 id=718 data-nosnippet>718</a>            );
+<a href=#719 id=719 data-nosnippet>719</a>            <span class="macro">assert_eq!</span>(row.matches(<span class="string">'#'</span>).count(), <span class="number">1</span>, <span class="string">"row {} has extra ink"</span>, r);
+<a href=#720 id=720 data-nosnippet>720</a>        }
+<a href=#721 id=721 data-nosnippet>721</a>    }
+<a href=#722 id=722 data-nosnippet>722</a>}
 </code></pre></div></section></main></body></html>

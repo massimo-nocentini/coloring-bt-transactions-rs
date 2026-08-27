@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["digit_run","digit_run_scalar","digit_run_sse2","eight_digits","scale_add_into","scale_into"]};

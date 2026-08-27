@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["HEIGHT_DIGITS","SVG_BYTES_PER_RUN","SVG_TAIL"],"enum":["Format"],"fn":["for_each_run","pbm_header","push_delta","push_int","svg_header"],"struct":["Writer"]};
+window.SIDEBAR_ITEMS = {"constant":["INK","PAPER","RESOLUTIONS","SAMPLES","TILE"],"struct":["Writer"]};
