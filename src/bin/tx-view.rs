@@ -87,7 +87,7 @@ use std::process::ExitCode;
 
 use non_layered_tidy_trees::{Arena, NodeId};
 
-#[path = "tree/camera.rs"]
+#[path = "../camera.rs"]
 mod camera;
 // For the shape of a node and the layout: `tree-view` and this draw the same
 // trees the same way because they ask this file for both.

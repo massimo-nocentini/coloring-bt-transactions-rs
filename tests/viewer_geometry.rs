@@ -16,7 +16,7 @@
 //! the same names `tree-view` gives them, because they refer to each other as
 //! `crate::camera` and `crate::quadtree`.
 
-#[path = "../src/bin/tree/camera.rs"]
+#[path = "../src/camera.rs"]
 mod camera;
 
 #[path = "../src/bin/tree/quadtree.rs"]

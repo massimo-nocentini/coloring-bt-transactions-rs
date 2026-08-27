@@ -49,7 +49,8 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 ```text
 coloring-bt-transactions [<record-limit>|all] [--stats]
                          [--rings|--sets|--weighted] [--sum]
-                         [--png <file> [--blocks <n>] [--bin <n>]]
+                         [--png <file>|--pdf <file>|--view]
+                         [--page <n>] [--blocks <n>] [--bin <n>]
                          < records
 ```
 
@@ -96,6 +97,77 @@ dimensions in front of its first scanline and the height is the number of
 records, so a picture always reads the records once before colouring them, and so
 always wants an input that can be rewound.  `--stats` reports throughput and
 memory.
+
+`--png` is the whole answer at full size, and at full size the default run is
+135,659 columns by 1,000,001 rows: a well-formed 1.8 GB file that no reader will
+open, because a hundred and thirty-five gigapixels is more raster than anything
+will allocate.  `--pdf <file>` writes the same picture at a size a page can hold.
+It folds the pixels onto a Cairo canvas of at most `--page <n>` cells each way
+(1024 by default, which is also the page in points) and shades each cell by how
+much of the rectangle it covers is inked — coverage counted exactly, then through
+a gamma so that sparse ink is visible, so a darker cell means more ink but not
+proportionally more.  Each axis is capped on its own, since a block id and a
+position in the record stream are not the same kind of quantity and there is no
+aspect ratio to keep.  `--blocks` and `--bin` mean what they mean for a PNG and
+apply first.
+
+It needs Cairo, which is a C library, so it is behind a feature — but only
+Cairo, not a toolkit:
+
+```sh
+cargo run --release --features pdf --bin coloring-bt-transactions -- \
+    all --sets --pdf out.pdf < records
+make pdf RECORDS=<records-file> PDF=out.pdf          # the same
+```
+
+`--view` shows that canvas instead of writing it: a GTK window over the picture
+that one can move and zoom, with the panel reading out which block and which
+record the pointer is over, and `e` writing what is on screen to a page of its
+own.  It is the third thing that can be done with the one drawing, so it
+contradicts `--png` and `--pdf` the way those contradict each other, and
+`--page`, `--blocks` and `--bin` shape the canvas for it exactly as they do for a
+page.  Raising `--page` is worth more here than for a page: a window is zoomed,
+and the cells one can climb into are the ones it put there — zooming past one
+pixel a cell magnifies cells rather than uncovering finer ones, since refolding
+would mean reading the records again.  A cell costs four bytes while the run is
+going, so a 4096-cell canvas is 67 MB.
+
+| | |
+|---|---|
+| wheel up, wheel down | zoom in and out, about the pointer |
+| drag | move the picture |
+| `a`, `f`, `Home` | fit the whole picture in the window |
+| `1` | one pixel a cell, about the pointer |
+| `+`, `-` | zoom about the middle of the window |
+| arrow keys | move the camera a tenth of the window |
+| `e` | write what is on screen to a PDF beside the program |
+| `q` | close |
+
+Two drawings, changing over at the one number — how many pixels a cell is
+across.  Below three of them a cell is drawn as a sample of the canvas, a
+rectangle painted its own shade, because a cell around a pixel across can be
+nothing else.  At three and above it is drawn as a **filled disc one cell
+across**, in the same shade: the paper between the discs is the grid, so a cell
+that is dark because it is full reads differently from a run of cells that are
+dark together, and the diagonal edge of the drawing stops being a staircase of
+squares.  Nothing appears or disappears at the changeover — only the shape of the
+mark.
+
+`--pdf` never reaches the second, drawing at one point a cell, which is below the
+changeover whatever the page is looked at on: a disc of one point and a square of
+one point are the same mark and the disc costs a path apiece, which for a canvas
+of a million cells is a page nothing wants.  The way to a page of circles is the
+window's own `e`, zoomed in, whose circles are bounded by the window rather than
+by the canvas.
+
+It wants GTK on top of Cairo, so it is behind the `gui` feature with the
+viewers:
+
+```sh
+cargo run --release --features gui --bin coloring-bt-transactions -- \
+    all --sets --view --page 4096 < records
+make picture RECORDS=<records-file> PAGE=4096        # the same
+```
 
 ### `tree-jp2`
 

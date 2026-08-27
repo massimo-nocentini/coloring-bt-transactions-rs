@@ -11,11 +11,16 @@ non-layered-tidy-trees = { git = "https://github.com/massimo-nocentini/non-layer
 # this crate has no reason to require.  Optional, so that `cargo test` and
 # `cargo doc` keep working where they are not installed -- see the `gui` feature.
 gtk4 = { version = "0.11", optional = true }
-# The same Cairo `gtk4` already pulls in, named here only to turn its `pdf`
-# feature on: the bindings to `cairo_pdf_surface_create` are behind it, and the
-# viewers' `e` writes a page with them.  Not a second copy of anything -- cargo
-# unifies the features of one crate, so this is the surface type appearing on
-# the `gtk4::cairo` the viewers already use.
+# Cairo, for the two things that draw onto a surface rather than packing bytes:
+# `page`, which folds the picture onto a canvas and writes it as a PDF, and the
+# viewers' `e`, which writes what is on screen as one.  Both want the `pdf`
+# feature, since the bindings to `cairo_pdf_surface_create` are behind it.
+#
+# Optional for the reason GTK is -- it is a C library and wants headers on the
+# machine -- but a much smaller ask than GTK, which is why it has a feature of
+# its own that does not drag a toolkit in with it.  Where the viewers are built
+# this is not a second copy of anything: cargo unifies the features of one
+# crate, so it is the same Cairo appearing on the `gtk4::cairo` they use.
 cairo-rs = { version = "0.22", optional = true }
 # `tree-jp2`'s codec.  This is the Rust port of OpenJPEG rather than a binding to
 # it, so unlike GTK it needs nothing installed on the machine and can be an
@@ -33,9 +38,15 @@ flate2 = "1.1"
 png = "0.18"
 
 [features]
+# `--pdf`: the picture folded onto a Cairo canvas and written as a page.  Just
+# Cairo, no toolkit, so this is buildable anywhere a `libcairo` and its headers
+# are -- `cargo run --release --features pdf -- --pdf <file> < records`.
+pdf = ["dep:cairo-rs", "cairo-rs/pdf"]
+
 # The windowed viewers, `tree-view` and `tx-view`.  `cargo run --features gui
-# --bin tree-view -- <graph>`, or `make view GRAPH=<graph>`.
-gui = ["dep:gtk4", "cairo-rs/pdf"]
+# --bin tree-view -- <graph>`, or `make view GRAPH=<graph>`.  They draw with the
+# same Cairo and export with the same surface, so this is `pdf` and a toolkit.
+gui = ["dep:gtk4", "pdf"]
 
 # Named here only to say that they do not build without GTK; the rest of the
 # binaries under src/bin/ are found by cargo on its own.

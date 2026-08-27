@@ -47,6 +47,45 @@
 //!   number of records, so a picture always reads the records once before it
 //!   colors any of them and always wants an input that can be rewound.
 //!
+//! # A page instead
+//!
+//! `--bin` shrinks the picture down one axis, and nothing shrinks it along the
+//! other: the default run draws 135,659 columns by 1,000,001 rows, which is a
+//! well-formed 1.8 GB PNG that no reader will open, because a hundred and
+//! thirty-five gigapixels is more raster than anything will allocate.
+//!
+//! `--pdf <file>` draws the same answer onto a Cairo canvas of bounded size and
+//! writes it as one page: the picture's pixels folded into the cells that cover
+//! them, each cell shaded by how much of its rectangle is inked.  `--page <n>`
+//! is how many cells the canvas gets each way — 1024 unless said otherwise,
+//! which is also the page in points.  `--blocks` and `--bin` mean what they mean
+//! for a PNG and apply before any of this.
+//!
+//! It is behind the `pdf` feature, since Cairo is a C library the rest of the
+//! crate has no reason to want installed: `cargo run --release --features pdf`.
+//! The module that draws it, `page`, is feature-gated with it and so is absent
+//! from a default `cargo doc` the way the viewers are; `cargo doc --features
+//! pdf` builds its page, which is where what a cell says — and what the shading
+//! does and does not promise — is written down.
+//!
+//! # A window instead
+//!
+//! `--view` shows that canvas rather than writing it: a GTK window one can move
+//! and zoom over the picture, with `e` writing what is on screen to a page of
+//! its own.  Zoomed in far enough for a cell to have room to be a shape rather
+//! than a sample, a cell is drawn as a filled disc one cell across; zoomed out
+//! it is the same image `--pdf` writes.
+//!
+//! It is the third thing that can be done with the one drawing, so it
+//! contradicts `--png` and `--pdf` the way they contradict each other; `--page`,
+//! `--blocks` and `--bin` shape the canvas for it exactly as they do for a page,
+//! and `--page` is worth raising here, since a window is zoomed and the cells
+//! one can climb into are the ones it put there.
+//!
+//! It needs GTK on top of Cairo and so sits behind the `gui` feature, with the
+//! viewers: `cargo run --release --features gui -- --view < records`.  See
+//! `window`, which `cargo doc --features gui` builds.
+//!
 //! # Backends
 //!
 //! Three representations of a color, chosen at the command line, all driven by
@@ -108,13 +147,25 @@
 //!   reason to want installed, so they are absent from a default `cargo doc`
 //!   and from these pages; `cargo doc --features gui` builds them.
 
+// The camera `--view`'s window is moved by, which is the viewers' own -- see the
+// note at the top of the file for why it sits here rather than beside them.
+#[cfg(feature = "gui")]
+mod camera;
 mod colorset;
 mod image;
+// The page `--pdf` writes, which needs Cairo and so needs the feature that asks
+// for it.  Declared here rather than beside the viewers because it is this
+// binary's output, not theirs.
+#[cfg(feature = "pdf")]
+mod page;
 mod poly;
 mod sexp;
 mod simd;
 mod store;
 mod weighted;
+// The window `--view` opens on the same canvas, which needs GTK on top of Cairo.
+#[cfg(feature = "gui")]
+mod window;
 
 use poly::Coeff;
 use std::collections::HashMap;
@@ -195,6 +246,18 @@ enum Output {
     },
     /// A row of pixels per record, in a file.  See [`image`].
     Picture(image::Writer),
+    /// The same picture folded onto a canvas and written as one PDF page.  See
+    /// [`page`].
+    #[cfg(feature = "pdf")]
+    Page(page::Writer),
+    /// The same canvas again, shown in a window rather than written anywhere.
+    /// See [`window`].
+    #[cfg(feature = "gui")]
+    Window {
+        canvas: page::Writer,
+        /// What a page exported from the window is named after.
+        stem: String,
+    },
 }
 
 impl Output {
@@ -246,6 +309,21 @@ impl Output {
                 store.for_each_term(color, |exponent, _| picture.set(exponent));
                 picture.end_transaction()
             }
+            // The same two calls: `page::Writer` wears `image::Writer`'s
+            // interface precisely so that this loop does not know which of them
+            // it is feeding.
+            #[cfg(feature = "pdf")]
+            Output::Page(sheet) => {
+                store.for_each_term(color, |exponent, _| sheet.set(exponent));
+                sheet.end_transaction()
+            }
+            // The window folds the picture the way the page does and then shows
+            // it, so up to here the two are the same run.
+            #[cfg(feature = "gui")]
+            Output::Window { canvas, .. } => {
+                store.for_each_term(color, |exponent, _| canvas.set(exponent));
+                canvas.end_transaction()
+            }
         }
     }
 
@@ -259,18 +337,63 @@ impl Output {
     }
 
     /// Close the output.  For the picture this is not a formality — the last
-    /// rows, the end of the deflate stream and `IEND` are only written here.
+    /// rows, the end of the deflate stream and `IEND` are only written here, a
+    /// page is not written at all until here, and for a window this is the
+    /// window: it opens, and the call comes back when it is closed.
     fn finish(self) -> io::Result<()> {
         match self {
             Output::Text { mut out, .. } => out.flush(),
             Output::Picture(picture) => picture.finish(),
+            #[cfg(feature = "pdf")]
+            Output::Page(sheet) => sheet.finish(),
+            #[cfg(feature = "gui")]
+            Output::Window { canvas, stem } => {
+                window::show(canvas, &stem).map_err(io::Error::other)
+            }
         }
     }
 }
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
                      [--rings|--sets|--weighted] [--sum] \
-                     [--png <file> [--blocks <n>] [--bin <n>]] < records";
+                     [--png <file>|--pdf <file>|--view] \
+                     [--page <n>] [--blocks <n>] [--bin <n>] < records";
+
+/// Which of the three pictures was asked for.
+///
+/// The same drawing every time — the same rows, the same columns, the same ink —
+/// so this decides where it goes and nothing about what it says.  The last two
+/// share the folding as well and differ only in what becomes of it; the `page`
+/// module says why the folding exists and `window` what a screen adds to it.
+/// Both are feature-gated, as their writers are.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sheet {
+    /// `--png`: one pixel per (transaction, block), at whatever size that comes
+    /// to.  See [`image`].
+    Raster,
+    /// `--pdf`: the same, folded onto a canvas that fits on a page.  See the
+    /// `page` module.
+    Folded,
+    /// `--view`: the same canvas, in a window one can move and zoom.  See the
+    /// `window` module.
+    Shown,
+}
+
+impl Sheet {
+    /// The option that asked for it, for the messages that have to name one.
+    fn flag(self) -> &'static str {
+        match self {
+            Sheet::Raster => "--png",
+            Sheet::Folded => "--pdf",
+            Sheet::Shown => "--view",
+        }
+    }
+
+    /// Whether it folds the picture onto a canvas, which is what `--page` sizes.
+    fn folds(self) -> bool {
+        self != Sheet::Raster
+    }
+}
 
 /// Standard input, as something that can be read a second time — when the
 /// platform and the shell allow it.
@@ -338,9 +461,10 @@ fn survey(input: impl io::Read, limit: usize) -> io::Result<(usize, usize)> {
 /// error is the message to print, since every one of these is a complaint about
 /// the command line rather than something to recover from.
 fn plan(
-    picture: Option<String>,
+    picture: Option<(Sheet, String)>,
     blocks: Option<usize>,
     bin: Option<usize>,
+    page: Option<usize>,
     form: Line,
     limit: usize,
 ) -> Result<(Output, Box<dyn io::Read>), String> {
@@ -348,10 +472,16 @@ fn plan(
     // records and put them back.
     let mut source = rewindable_stdin();
 
-    let Some(path) = picture else {
+    let Some((sheet, path)) = picture else {
+        if page.is_some() {
+            return Err("--page sizes the canvas the picture is folded onto, so it needs \
+                        --pdf <file> or --view"
+                .into());
+        }
         if let Some(name) = blocks.map(|_| "--blocks").or(bin.map(|_| "--bin")) {
             return Err(format!(
-                "{} describes the picture, so it needs --png <file>",
+                "{} describes the picture, so it needs --png <file>, --pdf <file> \
+                 or --view",
                 name
             ));
         }
@@ -361,13 +491,38 @@ fn plan(
         ));
     };
 
+    // `--page` is the canvas the picture is folded onto, and a PNG folds
+    // nothing: it is drawn at one pixel per pair whatever its size comes to.
+    if !sheet.folds() && page.is_some() {
+        return Err("--page sizes the canvas the picture is folded onto, and --png draws \
+                    it at its full size: drop one of --page and --png"
+            .into());
+    }
+    // Said before the survey rather than after it, so that a build missing what
+    // one of these draws with refuses in front of a whole pass over the records
+    // rather than behind one.
+    #[cfg(not(feature = "pdf"))]
+    if sheet == Sheet::Folded {
+        return Err("--pdf draws with Cairo, and this was built without it: \
+                    rebuild with `--features pdf`"
+            .into());
+    }
+    #[cfg(not(feature = "gui"))]
+    if sheet == Sheet::Shown {
+        return Err("--view opens a GTK window, and this was built without one: \
+                    rebuild with `--features gui`"
+            .into());
+    }
+
     // `--sum` says what goes after the tab on a line, and a picture has no
     // lines.  Drawing one and quietly ignoring the other is the reading nobody
     // wants.
     if form == Line::Sum {
-        return Err("--sum says what a line says, and a picture has no lines: \
-                    drop one of --sum and --png"
-            .into());
+        return Err(format!(
+            "--sum says what a line says, and a picture has no lines: \
+             drop one of --sum and {}",
+            sheet.flag()
+        ));
     }
 
     let bin = match bin {
@@ -378,6 +533,25 @@ fn plan(
     if blocks == Some(0) {
         return Err("--blocks 0 leaves the picture no columns to draw in".into());
     }
+    // Both ends of the canvas, before the survey rather than after it: a
+    // `--page` that cannot be drawn is worth catching in front of a whole pass
+    // over the records.  Only reachable with the feature on -- a build without
+    // it refused both folding sheets above, and `--page` without one of them is
+    // refused too.
+    #[cfg(feature = "pdf")]
+    match page {
+        Some(0) => return Err("--page 0 gives the page no cells to draw in".into()),
+        Some(n) if n > page::MAX_PAGE => {
+            return Err(format!(
+                "--page {} is past the ceiling of {}: a page cannot be more than that \
+                 many points across, and a canvas that many cells each way is already \
+                 830 MB of counting",
+                n,
+                page::MAX_PAGE
+            ))
+        }
+        _ => {}
+    }
 
     // Both dimensions, before a single pixel: the header names the size in
     // front of the picture and is not gone back to afterwards, so the records
@@ -385,9 +559,11 @@ fn plan(
     // See `image`.
     let file = source.as_mut().ok_or_else(|| {
         "standard input cannot be rewound, so the records cannot be counted before the \
-         picture is written: a PNG states how many rows it has in front of the first \
-         one, and that is how many records there are.  Redirect the records from a \
-         file (`< records`) rather than through a pipe"
+         picture is drawn: both of a picture's dimensions are settled before the first \
+         record — a PNG states how many rows it has in front of the first one, and a \
+         page has to have its canvas before it can count anything into it — and the \
+         rows are how many records there are.  Redirect the records from a file \
+         (`< records`) rather than through a pipe"
             .to_string()
     })?;
     let start = file.stream_position().map_err(|e| e.to_string())?;
@@ -410,9 +586,56 @@ fn plan(
         records, seen, width, rows
     );
 
+    let output = match sheet {
+        Sheet::Raster => {
+            let writer = image::Writer::new(&path, width, rows, bin)
+                .map_err(|e| format!("{}: {}", path, e))?;
+            Output::Picture(writer)
+        }
+        #[cfg(feature = "pdf")]
+        Sheet::Folded => Output::Page(fold(&path, width, rows, bin, page)?),
+        #[cfg(feature = "gui")]
+        Sheet::Shown => Output::Window {
+            canvas: fold(&path, width, rows, bin, page)?,
+            stem: path,
+        },
+        // The refusals above are what run in a build without the feature; these
+        // arms exist so that the match is still exhaustive there.
+        #[cfg(not(feature = "pdf"))]
+        Sheet::Folded => unreachable!("refused before the records were counted"),
+        #[cfg(not(feature = "gui"))]
+        Sheet::Shown => unreachable!("refused before the records were counted"),
+    };
+    Ok((output, records_from(source)))
+}
+
+/// The canvas both folding sheets accumulate into, and a line on stderr saying
+/// how much of the picture each of its cells is standing for.
+///
+/// One function because a page and a window differ in nothing until the records
+/// have all been read: the same fold, and then either written or shown.
+#[cfg(feature = "pdf")]
+fn fold(
+    path: &str,
+    width: usize,
+    rows: usize,
+    bin: usize,
+    page: Option<usize>,
+) -> Result<page::Writer, String> {
+    let cells = page.unwrap_or(page::DEFAULT_PAGE);
     let writer =
-        image::Writer::new(&path, width, rows, bin).map_err(|e| format!("{}: {}", path, e))?;
-    Ok((Output::Picture(writer), records_from(source)))
+        page::Writer::new(path, width, rows, bin, cells).map_err(|e| format!("{}: {}", path, e))?;
+    // The second pair is the one to know: it is how much of the picture each
+    // cell is standing for, and so what the drawing can no longer tell apart.
+    let (across, down) = writer.canvas();
+    eprintln!(
+        "circular-polynomial: folded onto {} x {} cells, each covering {} x {} of it",
+        across,
+        down,
+        width.div_ceil(across),
+        rows.div_ceil(down)
+    );
+    Ok(writer)
 }
 
 /// The records, from the rewindable handle if there is one and from standard
@@ -450,6 +673,26 @@ fn option<'a>(args: &'a [String], i: usize, name: &str) -> Option<(&'a str, usiz
     rest.strip_prefix('=').map(|v| (v, 1))
 }
 
+/// Records which picture was asked for, refusing a second one that disagrees.
+///
+/// Three options for one output, so a later one quietly winning would be a run
+/// drawing something nobody asked for.  Saying the same one twice is not a
+/// disagreement and the last `goes` — the file, or what an exported page is
+/// named after — is the one that stands.
+fn choose(picture: &mut Option<(Sheet, String)>, sheet: Sheet, goes: &str) -> Result<(), String> {
+    if let Some((chosen, _)) = picture {
+        if *chosen != sheet {
+            return Err(format!(
+                "{} and {} are two ways of drawing the one picture; drop one of them",
+                chosen.flag(),
+                sheet.flag()
+            ));
+        }
+    }
+    *picture = Some((sheet, goes.to_string()));
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let mut limit = DEFAULT_LIMIT;
     let mut stats = false;
@@ -458,9 +701,19 @@ fn main() -> ExitCode {
     let mut backend = Backend::Rings;
     let mut chose_backend = false;
     let mut form = Line::Terms;
-    let mut picture: Option<String> = None;
+    let mut picture: Option<(Sheet, String)> = None;
     let mut blocks: Option<usize> = None;
     let mut bin: Option<usize> = None;
+    let mut page: Option<usize> = None;
+
+    // What a page exported from `--view`'s window is named after: the program,
+    // the way the viewers name theirs, so that two windows open in one directory
+    // do not write over each other's pages.
+    let program = std::env::args().next().unwrap_or_default();
+    let stem = std::path::Path::new(&program)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "picture".to_string());
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -493,15 +746,37 @@ fn main() -> ExitCode {
             // Which of the two line forms, rather than which backend -- but a
             // sum of weights needs weights, so it settles that too, below.
             "--sum" => form = Line::Sum,
+            // The one picture option with nothing after it: a window is not
+            // somewhere, so there is no path to take.
+            "--view" => {
+                if let Err(clash) = choose(&mut picture, Sheet::Shown, &stem) {
+                    eprintln!("circular-polynomial: {}", clash);
+                    return ExitCode::FAILURE;
+                }
+            }
             "all" => limit = usize::MAX,
             _ => {
-                if let Some((path, used)) = option(&args, i, "--png") {
-                    picture = Some(path.to_string());
-                    i += used;
+                let sheets = [("--png", Sheet::Raster), ("--pdf", Sheet::Folded)];
+                let mut taken = 0;
+                for (name, sheet) in sheets {
+                    if let Some((path, used)) = option(&args, i, name) {
+                        if let Err(clash) = choose(&mut picture, sheet, path) {
+                            eprintln!("circular-polynomial: {}", clash);
+                            return ExitCode::FAILURE;
+                        }
+                        taken = used;
+                        break;
+                    }
+                }
+                if taken > 0 {
+                    i += taken;
                     continue;
                 }
-                let counts = [("--blocks", &mut blocks), ("--bin", &mut bin)];
-                let mut taken = 0;
+                let counts = [
+                    ("--blocks", &mut blocks),
+                    ("--bin", &mut bin),
+                    ("--page", &mut page),
+                ];
                 for (name, slot) in counts {
                     if let Some((n, used)) = option(&args, i, name) {
                         match n.parse::<usize>() {
@@ -547,7 +822,7 @@ fn main() -> ExitCode {
         backend = Backend::Weighted;
     }
 
-    let (output, input) = match plan(picture, blocks, bin, form, limit) {
+    let (output, input) = match plan(picture, blocks, bin, page, form, limit) {
         Ok(plan) => plan,
         Err(message) => {
             eprintln!("circular-polynomial: {}", message);
@@ -762,13 +1037,32 @@ fn run<S: ColorStore>(
         // Worth saying out loud in a picture run, where stdout stays empty and
         // the file's own header is the only other place the size is written
         // down.
-        if let Output::Picture(picture) = &out {
-            let (columns, rows) = picture.dimensions();
-            eprintln!("picture: {} columns x {} rows", columns, rows);
+        match &out {
+            Output::Picture(picture) => {
+                let (columns, rows) = picture.dimensions();
+                eprintln!("picture: {} columns x {} rows", columns, rows);
+            }
+            #[cfg(feature = "pdf")]
+            Output::Page(sheet) => folded(sheet),
+            #[cfg(feature = "gui")]
+            Output::Window { canvas, .. } => folded(canvas),
+            Output::Text { .. } => {}
         }
     }
 
     out.finish()
+}
+
+/// What `--stats` says about a folded picture: the size it would have had, and
+/// the size it was drawn at.
+#[cfg(feature = "pdf")]
+fn folded(canvas: &page::Writer) {
+    let (columns, rows) = canvas.dimensions();
+    let (across, down) = canvas.canvas();
+    eprintln!(
+        "picture: {} columns x {} rows, on {} x {} cells",
+        columns, rows, across, down
+    );
 }
 
 /// `records` over `seconds`, short enough to hold a fixed column.

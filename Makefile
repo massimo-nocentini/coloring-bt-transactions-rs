@@ -72,6 +72,31 @@ view: ## Open GRAPH=<basename> in the windowed viewer
 	@test -n "$(GRAPH)" || { echo "usage: make view GRAPH=<graph-basename>"; exit 1; }
 	cargo run --release --features gui --bin tree-view -- $(GRAPH)
 
+.PHONY: pdf
+pdf: ## Draw RECORDS=<file> as one page in PDF=<file>
+#	`--pdf` draws with Cairo, so it wants a `libcairo` and its headers on the
+#	machine -- and nothing else: no toolkit, unlike `view` and `tx-view` below.
+#	On Debian and Ubuntu that is `libcairo2-dev`; on Fedora `cairo-devel`; on
+#	macOS `brew install cairo`.
+#
+#	`--sets` because the page drops coefficients anyway and the sorted arrays
+#	are several times faster than the rings at producing the same set of blocks.
+	@test -n "$(RECORDS)" || { echo "usage: make pdf RECORDS=<file> [PDF=<file>] [PAGE=<n>]"; exit 1; }
+	cargo run --release --features pdf --bin $(CRATE) -- all --sets \
+		--pdf $(or $(PDF),out.pdf) $(if $(PAGE),--page $(PAGE),) < $(RECORDS)
+
+.PHONY: picture
+picture: ## Show RECORDS=<file> as the picture in a window
+#	The same drawing `pdf` writes, in a window one can move and zoom instead --
+#	so this wants GTK as well as Cairo, exactly as `view` and `tx-view` do; see
+#	the note under `view`.
+#
+#	`PAGE` is worth raising here in a way it is not for a page: the window zooms,
+#	and the cells one can climb into are the ones the fold put there.
+	@test -n "$(RECORDS)" || { echo "usage: make picture RECORDS=<records-file> [PAGE=<n>]"; exit 1; }
+	cargo run --release --features gui --bin $(CRATE) -- all --sets \
+		--view $(if $(PAGE),--page $(PAGE),) < $(RECORDS)
+
 .PHONY: tx-view
 tx-view: ## Open RECORDS=<file> in the transaction viewer
 #	The same window as `view`, over a file of transaction records rather than a
@@ -81,11 +106,19 @@ tx-view: ## Open RECORDS=<file> in the transaction viewer
 	@test -n "$(RECORDS)" || { echo "usage: make tx-view RECORDS=<records-file>"; exit 1; }
 	cargo run --release --features gui --bin tx-view -- $(RECORDS)
 
+.PHONY: test-pdf
+test-pdf: ## Run the test suite including the page's, which needs Cairo
+#	`page`'s tests fold pictures onto canvases and write a page to a temporary
+#	file, so they want Cairo; `make test` runs everything else with no C library
+#	on the machine at all.
+	cargo test --features pdf
+
 .PHONY: test-gui
-test-gui: ## Run the test suite including the viewer's, which needs GTK
-#	The viewer's own tests draw frames onto an image surface and look at the
-#	pixels, so they want Cairo but never a screen; `make test` runs everything
-#	else, including the camera and the quadtree, with no toolkit at all.
+test-gui: ## Run the test suite including the windows', which needs GTK
+#	The windows' own tests -- the viewers' and `--view`'s -- draw frames onto an
+#	image surface and look at the pixels, so they want Cairo but never a screen;
+#	`make test` runs everything else, including the camera and the quadtree, with
+#	no toolkit at all.  `gui` includes `pdf`, so this is `test-pdf` and then some.
 	cargo test --features gui
 
 .PHONY: asm-check

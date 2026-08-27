@@ -33,7 +33,7 @@ use std::process::ExitCode;
 use non_layered_tidy_trees::Arena;
 use webgraph::prelude::{BvGraph, SequentialLabeling};
 
-#[path = "tree/camera.rs"]
+#[path = "../camera.rs"]
 mod camera;
 #[path = "tree/forest.rs"]
 mod forest;

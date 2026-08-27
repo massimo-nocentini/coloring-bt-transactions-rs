@@ -34,11 +34,14 @@
 //! camera *ended up with* rather than the one it was asked for: at the stops,
 //! zooming further does nothing at all instead of sliding the drawing sideways.
 
-// These three files are a small library with no `lib.rs` to live in -- `src/*.rs`
-// belong to the main binary, so `tree-view` reaches them by `#[path]` and
-// `tests/viewer_geometry.rs` does the same.  Compiled into a binary crate,
-// anything one frame does not happen to call reads as dead; the surface is the
-// point, so the lint goes rather than the surface.
+// A small library with no `lib.rs` to live in, and the one file of it that more
+// than the viewers want: the main binary's `--view` measures its window with the
+// same camera, and `src/*.rs` is where a file the main binary names has to be.
+// So this sits at the root and everything else reaches it by `#[path]` --
+// `tree-view` and `tx-view` from `src/bin/`, `tests/viewer_geometry.rs` from
+// outside, all under the name `crate::camera` either way.  Compiled into a
+// binary crate, anything one frame does not happen to call reads as dead; the
+// surface is the point, so the lint goes rather than the surface.
 #![allow(dead_code)]
 
 /// An axis-aligned rectangle in node units.
