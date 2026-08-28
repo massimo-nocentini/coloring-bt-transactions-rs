@@ -25,14 +25,23 @@
 //! evenly), a block inked twice in one row counts once because a row is a union,
 //! and a row the records never reached counts as blank rather than as absent.
 //!
+//! A pixel need not be all ink or none, and under `--weighted` it is not: it
+//! carries the share of the transaction's value that came through the block, and
+//! a cell adds up the shares rather than counting the pixels.  Unweighted every
+//! share is 1, so the sum *is* the count and this is the same page it always
+//! was; weighted, a cell of the same shape comes out lighter, because the ink in
+//! it genuinely is.
+//!
 //! Coverage is not shade, though.  A colour of a thousand blocks in a cell
 //! eighty-five blocks by six hundred records is a coverage of a few percent, and
 //! a few percent of black on white is white as far as the eye is concerned.  So
-//! the shade is `coverage^(1/`[`TONE`]`)` — a plain gamma curve, which lifts
-//! sparse ink into something visible while keeping the ordering, so a darker
-//! cell still means more ink than a lighter one.  What it does *not* mean is
-//! twice the ink for twice the darkness; read the page for shape, and the text
-//! output or a `--blocks`-narrowed PNG for quantities.
+//! the shade is `coverage^(1/TONE)` — a plain gamma curve, which lifts sparse
+//! ink into something visible while keeping the ordering, so a darker cell still
+//! means more ink than a lighter one.  What it does *not* mean is twice the ink
+//! for twice the darkness; read the page for shape, and the text output or a
+//! `--blocks`-narrowed PNG for quantities.  It is
+//! [`image::shade`](crate::image::shade), which is the curve a weighted *pixel*
+//! is drawn with as well.
 //!
 //! ## Cells are not square, on purpose
 //!
@@ -64,9 +73,9 @@
 //!
 //! ## What it costs to draw
 //!
-//! One `u32` per cell — four megabytes at the default page, whatever the
-//! picture — plus one bit per column for the row being built, so that a bin's
-//! transactions union rather than accumulate.  Both dimensions are still settled
+//! One `f32` per cell — four megabytes at the default page, whatever the
+//! picture — plus a bit and a weight per column for the row being built, so that
+//! a bin's transactions union rather than accumulate.  Both dimensions are still settled
 //! before the first record, because the canvas has to be allocated; that is the
 //! same rewind-and-count pass a PNG needs, and `main`'s `survey` is the same
 //! walk for both.
@@ -75,8 +84,10 @@ use std::io;
 
 use cairo::{Context, Format, ImageSurface, PdfSurface};
 
-/// How many cells the canvas gets each way unless `--page` says otherwise, and
-/// so how many points the page is each way.
+use crate::image;
+
+/// How many cells the canvas gets each way, and so how many points the page is
+/// each way.
 ///
 /// 1024 points is a fourteen-inch sheet: larger than anything one would print,
 /// which is what one wants from a page that is being read on a screen and zoomed
@@ -84,7 +95,7 @@ use cairo::{Context, Format, ImageSurface, PdfSurface};
 /// of the picture told apart and not more paper.
 pub const DEFAULT_PAGE: usize = 1024;
 
-/// The most cells `--page` will take each way: 14,400.
+/// The most cells a canvas will take each way: 14,400.
 ///
 /// Two reasons that happen to be the same number.  A PDF states its page size in
 /// `/MediaBox`, in points, and readers hold it to 200 inches — 14,400 points, and
@@ -94,17 +105,10 @@ pub const DEFAULT_PAGE: usize = 1024;
 /// ceiling an order of magnitude higher would be one nothing could allocate
 /// behind.
 ///
-/// Well above anything one would ask for either way: fourteen times the default
-/// each way, which is two hundred times the cells.
+/// Nothing the driver asks for comes near it — it draws at [`DEFAULT_PAGE`] —
+/// but a `Writer` is told its canvas, so the ceiling is stated where the canvas
+/// is taken.
 pub const MAX_PAGE: usize = 14_400;
-
-/// The exponent that turns coverage into shade: `shade = coverage^(1/TONE)`.
-///
-/// 2.2 is the usual display gamma, chosen here for what it does to the low end
-/// rather than for anything about a monitor — a cell one percent inked comes out
-/// at twelve percent black, which is a grey one can see, where one percent black
-/// is not.
-const TONE: f64 = 2.2;
 
 /// A picture being drawn a transaction at a time, onto a canvas of fixed size.
 ///
@@ -129,8 +133,10 @@ pub struct Writer {
     /// division.  A colour's terms are the innermost loop of the whole program
     /// and there are billions of them in a run.
     column_of: Vec<u32>,
-    /// Inked picture-pixels per cell, `across * down` of them, row major.
-    counts: Vec<u32>,
+    /// How much ink the picture pixels a cell covers came to, `across * down` of
+    /// them, row major.  A pixel's ink is its weight, which is 1 for every term
+    /// an unweighted colour has, so this is a count of inked pixels there.
+    counts: Vec<f32>,
     /// Where the row being built writes: `cell row * across`, recomputed once a
     /// row rather than once a term.
     band: usize,
@@ -138,6 +144,12 @@ pub struct Writer {
     /// a bin's transactions union.  All 0s outside `..dirty`, which is what lets
     /// a closed row be blanked by clearing a prefix.
     row: Vec<u8>,
+    /// How much ink each of those blocks has in the row so far, one per column.
+    ///
+    /// Only read where `row` says the block is inked, which is why it is never
+    /// blanked: a stale weight is unreachable until the bit beside it is set
+    /// again, and setting it writes the weight in the same breath.
+    weights: Vec<f32>,
     dirty: usize,
     /// Transactions drawn into the row being built, always below `bin`.
     pending: usize,
@@ -198,9 +210,10 @@ impl Writer {
             across,
             down,
             column_of,
-            counts: vec![0; cells],
+            counts: vec![0.0; cells],
             band: 0,
             row: vec![0; width.div_ceil(8)],
+            weights: vec![0.0; width],
             dirty: 0,
             pending: 0,
             rows: 0,
@@ -208,32 +221,47 @@ impl Writer {
         })
     }
 
-    /// Ink the pixel for `block` in the row being built.
+    /// Ink the pixel for `block` in the row being built, with `weight` as its
+    /// coefficient — 1 for every term an unweighted colour has, and the share of
+    /// the transaction's value that came through the block for a weighted one.
     ///
     /// A block already inked in this row is not counted again: a row is the
     /// union of the transactions binned into it, so the second transaction to
     /// reach a block adds nothing to the row and must add nothing to the cell.
+    /// Where the second one is *heavier*, the row takes the difference and no
+    /// more — the union of two weighted pixels is the darker of them, which is
+    /// the same rule as "counted once" when every weight is 1.
     ///
     /// A block the picture has no column for is remembered rather than reported,
     /// for the reason [`image::Writer::set`](crate::image::Writer::set) gives:
     /// this runs inside the store's walk over the colour's terms, which has
     /// nowhere to put an error.
     #[inline]
-    pub fn set(&mut self, block: usize) {
+    pub fn set(&mut self, block: usize, weight: f64) {
         if block >= self.width {
             self.escaped.get_or_insert(block);
             return;
         }
         let byte = block / 8;
         let bit = 0x80 >> (block % 8);
-        if self.row[byte] & bit != 0 {
+        let weight = weight as f32;
+        // Nothing there yet is nothing to keep: the bit is what says whether the
+        // weight beside it belongs to this row at all.
+        let held = if self.row[byte] & bit != 0 {
+            self.weights[block]
+        } else {
+            self.row[byte] |= bit;
+            if byte >= self.dirty {
+                self.dirty = byte + 1;
+            }
+            self.weights[block] = 0.0;
+            0.0
+        };
+        if weight <= held {
             return;
         }
-        self.row[byte] |= bit;
-        if byte >= self.dirty {
-            self.dirty = byte + 1;
-        }
-        self.counts[self.band + self.column_of[block] as usize] += 1;
+        self.weights[block] = weight;
+        self.counts[self.band + self.column_of[block] as usize] += weight - held;
     }
 
     /// Finish one transaction, closing the row if it completes a bin.
@@ -314,7 +342,8 @@ impl Writer {
         Ok(())
     }
 
-    /// The canvas as ink: one byte a cell, row major, [`shade`]d from the counts.
+    /// The canvas as ink: one byte a cell, row major, [`shade`]d from the ink in
+    /// them.
     ///
     /// 255 is a cell that is all ink and 0 is one that is all paper, so this is
     /// a *mask* rather than a picture — whatever draws it chooses the colour,
@@ -333,11 +362,11 @@ impl Writer {
             let tall = span(self.height, self.down, cy);
             let band = cy * self.across;
             for cx in 0..self.across {
-                let count = self.counts[band + cx];
-                if count == 0 {
+                let ink = self.counts[band + cx];
+                if ink <= 0.0 {
                     continue;
                 }
-                out[band + cx] = shade(count, span(self.width, self.across, cx) * tall);
+                out[band + cx] = shade(ink, span(self.width, self.across, cx) * tall);
             }
         }
         out
@@ -440,20 +469,19 @@ pub fn stamp(
     cr.restore()
 }
 
-/// How much of a cell's black gets through, given that `count` of the `area`
-/// picture pixels it covers are inked.
+/// How much of a cell's black gets through, given that the `area` picture pixels
+/// it covers came to `ink` between them.
 ///
-/// An A8 surface is a mask, so 255 is the ink and 0 is the paper.  The curve
-/// between them is [`TONE`]: full coverage is full black and none is none
-/// whatever the exponent, and everything in between is lifted so that a cell one
-/// percent inked is a grey one can see rather than one one cannot.
-fn shade(count: u32, area: usize) -> u8 {
+/// An A8 surface is a mask, so 255 is the ink and 0 is the paper, which is the
+/// way round [`image::shade`] answers; the curve and what it does to the low end
+/// are written down there.  A cell every pixel of which is fully inked is the
+/// ink itself, and one with nothing in it is paper.
+fn shade(ink: f32, area: usize) -> u8 {
     debug_assert!(
-        count as usize <= area,
+        ink as f64 <= area as f64 + 1e-3,
         "a cell cannot hold more ink than it has room for"
     );
-    let coverage = count as f64 / area as f64;
-    (coverage.powf(1.0 / TONE) * 255.0).round().clamp(0.0, 255.0) as u8
+    image::shade(ink as f64 / area as f64)
 }
 
 /// How many of `total` things fall in cell `i` of `cells`, under the mapping
@@ -540,21 +568,25 @@ pub mod tests {
     }
 
     /// The two ends of the curve are not curved: paper is paper and a cell every
-    /// pixel of which is inked is the ink itself, whatever [`TONE`] is set to.
-    /// Between them it climbs and never falls, and lifts the low end -- a cell
-    /// one percent covered is a visible grey rather than a rounding error.
+    /// pixel of which is inked is the ink itself.  Between them it climbs and
+    /// never falls, and lifts the low end -- a cell one percent covered is a
+    /// visible grey rather than a rounding error.
     #[test]
     fn shading_runs_from_paper_to_ink_and_lifts_the_low_end() {
-        assert_eq!(shade(0, 400), 0);
-        assert_eq!(shade(400, 400), 255);
-        assert_eq!(shade(4, 400), 31); // one percent of the cell, twelve of the ink
+        assert_eq!(shade(0.0, 400), 0);
+        assert_eq!(shade(400.0, 400), 255);
+        assert_eq!(shade(4.0, 400), 31); // one percent of the cell, twelve of the ink
 
         let mut last = 0;
         for count in 0..=400u32 {
-            let now = shade(count, 400);
+            let now = shade(count as f32, 400);
             assert!(now >= last, "{count} of 400 shaded {now} after {last}");
             last = now;
         }
+
+        // Half the ink in every pixel of a cell is the same shade as all of it
+        // in half of them: a cell adds ink up and does not care how it arrived.
+        assert_eq!(shade(200.0, 400), shade(0.5 * 400.0, 400));
     }
 
     fn scratch(name: &str) -> String {
@@ -571,10 +603,27 @@ pub mod tests {
     /// Draw `colors` -- one per transaction -- and hand back the writer's counts
     /// before they are shaded, which is the part worth asserting about.
     fn drawn(width: usize, rows: usize, bin: usize, page: usize, colors: &[&[usize]]) -> Writer {
+        let colors: Vec<Vec<(usize, f64)>> = colors
+            .iter()
+            .map(|color| color.iter().map(|&block| (block, 1.0)).collect())
+            .collect();
+        let borrowed: Vec<&[(usize, f64)]> = colors.iter().map(|c| c.as_slice()).collect();
+        weighed(width, rows, bin, page, &borrowed)
+    }
+
+    /// The same, with a weight on every term rather than the 1 an unweighted
+    /// colour carries.
+    fn weighed(
+        width: usize,
+        rows: usize,
+        bin: usize,
+        page: usize,
+        colors: &[&[(usize, f64)]],
+    ) -> Writer {
         let mut w = Writer::new(UNWRITTEN, width, rows, bin, page).unwrap();
         for color in colors {
-            for &block in *color {
-                w.set(block);
+            for &(block, weight) in *color {
+                w.set(block, weight);
             }
             w.end_transaction().unwrap();
         }
@@ -596,7 +645,10 @@ pub mod tests {
     fn a_page_larger_than_the_picture_folds_nothing() {
         let w = drawn(4, 3, 1, 64, &[&[0, 3], &[], &[1]]);
         assert_eq!(w.canvas(), (4, 3));
-        assert_eq!(w.counts, vec![1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0]);
+        assert_eq!(
+            w.counts,
+            vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        );
     }
 
     /// Fold four columns into two and the cell counts what fell in it.
@@ -604,7 +656,7 @@ pub mod tests {
     fn a_cell_counts_the_pixels_it_covers() {
         let w = drawn(4, 1, 1, 2, &[&[0, 1, 3]]);
         assert_eq!(w.canvas(), (2, 1));
-        assert_eq!(w.counts, vec![2, 1]);
+        assert_eq!(w.counts, vec![2.0, 1.0]);
     }
 
     /// Rows fold the same way columns do.
@@ -612,7 +664,7 @@ pub mod tests {
     fn a_cell_covers_a_span_of_rows_too() {
         let w = drawn(2, 4, 1, 2, &[&[0], &[0], &[1], &[]]);
         assert_eq!(w.canvas(), (2, 2));
-        assert_eq!(w.counts, vec![2, 0, 0, 1]);
+        assert_eq!(w.counts, vec![2.0, 0.0, 0.0, 1.0]);
     }
 
     /// A row is the union of its bin, so the same block reached twice in one row
@@ -620,7 +672,7 @@ pub mod tests {
     #[test]
     fn a_block_two_transactions_of_a_bin_share_is_counted_once() {
         let w = drawn(2, 1, 2, 64, &[&[0, 1], &[0]]);
-        assert_eq!(w.counts, vec![1, 1]);
+        assert_eq!(w.counts, vec![1.0, 1.0]);
     }
 
     /// The same block in two *rows* is two pixels, and a cell covering both
@@ -629,21 +681,21 @@ pub mod tests {
     fn the_same_block_in_two_rows_is_counted_twice() {
         let w = drawn(1, 2, 1, 1, &[&[0], &[0]]);
         assert_eq!(w.canvas(), (1, 1));
-        assert_eq!(w.counts, vec![2]);
+        assert_eq!(w.counts, vec![2.0]);
     }
 
     /// A row does not inherit the one before it.
     #[test]
     fn a_row_does_not_inherit_the_one_before_it() {
         let w = drawn(2, 2, 1, 64, &[&[0, 1], &[]]);
-        assert_eq!(w.counts, vec![1, 1, 0, 0]);
+        assert_eq!(w.counts, vec![1.0, 1.0, 0.0, 0.0]);
     }
 
     /// A block past the last column is refused, and the message names it.
     #[test]
     fn a_block_past_the_last_column_is_an_error_naming_it() {
         let mut w = Writer::new(UNWRITTEN, 2, 1, 1, 64).unwrap();
-        w.set(7);
+        w.set(7, 1.0);
         let e = w.end_transaction().unwrap_err();
         assert!(e.to_string().contains("block 7"), "{e}");
         assert!(e.to_string().contains("--blocks 8"), "{e}");
@@ -675,6 +727,35 @@ pub mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// A cell adds up the ink of the pixels it covers, and under weights a pixel
+    /// is worth its weight rather than a whole one.
+    #[test]
+    fn a_cell_adds_up_the_weights_of_the_pixels_it_covers() {
+        let w = weighed(4, 1, 1, 2, &[&[(0, 0.5), (1, 0.25), (3, 1.0)]]);
+        assert_eq!(w.canvas(), (2, 1));
+        assert_eq!(w.counts, vec![0.75, 1.0]);
+    }
+
+    /// The union of two weighted pixels is the darker of them, whichever order
+    /// the bin's transactions arrive in -- and the cell holds that one, not the
+    /// sum of the two.
+    #[test]
+    fn a_block_two_transactions_of_a_bin_share_keeps_the_heavier_weight() {
+        let up = weighed(1, 1, 2, 64, &[&[(0, 0.25)], &[(0, 0.75)]]);
+        let down = weighed(1, 1, 2, 64, &[&[(0, 0.75)], &[(0, 0.25)]]);
+        assert_eq!(up.counts, vec![0.75]);
+        assert_eq!(down.counts, vec![0.75]);
+    }
+
+    /// And a heavier weight in the *next* row is a second pixel, not a heavier
+    /// one: the union is within a bin and stops at its edge.
+    #[test]
+    fn weights_in_two_rows_add_rather_than_take_the_larger() {
+        let w = weighed(1, 2, 1, 64, &[&[(0, 0.25)], &[(0, 0.75)]]);
+        assert_eq!(w.canvas(), (1, 2));
+        assert_eq!(w.counts, vec![0.25, 0.75]);
+    }
+
     /// Ink darkens a cell and paper leaves it alone: an eight by eight diagonal
     /// folded in half is a four by four diagonal, with nothing off it.
     #[test]
@@ -684,7 +765,7 @@ pub mod tests {
         for cy in 0..4 {
             for cx in 0..4 {
                 let count = w.counts[cy * 4 + cx];
-                assert_eq!(count > 0, cx == cy, "cell ({cx}, {cy}) counted {count}");
+                assert_eq!(count > 0.0, cx == cy, "cell ({cx}, {cy}) counted {count}");
             }
         }
     }

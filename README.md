@@ -50,7 +50,7 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 coloring-bt-transactions [<record-limit>|all] [--stats]
                          [--rings|--sets|--weighted] [--sum]
                          [--png <file>|--pdf <file>|--view]
-                         [--page <n>] [--blocks <n>] [--bin <n>]
+                         [--blocks <n>] [--bin <n>]
                          < records
 ```
 
@@ -87,10 +87,23 @@ Three representations of a colour, all driven by the one loop:
 
 The text is enormous — a colour of a thousand blocks is fourteen thousand bytes
 of `(block . 1)`, and most of it punctuation.  `--png` draws the same answer
-instead: one row per record, one column per block id, ink where the block is in
-the colour, written as a lossless bilevel PNG — one bit a pixel, which is both
-the smallest this compresses to and something every viewer opens.  `--bin <n>`
-puts `n` consecutive transactions on a row, which is how a million rows becomes a
+instead: one row per record, one column per block id, and a pixel saying what the
+colour says about that block, written as a lossless greyscale PNG.
+
+- unweighted, that is black where the block is in the colour and white where it
+  is not — every coefficient is 1, so two tones are the whole answer, and the
+  file is one bit a pixel: both the smallest this compresses to and something
+  every viewer opens.
+- under `--weighted` a pixel is the **grey the weight comes to**: black for the
+  whole of the transaction's value, white for none of it, and 254 shades
+  between, at eight bits a pixel.  The scale is `weight^(1/2.2)` rather than the
+  weight itself — weights decay by roughly a factor per hop of ancestry, so most
+  of a real colour is a fraction of a percent and a linear grey would draw it as
+  blank paper.  Darker is heavier; twice as dark is not twice the value.
+
+`--bin <n>`
+puts `n` consecutive transactions on a row — the union of their colours, and the
+darker of two shades where they meet — which is how a million rows becomes a
 picture something will show you whole; `--blocks <n>` says how many columns to
 draw, overriding the count the records are read for.  A PNG states both of its
 dimensions in front of its first scanline and the height is the number of
@@ -102,11 +115,13 @@ memory.
 135,659 columns by 1,000,001 rows: a well-formed 1.8 GB file that no reader will
 open, because a hundred and thirty-five gigapixels is more raster than anything
 will allocate.  `--pdf <file>` writes the same picture at a size a page can hold.
-It folds the pixels onto a Cairo canvas of at most `--page <n>` cells each way
-(1024 by default, which is also the page in points) and shades each cell by how
-much of the rectangle it covers is inked — coverage counted exactly, then through
-a gamma so that sparse ink is visible, so a darker cell means more ink but not
-proportionally more.  Each axis is capped on its own, since a block id and a
+It folds the pixels onto a Cairo canvas of at most 1024 cells each way (which is
+also the page in points) and shades each cell by how much of the rectangle it
+covers is inked — coverage counted exactly, then through the same gamma so that
+sparse ink is visible, so a darker cell means more ink but not proportionally
+more.  A weighted pixel is worth its weight rather than a whole one there too, so
+a weighted page is the lighter of the two wherever the ink genuinely is lighter.
+Each axis is capped on its own, since a block id and a
 position in the record stream are not the same kind of quantity and there is no
 aspect ratio to keep.  `--blocks` and `--bin` mean what they mean for a PNG and
 apply first.
@@ -125,12 +140,10 @@ that one can move and zoom, with the panel reading out which block and which
 record the pointer is over, and `e` writing what is on screen to a page of its
 own.  It is the third thing that can be done with the one drawing, so it
 contradicts `--png` and `--pdf` the way those contradict each other, and
-`--page`, `--blocks` and `--bin` shape the canvas for it exactly as they do for a
-page.  Raising `--page` is worth more here than for a page: a window is zoomed,
-and the cells one can climb into are the ones it put there — zooming past one
+`--blocks` and `--bin` shape the canvas for it exactly as they do for a page.
+The fold is the resolution and a window is where that is felt: zooming past one
 pixel a cell magnifies cells rather than uncovering finer ones, since refolding
-would mean reading the records again.  A cell costs four bytes while the run is
-going, so a 4096-cell canvas is 67 MB.
+would mean reading the records again.
 
 | | |
 |---|---|
@@ -165,8 +178,8 @@ viewers:
 
 ```sh
 cargo run --release --features gui --bin coloring-bt-transactions -- \
-    all --sets --view --page 4096 < records
-make picture RECORDS=<records-file> PAGE=4096        # the same
+    all --sets --view < records
+make picture RECORDS=<records-file>                  # the same
 ```
 
 ### `tree-jp2`

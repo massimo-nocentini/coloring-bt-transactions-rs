@@ -32,9 +32,12 @@
 //! That output is enormous — a color of a thousand blocks is fourteen thousand
 //! bytes of `(block . 1)` — and most of every line is punctuation.  `--png
 //! <file>` draws the same answer instead: one row per record in the order the
-//! records arrive, one column per block id counting up from 0, black where the
-//! block is in the color, written as a lossless bilevel PNG — see [`image`] for
-//! why that format and what it costs.
+//! records arrive, one column per block id counting up from 0, and a pixel
+//! saying what the color says about that block — black where the block is in it
+//! and white where it is not, or, under `--weighted`, the grey that stands for
+//! how much of the transaction's value came through it.  A lossless greyscale
+//! PNG, one bit a sample where two tones are all there is and eight where they
+//! are not; see [`image`] for why that format and what it costs.
 //!
 //! Two more knobs, both about size:
 //!
@@ -56,10 +59,11 @@
 //!
 //! `--pdf <file>` draws the same answer onto a Cairo canvas of bounded size and
 //! writes it as one page: the picture's pixels folded into the cells that cover
-//! them, each cell shaded by how much of its rectangle is inked.  `--page <n>`
-//! is how many cells the canvas gets each way — 1024 unless said otherwise,
-//! which is also the page in points.  `--blocks` and `--bin` mean what they mean
-//! for a PNG and apply before any of this.
+//! them, each cell shaded by how much of its rectangle is inked — where a
+//! weighted pixel is worth its weight rather than a whole one, so the two
+//! drawings say the same thing at either size.  The canvas is 1024 cells each
+//! way, which is also the page in points.  `--blocks` and `--bin` mean what they
+//! mean for a PNG and apply before any of this.
 //!
 //! It is behind the `pdf` feature, since Cairo is a C library the rest of the
 //! crate has no reason to want installed: `cargo run --release --features pdf`.
@@ -77,10 +81,8 @@
 //! it is the same image `--pdf` writes.
 //!
 //! It is the third thing that can be done with the one drawing, so it
-//! contradicts `--png` and `--pdf` the way they contradict each other; `--page`,
-//! `--blocks` and `--bin` shape the canvas for it exactly as they do for a page,
-//! and `--page` is worth raising here, since a window is zoomed and the cells
-//! one can climb into are the ones it put there.
+//! contradicts `--png` and `--pdf` the way they contradict each other; `--blocks`
+//! and `--bin` shape the canvas for it exactly as they do for a page.
 //!
 //! It needs GTK on top of Cairo and so sits behind the `gui` feature, with the
 //! viewers: `cargo run --release --features gui -- --view < records`.  See
@@ -302,11 +304,13 @@ impl Output {
                 line.push(b'\n');
                 out.write_all(line)
             }
-            // The coefficient is dropped: a pixel says the block is in the
-            // color, which under the unweighted backends is everything the term
-            // had to say.
+            // The coefficient goes with the block: under the unweighted
+            // backends it is 1 for every term there is and the pixel is simply
+            // black, and under `--weighted` it is the shade the pixel is drawn
+            // in.  Which of the two the picture was opened for is settled in
+            // `plan`, since it is the depth of every sample in the file.
             Output::Picture(picture) => {
-                store.for_each_term(color, |exponent, _| picture.set(exponent));
+                store.for_each_term(color, |exponent, weight| picture.set(exponent, weight));
                 picture.end_transaction()
             }
             // The same two calls: `page::Writer` wears `image::Writer`'s
@@ -314,14 +318,14 @@ impl Output {
             // it is feeding.
             #[cfg(feature = "pdf")]
             Output::Page(sheet) => {
-                store.for_each_term(color, |exponent, _| sheet.set(exponent));
+                store.for_each_term(color, |exponent, weight| sheet.set(exponent, weight));
                 sheet.end_transaction()
             }
             // The window folds the picture the way the page does and then shows
             // it, so up to here the two are the same run.
             #[cfg(feature = "gui")]
             Output::Window { canvas, .. } => {
-                store.for_each_term(color, |exponent, _| canvas.set(exponent));
+                store.for_each_term(color, |exponent, weight| canvas.set(exponent, weight));
                 canvas.end_transaction()
             }
         }
@@ -357,7 +361,7 @@ impl Output {
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
                      [--rings|--sets|--weighted] [--sum] \
                      [--png <file>|--pdf <file>|--view] \
-                     [--page <n>] [--blocks <n>] [--bin <n>] < records";
+                     [--blocks <n>] [--bin <n>] < records";
 
 /// Which of the three pictures was asked for.
 ///
@@ -387,11 +391,6 @@ impl Sheet {
             Sheet::Folded => "--pdf",
             Sheet::Shown => "--view",
         }
-    }
-
-    /// Whether it folds the picture onto a canvas, which is what `--page` sizes.
-    fn folds(self) -> bool {
-        self != Sheet::Raster
     }
 }
 
@@ -464,7 +463,7 @@ fn plan(
     picture: Option<(Sheet, String)>,
     blocks: Option<usize>,
     bin: Option<usize>,
-    page: Option<usize>,
+    ink: image::Ink,
     form: Line,
     limit: usize,
 ) -> Result<(Output, Box<dyn io::Read>), String> {
@@ -473,11 +472,6 @@ fn plan(
     let mut source = rewindable_stdin();
 
     let Some((sheet, path)) = picture else {
-        if page.is_some() {
-            return Err("--page sizes the canvas the picture is folded onto, so it needs \
-                        --pdf <file> or --view"
-                .into());
-        }
         if let Some(name) = blocks.map(|_| "--blocks").or(bin.map(|_| "--bin")) {
             return Err(format!(
                 "{} describes the picture, so it needs --png <file>, --pdf <file> \
@@ -491,13 +485,6 @@ fn plan(
         ));
     };
 
-    // `--page` is the canvas the picture is folded onto, and a PNG folds
-    // nothing: it is drawn at one pixel per pair whatever its size comes to.
-    if !sheet.folds() && page.is_some() {
-        return Err("--page sizes the canvas the picture is folded onto, and --png draws \
-                    it at its full size: drop one of --page and --png"
-            .into());
-    }
     // Said before the survey rather than after it, so that a build missing what
     // one of these draws with refuses in front of a whole pass over the records
     // rather than behind one.
@@ -532,25 +519,6 @@ fn plan(
     };
     if blocks == Some(0) {
         return Err("--blocks 0 leaves the picture no columns to draw in".into());
-    }
-    // Both ends of the canvas, before the survey rather than after it: a
-    // `--page` that cannot be drawn is worth catching in front of a whole pass
-    // over the records.  Only reachable with the feature on -- a build without
-    // it refused both folding sheets above, and `--page` without one of them is
-    // refused too.
-    #[cfg(feature = "pdf")]
-    match page {
-        Some(0) => return Err("--page 0 gives the page no cells to draw in".into()),
-        Some(n) if n > page::MAX_PAGE => {
-            return Err(format!(
-                "--page {} is past the ceiling of {}: a page cannot be more than that \
-                 many points across, and a canvas that many cells each way is already \
-                 830 MB of counting",
-                n,
-                page::MAX_PAGE
-            ))
-        }
-        _ => {}
     }
 
     // Both dimensions, before a single pixel: the header names the size in
@@ -588,15 +556,15 @@ fn plan(
 
     let output = match sheet {
         Sheet::Raster => {
-            let writer = image::Writer::new(&path, width, rows, bin)
+            let writer = image::Writer::new(&path, width, rows, bin, ink)
                 .map_err(|e| format!("{}: {}", path, e))?;
             Output::Picture(writer)
         }
         #[cfg(feature = "pdf")]
-        Sheet::Folded => Output::Page(fold(&path, width, rows, bin, page)?),
+        Sheet::Folded => Output::Page(fold(&path, width, rows, bin)?),
         #[cfg(feature = "gui")]
         Sheet::Shown => Output::Window {
-            canvas: fold(&path, width, rows, bin, page)?,
+            canvas: fold(&path, width, rows, bin)?,
             stem: path,
         },
         // The refusals above are what run in a build without the feature; these
@@ -615,16 +583,9 @@ fn plan(
 /// One function because a page and a window differ in nothing until the records
 /// have all been read: the same fold, and then either written or shown.
 #[cfg(feature = "pdf")]
-fn fold(
-    path: &str,
-    width: usize,
-    rows: usize,
-    bin: usize,
-    page: Option<usize>,
-) -> Result<page::Writer, String> {
-    let cells = page.unwrap_or(page::DEFAULT_PAGE);
-    let writer =
-        page::Writer::new(path, width, rows, bin, cells).map_err(|e| format!("{}: {}", path, e))?;
+fn fold(path: &str, width: usize, rows: usize, bin: usize) -> Result<page::Writer, String> {
+    let writer = page::Writer::new(path, width, rows, bin, page::DEFAULT_PAGE)
+        .map_err(|e| format!("{}: {}", path, e))?;
     // The second pair is the one to know: it is how much of the picture each
     // cell is standing for, and so what the drawing can no longer tell apart.
     let (across, down) = writer.canvas();
@@ -704,7 +665,6 @@ fn main() -> ExitCode {
     let mut picture: Option<(Sheet, String)> = None;
     let mut blocks: Option<usize> = None;
     let mut bin: Option<usize> = None;
-    let mut page: Option<usize> = None;
 
     // What a page exported from `--view`'s window is named after: the program,
     // the way the viewers name theirs, so that two windows open in one directory
@@ -772,11 +732,7 @@ fn main() -> ExitCode {
                     i += taken;
                     continue;
                 }
-                let counts = [
-                    ("--blocks", &mut blocks),
-                    ("--bin", &mut bin),
-                    ("--page", &mut page),
-                ];
+                let counts = [("--blocks", &mut blocks), ("--bin", &mut bin)];
                 for (name, slot) in counts {
                     if let Some((n, used)) = option(&args, i, name) {
                         match n.parse::<usize>() {
@@ -822,7 +778,15 @@ fn main() -> ExitCode {
         backend = Backend::Weighted;
     }
 
-    let (output, input) = match plan(picture, blocks, bin, page, form, limit) {
+    // A picture is drawn in whichever ink the backend has to offer, and that is
+    // the depth of every sample in it: settled here, where the backend is, and
+    // handed to the writer rather than discovered a term at a time.
+    let ink = match backend {
+        Backend::Weighted => image::Ink::Weighted,
+        Backend::Rings | Backend::Sets => image::Ink::Flat,
+    };
+
+    let (output, input) = match plan(picture, blocks, bin, ink, form, limit) {
         Ok(plan) => plan,
         Err(message) => {
             eprintln!("circular-polynomial: {}", message);

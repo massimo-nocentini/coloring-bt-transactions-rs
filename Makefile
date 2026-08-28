@@ -79,11 +79,13 @@ pdf: ## Draw RECORDS=<file> as one page in PDF=<file>
 #	On Debian and Ubuntu that is `libcairo2-dev`; on Fedora `cairo-devel`; on
 #	macOS `brew install cairo`.
 #
-#	`--sets` because the page drops coefficients anyway and the sorted arrays
-#	are several times faster than the rings at producing the same set of blocks.
-	@test -n "$(RECORDS)" || { echo "usage: make pdf RECORDS=<file> [PDF=<file>] [PAGE=<n>]"; exit 1; }
+#	`--sets` because an unweighted cell counts the blocks it covers and the sorted
+#	arrays are several times faster than the rings at producing the same set of
+#	them.  Add `--weighted` for a page shaded by how much of each transaction's
+#	value came through the blocks rather than by how many of them it reached.
+	@test -n "$(RECORDS)" || { echo "usage: make pdf RECORDS=<file> [PDF=<file>]"; exit 1; }
 	cargo run --release --features pdf --bin $(CRATE) -- all --sets \
-		--pdf $(or $(PDF),out.pdf) $(if $(PAGE),--page $(PAGE),) < $(RECORDS)
+		--pdf $(or $(PDF),out.pdf) < $(RECORDS)
 
 .PHONY: picture
 picture: ## Show RECORDS=<file> as the picture in a window
@@ -91,11 +93,9 @@ picture: ## Show RECORDS=<file> as the picture in a window
 #	so this wants GTK as well as Cairo, exactly as `view` and `tx-view` do; see
 #	the note under `view`.
 #
-#	`PAGE` is worth raising here in a way it is not for a page: the window zooms,
-#	and the cells one can climb into are the ones the fold put there.
-	@test -n "$(RECORDS)" || { echo "usage: make picture RECORDS=<records-file> [PAGE=<n>]"; exit 1; }
+	@test -n "$(RECORDS)" || { echo "usage: make picture RECORDS=<records-file>"; exit 1; }
 	cargo run --release --features gui --bin $(CRATE) -- all --sets \
-		--view $(if $(PAGE),--page $(PAGE),) < $(RECORDS)
+		--view < $(RECORDS)
 
 .PHONY: tx-view
 tx-view: ## Open RECORDS=<file> in the transaction viewer

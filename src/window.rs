@@ -8,18 +8,19 @@
 //!
 //! # What is being looked at
 //!
-//! The canvas, and only the canvas.  It is a real raster of `--page` cells each
-//! way, drawn by the run exactly as `--pdf` would have drawn it, and this window
-//! is a camera over it: zooming in past one pixel a cell magnifies cells rather
-//! than uncovering finer ones, because there are no finer ones — refolding at a
-//! higher resolution would mean reading the records again, and the records are a
-//! stream this program has already spent its one rewind on.
+//! The canvas, and only the canvas.  It is a real raster of
+//! [`page::DEFAULT_PAGE`] cells each way, drawn by the run exactly as `--pdf`
+//! would have drawn it, and this window is a camera over it: zooming in past one
+//! pixel a cell magnifies cells rather than uncovering finer ones, because there
+//! are no finer ones — refolding at a higher resolution would mean reading the
+//! records again, and the records are a stream this program has already spent
+//! its one rewind on.
 //!
-//! Which is to say `--page` is the resolution knob and it is worth turning up
-//! here.  A page is read at the size it is printed and 1024 cells is a generous
-//! sheet; a window is zoomed, so the cells one can climb into are the ones
-//! `--page` put there.  They cost four bytes each while the run is going — a
-//! 4096-cell canvas is 67 MB — which is the whole of what raising it costs.
+//! Which is to say the fold is the resolution, and a window is where that is
+//! felt: a page is read at the size it is printed and 1024 cells is a generous
+//! sheet, while a window is zoomed and the cells one can climb into are the ones
+//! the fold put there.  What a cell says, and what shade it says it in, is the
+//! same on the screen as on the page — see [`page`]'s own docs.
 //!
 //! # What one can do with it
 //!
@@ -635,7 +636,7 @@ mod tests {
         let rows = records.div_ceil(bin);
         let mut canvas = page::Writer::new(UNWRITTEN, blocks, rows, bin, cells).unwrap();
         for r in 0..records {
-            canvas.set(r * blocks / records);
+            canvas.set(r * blocks / records, 1.0);
             canvas.end_transaction().unwrap();
         }
         viewing(canvas).unwrap()
@@ -647,7 +648,7 @@ mod tests {
         let mut canvas = page::Writer::new(UNWRITTEN, cells, cells, 1, cells).unwrap();
         for _ in 0..cells {
             for block in 0..cells {
-                canvas.set(block);
+                canvas.set(block, 1.0);
             }
             canvas.end_transaction().unwrap();
         }
