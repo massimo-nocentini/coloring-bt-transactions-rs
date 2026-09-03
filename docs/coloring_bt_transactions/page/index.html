@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="The same picture, on a page"><title>coloring_bt_transactions::page - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module page</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module page</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#the-same-picture-on-a-page" title="The same picture, on a page">The same picture, on a page</a><ul><li><a href="#what-a-cell-says" title="What a cell says">What a cell says</a></li><li><a href="#cells-are-not-square-on-purpose" title="Cells are not square, on purpose">Cells are not square, on purpose</a></li><li><a href="#why-a-page-rather-than-a-bigger-raster" title="Why a page rather than a bigger raster">Why a page rather than a bigger raster</a></li><li><a href="#what-it-costs-to-draw" title="What it costs to draw">What it costs to draw</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate coloring_<wbr>bt_<wbr>transactions</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">coloring_bt_transactions</a></div><h1>Module <span>page</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/coloring_bt_transactions/page.rs.html#1-901">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="the-same-picture-on-a-page"><a class="doc-anchor" href="#the-same-picture-on-a-page">§</a>The same picture, on a page</h2>
+<p><a href="../image/index.html" title="mod coloring_bt_transactions::image"><code>image</code></a> draws one pixel per (transaction, block) pair, which
+is the whole answer and nothing but it — and on a real run that is a picture
+no reader will open.  The million records the driver stops at, over the
+hundred and thirty-five thousand blocks they reach back through, come to
+135,659 x 1,000,001: a hundred and thirty-five <em>gigapixels</em>, 1.8 GB of PNG,
+and every decoder that meets it tries to allocate the raster and gives up.
+The file is well formed; it is simply larger than the thing it was drawn to
+be looked at with.</p>
+<p>So this draws the same answer at a size a page can hold.  A canvas of at most
+<a href="constant.DEFAULT_PAGE.html" title="constant coloring_bt_transactions::page::DEFAULT_PAGE"><code>DEFAULT_PAGE</code></a> cells each way, one PDF page of it, and the picture’s pixels
+folded into the cells that cover them.  Nothing else changes: the rows are
+still the records in the order they arrive, the columns are still block ids
+counting up from 0, and <code>--bin</code> still folds transactions together before any
+of this sees them.</p>
+<h3 id="what-a-cell-says"><a class="doc-anchor" href="#what-a-cell-says">§</a>What a cell says</h3>
+<p>A cell covers a rectangle of the full picture — some span of block ids by
+some span of records — and it is shaded by how much of that rectangle is
+inked.  Coverage is counted exactly: the spans are the ones the cell actually
+covers (they differ by one from cell to cell when the picture does not divide
+evenly), a block inked twice in one row counts once because a row is a union,
+and a row the records never reached counts as blank rather than as absent.</p>
+<p>A pixel need not be all ink or none, and under <code>--weighted</code> it is not: it
+carries the share of the transaction’s value that came through the block, and
+a cell adds up the shares rather than counting the pixels.  Unweighted every
+share is 1, so the sum <em>is</em> the count and this is the same page it always
+was; weighted, a cell of the same shape comes out lighter, because the ink in
+it genuinely is.</p>
+<p>Coverage is not shade, though.  A colour of a thousand blocks in a cell
+eighty-five blocks by six hundred records is a coverage of a few percent, and
+a few percent of black on white is white as far as the eye is concerned.  So
+the shade is <code>coverage^(1/TONE)</code> — a plain gamma curve, which lifts sparse
+ink into something visible while keeping the ordering, so a darker cell still
+means more ink than a lighter one.  What it does <em>not</em> mean is twice the ink
+for twice the darkness; read the page for shape, and the text output or a
+<code>--blocks</code>-narrowed PNG for quantities.  It is
+<a href="../image/fn.shade.html" title="fn coloring_bt_transactions::image::shade"><code>image::shade</code></a>, which is the curve a weighted <em>pixel</em>
+is drawn with as well.</p>
+<h3 id="cells-are-not-square-on-purpose"><a class="doc-anchor" href="#cells-are-not-square-on-purpose">§</a>Cells are not square, on purpose</h3>
+<p>Each axis is capped on its own, so a picture larger than the page both ways
+fills the page both ways.  A cell of the 135,659 x 1,000,001 run above is
+then 133 blocks by 977 records, which is not a square of anything.</p>
+<p>That is the right distortion to take here, because the two axes are not the
+same kind of quantity to begin with — one is a block id and the other is a
+position in the record stream — so there is no aspect ratio to preserve.
+Scaling both by the smaller factor instead would draw that run as a strip 135
+cells wide down a page a thousand tall, which throws away the axis with the
+most in it.  <code>--bin</code> already rescales one axis and not the other for the same
+reason.</p>
+<h3 id="why-a-page-rather-than-a-bigger-raster"><a class="doc-anchor" href="#why-a-page-rather-than-a-bigger-raster">§</a>Why a page rather than a bigger raster</h3>
+<p>Cairo measures a page in points, and this gives it one point per cell, the
+way the viewers’ <code>e</code> gives it one point per window pixel: a 1024-cell canvas
+becomes a 1024-point page, a big sheet at the shape of the drawing.  What
+goes on the page is a single greyscale image at exactly that size — one
+device pixel per point — so the reader does no resampling and the file is a
+few hundred kilobytes whatever the picture behind it was.</p>
+<p>A vector page was the other option and is the wrong one at this size: a
+rectangle per inked cell is a million paths, which is a slower page and a
+larger file than the image, and buys sharpness a picture of <em>coverage</em> has no
+use for.</p>
+<h3 id="what-it-costs-to-draw"><a class="doc-anchor" href="#what-it-costs-to-draw">§</a>What it costs to draw</h3>
+<p>One <code>f32</code> per cell — four megabytes at the default page, whatever the
+picture — plus a bit and a weight per column for the row being built, so that
+a bin’s transactions union rather than accumulate.  Both dimensions are still settled
+before the first record, because the canvas has to be allocated; that is the
+same rewind-and-count pass a PNG needs, and <code>main</code>’s <code>survey</code> is the same
+walk for both.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Writer.html" title="struct coloring_bt_transactions::page::Writer">Writer</a></dt><dd>A picture being drawn a transaction at a time, onto a canvas of fixed size.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.DEFAULT_PAGE.html" title="constant coloring_bt_transactions::page::DEFAULT_PAGE">DEFAULT_<wbr>PAGE</a></dt><dd>How many cells the canvas gets each way, and so how many points the page is
+each way.</dd><dt><a class="constant" href="constant.MAX_PAGE.html" title="constant coloring_bt_transactions::page::MAX_PAGE">MAX_<wbr>PAGE</a></dt><dd>The most cells a canvas will take each way: 14,400.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.shade.html" title="fn coloring_bt_transactions::page::shade">shade</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How much of a cell’s black gets through, given that the <code>area</code> picture pixels
+it covers came to <code>ink</code> between them.</dd><dt><a class="fn" href="fn.span.html" title="fn coloring_bt_transactions::page::span">span</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How many of <code>total</code> things fall in cell <code>i</code> of <code>cells</code>, under the mapping
+<code>thing -&gt; thing * cells / total</code> that <a href="struct.Writer.html#method.set" title="method coloring_bt_transactions::page::Writer::set"><code>Writer::set</code></a> and <a href="struct.Writer.html#method.end_row" title="method coloring_bt_transactions::page::Writer::end_row"><code>Writer::end_row</code></a>
+place things by.</dd><dt><a class="fn" href="fn.write_png_gray8.html" title="fn coloring_bt_transactions::page::write_png_gray8">write_<wbr>png_<wbr>gray8</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Writes <code>samples</code> — one byte a pixel, row major, 255 the brightest — to
+<code>path</code> as an 8-bit greyscale PNG.</dd></dl></section></div></main></body></html>

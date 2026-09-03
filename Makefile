@@ -72,6 +72,17 @@ view: ## Open GRAPH=<basename> in the windowed viewer
 	@test -n "$(GRAPH)" || { echo "usage: make view GRAPH=<graph-basename>"; exit 1; }
 	cargo run --release --features gui --bin tree-view -- $(GRAPH)
 
+.PHONY: subtree
+subtree: ## Draw ROOT=<id>'s subtree of GRAPH=<basename> into PDF=<file>
+#	`tree-pdf` writes its page with no C library at all -- the PDF writer is in
+#	the crate -- so unlike `pdf` below this builds anywhere `cargo` does.  The
+#	cut is the caller's: pass ARGS='--depth 12 --fanout 16 --vertical' and so
+#	on; run the binary with -h for the full set.
+	@test -n "$(GRAPH)" && test -n "$(ROOT)" || { \
+		echo "usage: make subtree GRAPH=<graph-basename> ROOT=<id>[,<id>...] [PDF=<file>] [ARGS='--depth 12 ...']"; exit 1; }
+	cargo run --release --bin tree-pdf -- $(GRAPH) --root $(ROOT) $(ARGS) \
+		-o $(or $(PDF),subtree.pdf)
+
 .PHONY: pdf
 pdf: ## Draw RECORDS=<file> as one page in PDF=<file>
 #	`--pdf` draws with Cairo, so it wants a `libcairo` and its headers on the

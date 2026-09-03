@@ -41,6 +41,7 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 |---|---|
 | `coloring-bt-transactions` | the colouring itself: one line per record, or a picture |
 | `tree-jp2` | a webgraph laid out as a tree and written as a lossless JPEG 2000 |
+| `tree-pdf` | one node's subtree, laid out the same way and written as a vector PDF |
 | `tree-view` | that drawing in a window, pannable and zoomable (needs GTK) |
 | `tx-view` | the transactions themselves in that window, coloured (needs GTK) |
 
@@ -49,8 +50,8 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 ```text
 coloring-bt-transactions [<record-limit>|all] [--stats]
                          [--rings|--sets|--weighted] [--sum]
-                         [--png <file>|--pdf <file>|--view]
-                         [--blocks <n>] [--bin <n>]
+                         [--png <file>|--pdf <file>|--fold <file>|--view]
+                         [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>]
                          < records
 ```
 
@@ -135,6 +136,19 @@ cargo run --release --features pdf --bin coloring-bt-transactions -- \
 make pdf RECORDS=<records-file> PDF=out.pdf          # the same
 ```
 
+`--fold <file>` writes the same folded canvas as an 8-bit greyscale PNG rather
+than a page: the one folded output a build without Cairo can produce, since the
+fold is arithmetic and the PNG is the crate's own.  Two knobs go with the
+folded outputs.  `--rows <a>..<b>` draws only that window of records as
+picture rows — every record before the window is still coloured, because a
+colour is the whole history of its coins, but only the window is drawn, which
+is how a page gets one row per *transaction* around something interesting
+instead of a thousand.  `--gain <x>` multiplies every cell's ink before the
+gamma, clamped at full coverage: a weighted colour's mass is a distribution
+over its whole width, so a folded weighted page is genuinely — and uselessly —
+near white without it; the gain is the declared correction, and a caption that
+quotes it is telling the truth about the picture.
+
 `--view` shows that canvas instead of writing it: a GTK window over the picture
 that one can move and zoom, with the panel reading out which block and which
 record the pointer is over, and `e` writing what is on screen to a page of its
@@ -186,6 +200,7 @@ make picture RECORDS=<records-file>                  # the same
 
 ```text
 tree-jp2 <graph-basename> -o <file> [--zoom <n>]
+         [--root <id>[,<id>...] [--depth <n>] [--max-nodes <n>] [--fanout <n>]]
 ```
 
 Reads a [webgraph](https://github.com/vigna/webgraph-rs) BvGraph as a forest,
@@ -195,6 +210,79 @@ node *is* a single sample, and a quantiser spends that first.  The raster is
 built a tile at a time and never exists whole, so a drawing far past the size of
 memory can still be written.  `--zoom` repeats each pixel for graphs small enough
 that a picture a few pixels across is not a picture.
+
+`--root` starts the walk at the nodes one names instead of sweeping the whole
+graph: the picture is those nodes' subtrees and nothing else, cut by the three
+scissors of `tree-pdf` below, which mean here what they mean there.
+
+### `tree-pdf`
+
+```text
+tree-pdf <graph-basename> --root <id>[,<id>...] -o <file>
+         [--depth <n>] [--max-nodes <n>] [--fanout <n>]
+         [--vertical] [--fill] [--width <pt>] [--max-height <pt>]
+         [--mark <id>[,<id>...]] [--labels] [--spine <id>[,<id>...]]
+         [--ancestors <transpose-basename>
+          [--depth-up <n>] [--fanout-up <n>] [--max-nodes-up <n>]]
+```
+
+The drawing `tree-view` shows, cut down to the subtree of a node one names and
+written as a vector page a paper can take.  The graph this exists for has two
+billion nodes and no page holds two billion of anything, so the walk — the same
+breadth-first spanning walk as everywhere else, first arc in wins, later arcs
+dropped and counted — is pruned by three explicit scissors: `--depth` stops it
+so many levels below the root, `--max-nodes` is a budget the breadth-first
+order spends on the *nearest* part of the subtree, and `--fanout` caps how many
+children a node may show, keeping the first and last of a big fan (half the
+allowance each — a block's outputs are a contiguous id range, and what hangs
+off its last output is not what hangs off its first).  A node the cut robbed of
+successors is drawn in a warning colour, filled if it kept drawn children and
+hollow if not, so a pruned frontier cannot pass itself off as a fringe of true
+leaves; everything else is the viewers' ink — filled discs where something
+hangs, hollow rings where nothing does.
+
+Run against the **transpose** graph the same command draws a node's
+*ancestors* — where its value came from rather than where it went — since the
+transpose's successors are the graph's predecessors.
+
+`--vertical` runs depth down the page instead of across it, which is what a
+fan wants (one level deep, a thousand siblings broad) and a chain does not.
+The scale is whatever fits `--width` points across and `--max-height` down,
+whichever binds; the page then hugs the drawing.  `--fill` scales the two
+axes *independently* to exactly the page asked for instead — the way
+`tree-jp2` spends different pixels per unit on depth and breadth — because a
+subtree of this graph is routinely a hundred times broader than it is deep,
+and a uniform scale renders it as a ribbon eleven points tall on a page meant
+to hold a plate.  What it costs is that a distance along one axis stops being
+comparable to a distance along the other, which is why it is a flag and not
+the default.
+
+Three things exist for pointing at *one* object in a drawing of many.
+`--mark` inks the named nodes in a colour of their own — the subject of a
+figure, over whatever else those nodes are.  `--labels` writes each node's
+graph id at its shoulder, neighbours taking turns above and below; for
+drawings of tens of nodes, where a reader can be told which node is which.
+`--spine` names the only nodes the walk may *expand*: everything else is
+drawn one node deep and reported cut.  That is the shape of a chain — a coin
+spent hop after hop, something peeled off each time — whose spine the graph
+alone cannot follow (telling the continuing output from the peeled one takes
+amounts, which a webgraph does not carry), so the caller computes it
+elsewhere and hands it over, and the drawing becomes the chain with its legs
+as fringe instead of a walk that chases every leg into the open economy.
+
+`--ancestors <transpose>` composes both directions about one root — the
+**hourglass**: the root's ancestry on the transpose mirrored on one side,
+its descendants on the other, meeting at the one node they share.  On a
+vertical page that puts where the coin came from above the event and where
+it went below, which is the two questions a forensic figure is asked.  The
+ancestor side takes its own scissors (`--depth-up`, `--fanout-up`,
+`--max-nodes-up`), defaulting to the descendant side's.
+
+The page is written by a small PDF writer of this crate's own — the header,
+four objects, a deflated content stream, a cross-reference table, one
+standard font for the labels — so like everything here but the windows it
+needs no Cairo, no toolkit, nothing installed: a machine with a graph and a
+Rust toolchain can make a figure.
 
 ### `tree-view` and `tx-view`
 

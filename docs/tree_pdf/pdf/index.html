@@ -1,0 +1,37 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="A page, written by hand"><title>tree_pdf::pdf - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="tree_pdf" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module pdf</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../tree_pdf/index.html">tree_<wbr>pdf</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module pdf</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#a-page-written-by-hand" title="A page, written by hand">A page, written by hand</a></li><li><a href="#what-a-page-holds" title="What a page holds">What a page holds</a></li><li><a href="#coordinates" title="Coordinates">Coordinates</a></li><li><a href="#why-the-stream-is-deflated" title="Why the stream is deflated">Why the stream is deflated</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate tree_<wbr>pdf</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">tree_pdf</a></div><h1>Module <span>pdf</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/tree_pdf/tree/pdf.rs.html#1-372">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="a-page-written-by-hand"><a class="doc-anchor" href="#a-page-written-by-hand">§</a>A page, written by hand</h2>
+<p>One PDF page of vector ink — lines and circles — produced with no Cairo, no
+toolkit, no C library at all.  <code>tree-pdf</code> wants to run where nothing is
+installed but a Rust toolchain, and a single page of strokes and fills is a
+small enough corner of PDF to write directly, the way <a href="../../image.rs"><code>image</code></a>
+writes its PNGs: a header, four objects, a cross-reference table, and a
+content stream deflated by the <code>flate2</code> this crate already carries.</p>
+<h2 id="what-a-page-holds"><a class="doc-anchor" href="#what-a-page-holds">§</a>What a page holds</h2>
+<p>A PDF content stream is a program for a very small machine: operands, then
+an operator.  The five this file ever emits are</p>
+<ul>
+<li><code>w</code>, <code>RG</code>, <code>rg</code> — line width, stroke colour, fill colour;</li>
+<li><code>m</code>/<code>l</code> … <code>S</code> — a polyline path, stroked;</li>
+<li><code>m</code>/<code>c</code> … <code>f</code> — a path of cubic Béziers, filled (<code>b</code> closes, fills and
+strokes in one, for the hollow rings).</li>
+</ul>
+<p>A circle is not a PDF primitive, so <a href="struct.Page.html#method.circle" title="method tree_pdf::pdf::Page::circle"><code>Page::circle</code></a> spells one as four
+cubic Béziers with the usual magic handle length <code>k = 0.5523</code> of the
+radius, which bows each quarter-arc to under 0.03% of a true circle —
+far below anything a printer resolves.</p>
+<p>Batching is the caller’s affair and the reason the path operators are
+separate from the paint ones: naming a colour once and filling ten thousand
+circles in one <code>f</code> is what keeps a page of a whole subtree in the hundreds
+of kilobytes.</p>
+<h2 id="coordinates"><a class="doc-anchor" href="#coordinates">§</a>Coordinates</h2>
+<p>PDF measures a page in points from the <em>bottom-left</em> corner, y running up.
+This file takes what it is given: the caller owns the flip from whatever
+screen-like frame its camera thinks in, so that this file has one job.</p>
+<h2 id="why-the-stream-is-deflated"><a class="doc-anchor" href="#why-the-stream-is-deflated">§</a>Why the stream is deflated</h2>
+<p>The operators are decimal text, and a drawing of <code>n</code> nodes is <code>n</code> circles
+of four Béziers each — sixty-odd bytes of digits a curve.  <code>/FlateDecode</code>
+is the compression every PDF reader must implement, <code>flate2</code> is already a
+dependency (the PNGs go through it), and digits compress well; the pages
+this writes come out several times smaller than they are spelled.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Page.html" title="struct tree_pdf::pdf::Page">Page</a></dt><dd>One page being drawn: its size in points, and the content stream so far.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.K.html" title="constant tree_pdf::pdf::K">K</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The Bézier handle that makes four quarter-arcs a circle.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.num.html" title="fn tree_pdf::pdf::num">num</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Numbers are written with two decimals — a fiftieth of a point, which is a
+two-hundredth of a millimetre — and the trailing noise of <code>f64</code> printing
+kept out of the file.</dd></dl></section></div></main></body></html>

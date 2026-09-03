@@ -81,8 +81,16 @@
 //! walk for both.
 
 use std::io;
+use std::io::Write as _;
 
+// Cairo is only the last step -- the surface a finished canvas is painted onto
+// -- so it is the only part of this file behind the `pdf` feature: the fold
+// itself, and the PNG the canvas can be written as instead, build everywhere.
+#[cfg(feature = "pdf")]
 use cairo::{Context, Format, ImageSurface, PdfSurface};
+
+use flate2::write::ZlibEncoder;
+use flate2::{Compression, Crc};
 
 use crate::image;
 
@@ -157,6 +165,9 @@ pub struct Writer {
     rows: usize,
     /// The first block id seen that the picture has no column for, if any.
     escaped: Option<usize>,
+    /// What every cell's ink is multiplied by before shading; see
+    /// [`Writer::set_gain`].
+    gain: f32,
 }
 
 impl Writer {
@@ -218,7 +229,23 @@ impl Writer {
             pending: 0,
             rows: 0,
             escaped: None,
+            gain: 1.0,
         })
+    }
+
+    /// Multiplies every cell's ink by `gain` before it is shaded, clamped at
+    /// full coverage.
+    ///
+    /// The shade curve lifts sparse ink, and for the unweighted picture that
+    /// is enough.  A *weighted* colour's mass, though, is a distribution over
+    /// its whole width --- a cell of a hundred columns holds around a
+    /// hundredth of one row's value however the row is drawn --- so a folded
+    /// weighted page is genuinely, and uselessly, near white.  Gain is the
+    /// declared correction: the shade stands for `gain` times the ink, the
+    /// caller says how much, and a caption that quotes it is telling the
+    /// truth about the picture.  At 1 nothing changes.
+    pub fn set_gain(&mut self, gain: f64) {
+        self.gain = gain as f32;
     }
 
     /// Ink the pixel for `block` in the row being built, with `weight` as its
@@ -366,13 +393,33 @@ impl Writer {
                 if ink <= 0.0 {
                     continue;
                 }
-                out[band + cx] = shade(ink, span(self.width, self.across, cx) * tall);
+                let area = span(self.width, self.across, cx) * tall;
+                // Gain lifts the ink and full coverage caps it: a cell cannot
+                // claim to be more than all ink.
+                out[band + cx] = shade((ink * self.gain).min(area as f32), area);
             }
         }
         out
     }
 
+    /// Close the picture, shade every cell, and write the canvas as an 8-bit
+    /// greyscale PNG: the same drawing `--pdf` puts on a page, as a raster any
+    /// build can write --- no Cairo, no feature, nothing installed.
+    ///
+    /// The shades are a mask (255 is ink), a PNG sample is a brightness (255
+    /// is paper), so the byte is flipped on the way through; everything else
+    /// --- the fold, the gamma, the cell spans --- is exactly the page's.
+    pub fn finish_png(mut self) -> io::Result<()> {
+        self.close()?;
+        let mut samples = self.shades();
+        for s in samples.iter_mut() {
+            *s = 255 - *s;
+        }
+        write_png_gray8(&self.path, self.across, self.down, &samples)
+    }
+
     /// Close the picture, shade every cell, and write the page.
+    #[cfg(feature = "pdf")]
     pub fn finish(mut self) -> io::Result<()> {
         self.close()?;
         let ink = mask(&self.shades(), self.across, self.down)?;
@@ -403,6 +450,7 @@ impl Writer {
 /// A copy rather than a view because an image surface pads its rows out to a
 /// multiple of four bytes and a canvas of shades does not; `stride` is where
 /// that padding is accounted for, and it is the only reason this is a loop.
+#[cfg(feature = "pdf")]
 pub fn mask(shades: &[u8], across: usize, down: usize) -> io::Result<ImageSurface> {
     debug_assert_eq!(shades.len(), across * down);
     let mut ink = ImageSurface::create(Format::A8, across as i32, down as i32)
@@ -426,6 +474,7 @@ pub fn mask(shades: &[u8], across: usize, down: usize) -> io::Result<ImageSurfac
 /// A PDF page is transparent until something covers it, and a picture of black
 /// ink on nothing is a picture of black ink on whatever the reader happens to
 /// put behind it.  A window has the same hole in it, filled the same way.
+#[cfg(feature = "pdf")]
 pub fn paper(cr: &Context) -> Result<(), cairo::Error> {
     cr.set_source_rgb(1.0, 1.0, 1.0);
     cr.paint()
@@ -439,6 +488,7 @@ pub fn paper(cr: &Context) -> Result<(), cairo::Error> {
 /// pixel across.  Once there is room for a cell to be a shape rather than a
 /// sample the window draws it as one instead; see `window`'s own docs for where
 /// the two change over and why the page never reaches it.
+#[cfg(feature = "pdf")]
 pub fn stamp(
     cr: &Context,
     ink: &ImageSurface,
@@ -495,6 +545,51 @@ fn shade(ink: f32, area: usize) -> u8 {
 /// of zero.
 fn span(total: usize, cells: usize, i: usize) -> usize {
     ((i + 1) * total).div_ceil(cells) - (i * total).div_ceil(cells)
+}
+
+/// Writes `samples` --- one byte a pixel, row major, 255 the brightest --- to
+/// `path` as an 8-bit greyscale PNG.
+///
+/// A canvas is at most [`MAX_PAGE`] cells each way, so unlike
+/// [`image`](crate::image)'s writer this neither streams nor filters: the
+/// whole raster is deflated in one go behind a filter byte of 0 per row, which
+/// for a picture this size is bytes nobody will miss.  The chunk machinery ---
+/// length, type, CRC --- is the whole of what PNG asks for.
+fn write_png_gray8(path: &str, width: usize, height: usize, samples: &[u8]) -> io::Result<()> {
+    debug_assert_eq!(samples.len(), width * height);
+
+    let mut raw = Vec::with_capacity(samples.len() + height);
+    for row in samples.chunks(width) {
+        raw.push(0u8); // filter: none
+        raw.extend_from_slice(row);
+    }
+    let mut deflate = ZlibEncoder::new(Vec::new(), Compression::default());
+    deflate.write_all(&raw)?;
+    let idat = deflate.finish()?;
+
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]| {
+        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(body);
+        let mut crc = Crc::new();
+        crc.update(kind);
+        crc.update(body);
+        out.extend_from_slice(&crc.sum().to_be_bytes());
+    };
+
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&(width as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(height as u32).to_be_bytes());
+    // Bit depth 8, colour type 0 (greyscale), deflate, no filter set, no
+    // interlace.
+    ihdr.extend_from_slice(&[8, 0, 0, 0, 0]);
+
+    let mut out = Vec::with_capacity(idat.len() + 128);
+    out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &idat);
+    chunk(&mut out, b"IEND", &[]);
+    std::fs::write(path, &out)
 }
 
 #[cfg(test)]
@@ -711,6 +806,7 @@ pub mod tests {
     }
 
     /// The page is written, is a PDF, and is the canvas's size in points.
+    #[cfg(feature = "pdf")]
     #[test]
     fn the_page_is_a_pdf_of_the_canvas() {
         let path = scratch("page");
@@ -724,6 +820,39 @@ pub mod tests {
             inflated(&bytes).contains("/MediaBox [ 0 0 4 4 ]"),
             "not a 4 by 4 page"
         );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The same canvas as a PNG: decodes to the canvas's size, with paper
+    /// white, ink black, and the diagonal where the fold put it --- checked
+    /// against a decoder that shares no code with the writer.
+    #[test]
+    fn the_fold_can_be_a_png() {
+        let path = scratch("fold");
+        let mut w = diagonal(4);
+        w.path = path.clone();
+        w.finish_png().unwrap();
+
+        let decoder =
+            png::Decoder::new(io::BufReader::new(std::fs::File::open(&path).unwrap()));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (4, 4));
+        assert_eq!(info.color_type, png::ColorType::Grayscale);
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+
+        let samples = &buf[..info.buffer_size()];
+        // `diagonal` is an 8 x 8 picture on a 4-cell canvas: each diagonal
+        // cell covers two inked pixels of its four, so its sample is half
+        // coverage through the one shade curve, and everything else is paper.
+        let half = 255 - image::shade(0.5);
+        for cy in 0..4 {
+            for cx in 0..4 {
+                let want = if cx == cy { half } else { 255 };
+                assert_eq!(samples[cy * 4 + cx], want, "cell ({cx}, {cy})");
+            }
+        }
         std::fs::remove_file(&path).ok();
     }
 

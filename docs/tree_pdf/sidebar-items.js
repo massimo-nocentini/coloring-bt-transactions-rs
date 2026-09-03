@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BATCH","CUT","DEFAULT_MAX_HEIGHT","DEFAULT_MAX_NODES","DEFAULT_WIDTH","INK","INNER","LABEL","LEAF","LINK","MARGIN","MARK","MAX_RADIUS","MIN_HOLLOW","MIN_RADIUS","PAPER","USAGE"],"fn":["draw","main","run"],"mod":["camera","forest","pdf","quadtree","scene"],"struct":["Layout","Part"],"type":["Rgb"]};

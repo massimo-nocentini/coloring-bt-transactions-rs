@@ -118,7 +118,8 @@ const TILE: usize = 1024;
 /// full-size picture.
 const RESOLUTIONS: i32 = 6;
 
-const USAGE: &str = "usage: tree-jp2 <graph-basename> -o <file> [--zoom <n>]";
+const USAGE: &str = "usage: tree-jp2 <graph-basename> -o <file> [--zoom <n>]\n\
+       [--root <id>[,<id>...] [--depth <n>] [--max-nodes <n>] [--fanout <n>]]";
 
 /// The drawing as pixels: what row and column each node landed on, and how big
 /// the grid holding them is.
@@ -343,6 +344,8 @@ fn run() -> Result<(), String> {
     let mut basenames: Vec<&str> = Vec::new();
     let mut out_path: Option<&str> = None;
     let mut zoom = DEFAULT_ZOOM;
+    let mut roots: Vec<usize> = Vec::new();
+    let mut prune = forest::Prune::default();
 
     let mut i = 0;
     while i < argv.len() {
@@ -358,6 +361,42 @@ fn run() -> Result<(), String> {
                 if zoom == 0 {
                     return Err("--zoom 0: a node is at least one pixel".to_string());
                 }
+            }
+            "--root" => {
+                i += 1;
+                let v = argv.get(i).ok_or_else(|| format!("--root wants a node id\n{USAGE}"))?;
+                for part in v.split(',') {
+                    roots.push(
+                        part.parse::<usize>()
+                            .map_err(|_| format!("--root {part}: not a node id"))?,
+                    );
+                }
+            }
+            "--depth" => {
+                i += 1;
+                let v = argv.get(i).ok_or_else(|| format!("--depth wants a number\n{USAGE}"))?;
+                prune.depth =
+                    Some(v.parse::<usize>().map_err(|_| format!("--depth {v}: not a number"))?);
+            }
+            "--max-nodes" => {
+                i += 1;
+                let v =
+                    argv.get(i).ok_or_else(|| format!("--max-nodes wants a number\n{USAGE}"))?;
+                prune.max_nodes = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .ok_or_else(|| format!("--max-nodes {v}: wants a positive number"))?;
+            }
+            "--fanout" => {
+                i += 1;
+                let v = argv.get(i).ok_or_else(|| format!("--fanout wants a number\n{USAGE}"))?;
+                prune.fanout = Some(
+                    v.parse::<usize>()
+                        .ok()
+                        .filter(|&n| n > 0)
+                        .ok_or_else(|| format!("--fanout {v}: wants a positive number"))?,
+                );
             }
             "-h" | "--help" => return Err(USAGE.to_string()),
             other if other.starts_with('-') => return Err(format!("unknown flag {other}\n{USAGE}")),
@@ -388,12 +427,21 @@ fn run() -> Result<(), String> {
         .load()
         .map_err(|e| format!("{graph_name}: {e:#}"))?;
 
-    let mut arena = Arena::with_capacity(graph.num_nodes() + 1);
-    let built = forest::build(&graph, &mut arena)?;
+    // Named roots draw those subtrees, pruned as asked; no roots is the whole
+    // graph read as a forest, exactly as before the flags existed.
+    let (root, arena) = if roots.is_empty() {
+        let mut arena = Arena::with_capacity(graph.num_nodes() + 1);
+        let built = forest::build(&graph, &mut arena)?;
+        eprintln!("{}", built.summary(graph.num_nodes()));
+        (built.root, arena)
+    } else {
+        let mut arena = Arena::new();
+        let sampled = forest::build_rooted(&graph, &mut arena, &roots, &prune)?;
+        eprintln!("{}", sampled.summary());
+        (sampled.root, arena)
+    };
 
-    eprintln!("{}", built.summary(graph.num_nodes()));
-
-    let arena = forest::lay_out(arena, built.root);
+    let arena = forest::lay_out(arena, root);
     let picture = plot(&arena)?;
 
     let (width, height) = (picture.width * zoom, picture.height * zoom);

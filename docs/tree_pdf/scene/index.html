@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="The drawing, flattened"><title>tree_pdf::scene - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="tree_pdf" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module scene</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../tree_pdf/index.html">tree_<wbr>pdf</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module scene</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#the-drawing-flattened" title="The drawing, flattened">The drawing, flattened</a></li><li><a href="#pre-order-and-what-it-buys" title="Pre-order, and what it buys">Pre-order, and what it buys</a></li><li><a href="#the-node-the-graph-does-not-have" title="The node the graph does not have">The node the graph does not have</a></li><li><a href="#the-walk-carries-its-own-stack" title="The walk carries its own stack">The walk carries its own stack</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate tree_<wbr>pdf</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">tree_pdf</a></div><h1>Module <span>scene</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/tree_pdf/tree/scene.rs.html#1-377">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="the-drawing-flattened"><a class="doc-anchor" href="#the-drawing-flattened">§</a>The drawing, flattened</h2>
+<p>Between the layout and the window there is one more shape to give the tree.
+The arena the layout works in is built for the layout: every node carries a
+level, a child number, contour links, a <code>Vec</code> of children.  A window wants
+none of that.  It wants, a hundred times a second, “which nodes are on
+screen”, and then for each of them a place, a colour, and something to say
+when it is clicked.</p>
+<p>So the arena is walked once, into flat arrays, and dropped.  What is kept is
+two vectors and a <a href="../quadtree/struct.Quadtree.html" title="struct tree_pdf::quadtree::Quadtree"><code>Quadtree</code></a> over them:</p>
+<ul>
+<li><code>xy</code>, a centre per node, which is what the index and the ink both want and
+the only thing either of them wants often.</li>
+<li><code>placed</code>, a node number and two links per node, touched only for the few
+nodes a frame actually draws.</li>
+</ul>
+<p>The split is not tidiness.  A coarse frame reads <em>every</em> visible node’s
+position and none of its metadata, so keeping the positions apart is the
+difference between walking 16 bytes a node and walking 32.</p>
+<h2 id="pre-order-and-what-it-buys"><a class="doc-anchor" href="#pre-order-and-what-it-buys">§</a>Pre-order, and what it buys</h2>
+<p>The walk is depth first, and a node’s descendants are therefore the entries
+that follow it, contiguously, up to <a href="struct.Placed.html#structfield.subtree_end" title="field tree_pdf::scene::Placed::subtree_end"><code>Placed::subtree_end</code></a>.  A subtree is a
+<em>range</em>.  That is the whole of the machinery behind selecting one: framing a
+subtree is a scan of a slice, asking whether a node is in the selection is
+two comparisons, and neither needs the arena, which by then is gone.</p>
+<p>Ranges also mean the ends can be filled in by one backward sweep instead of
+by the walk: in pre-order a parent always precedes its children, so passing
+down the array from the end and pushing each node’s end up to its parent
+settles every one of them.</p>
+<h2 id="the-node-the-graph-does-not-have"><a class="doc-anchor" href="#the-node-the-graph-does-not-have">§</a>The node the graph does not have</h2>
+<p><a href="../index.html" title="mod tree_pdf"><code>forest</code></a> may add a root standing for nothing, to give the layout the
+single root it needs.  It is not in the drawing, so it is not in the scene:
+the walk starts at its children instead, which become parentless nodes here
+exactly as the several roots of the graph are.</p>
+<h2 id="the-walk-carries-its-own-stack"><a class="doc-anchor" href="#the-walk-carries-its-own-stack">§</a>The walk carries its own stack</h2>
+<p>A chain of transactions spending each other is a tree a million levels deep,
+and a depth-first walk that recurses is a million stack frames.  The stack
+here is a <code>Vec</code>, which has no such ceiling — the same reason <code>forest</code> asks
+the layout crate for its flat entry point.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Placed.html" title="struct tree_pdf::scene::Placed">Placed</a></dt><dd>Everything about a node that is not its position.</dd><dt><a class="struct" href="struct.Scene.html" title="struct tree_pdf::scene::Scene">Scene</a></dt><dd>A laid-out drawing, ready to be looked at.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.NO_PARENT.html" title="constant tree_pdf::scene::NO_PARENT">NO_<wbr>PARENT</a></dt><dd>What a root has instead of a parent.</dd></dl></section></div></main></body></html>

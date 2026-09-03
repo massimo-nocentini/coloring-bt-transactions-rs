@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["FRAME_MARGIN","MAX_SCALE","MIN_FRAMED_EXTENT","MIN_SCALE","ZOOM_PER_NOTCH"],"struct":["Camera","Rect"]};

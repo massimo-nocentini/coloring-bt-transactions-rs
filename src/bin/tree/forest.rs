@@ -96,6 +96,14 @@
 //! it visits independent subtrees in a different order; it takes no callbacks.
 //! Nothing here wants any.
 
+// Shared by the drawing binaries the way `scene` and `camera` are, and like
+// them compiled into each: whichever entry points a binary does not call read
+// as dead there -- `tree-pdf` never sweeps the whole graph, `tree-jp2` may
+// never prune -- so the lint goes rather than the surface.
+#![allow(dead_code)]
+
+use std::collections::{HashMap, HashSet};
+
 use non_layered_tidy_trees::{flat::layout_flat, Arena, LayoutInput, NodeId};
 use webgraph::prelude::RandomAccessGraph;
 
@@ -222,16 +230,240 @@ pub fn build<G: RandomAccessGraph>(graph: &G, arena: &mut Arena) -> Result<Fores
     })
 }
 
+/// Where a walk from a chosen root is told to stop.
+///
+/// The whole graph is billions of nodes and a page is a few hundred points
+/// across, so a drawing of *one node's subtree* is only as good as its cut.
+/// Three independent scissors, each `None`/`MAX` by default:
+///
+/// - `depth`: levels drawn below the root, the root itself being level 0.  A
+///   node on the last level is drawn, and what hangs under it is not.
+/// - `max_nodes`: how many nodes the whole drawing may hold, roots included.
+///   The walk is breadth first, so what a budget buys is the *nearest* part of
+///   the subtree rather than one long arm of it.
+/// - `fanout`: how many children a node may have drawn under it.  A hub with a
+///   million successors is a fact worth stating and not worth a million arcs of
+///   ink; the first and last of them in successor order stand for the rest,
+///   half the allowance each.  Both ends rather than one head, because a
+///   block's outputs are a contiguous id range and what hangs off its *last*
+///   output is a different thing from what hangs off its first — the long
+///   2001-output fans of this graph chain into each other through their final
+///   output, and a head-only cut would draw every one of them as a dead star.
+///
+/// Whatever gets cut, the node whose successors were left out is reported in
+/// [`Sampled::truncated`], so a drawing can say where it stops short rather
+/// than passing a pruned frontier off as leaves.
+pub struct Prune {
+    pub depth: Option<usize>,
+    pub max_nodes: usize,
+    pub fanout: Option<usize>,
+    /// When set, only these nodes are expanded; everything else is drawn and
+    /// left unexpanded (and reported cut when that hides successors).  This is
+    /// the shape of a *chain*: a caller that knows the spine of a peeling
+    /// chain --- knowledge the graph alone does not carry, since telling the
+    /// change output from the payment takes amounts --- names it, and the
+    /// drawing becomes the spine with every leg drawn one node deep, instead
+    /// of a walk that chases each leg into the open economy and drowns.
+    pub expand: Option<HashSet<usize>>,
+}
+
+impl Default for Prune {
+    fn default() -> Self {
+        Prune { depth: None, max_nodes: usize::MAX, fanout: None, expand: None }
+    }
+}
+
+/// What a rooted walk produced, beyond the arena itself.
+pub struct Sampled {
+    pub root: NodeId,
+    /// Whether a root standing for no node was added over several chosen roots.
+    pub synthetic_root: bool,
+    /// Nodes drawn, roots included.
+    pub nodes: usize,
+    /// Arcs into nodes already drawn: the DAG's second parents, dropped exactly
+    /// as [`build`] drops them.
+    pub dropped_arcs: u64,
+    /// Graph ids of drawn nodes with successors the cut left out — by depth, by
+    /// fanout, or by the node budget.  They are drawn like any node, but they
+    /// are *not* leaves of the graph, and a caller can ink them apart.
+    pub truncated: HashSet<usize>,
+}
+
+impl Sampled {
+    /// What a run has to say about the cut, for stderr.
+    pub fn summary(&self) -> String {
+        let mut out = format!("{} node(s) drawn", self.nodes);
+        if self.dropped_arcs > 0 {
+            out.push_str(&format!(
+                ", {} arc(s) into already-drawn nodes not drawn",
+                self.dropped_arcs
+            ));
+        }
+        if !self.truncated.is_empty() {
+            out.push_str(&format!(
+                ", {} node(s) cut before their successors",
+                self.truncated.len()
+            ));
+        }
+        out
+    }
+}
+
+/// Builds the subtree hanging under each of `roots` into an arena, pruned by
+/// `prune`, rooted at a single node.
+///
+/// The same breadth-first walk as [`build`], started at the nodes the caller
+/// names instead of swept over node order: the first arc to reach a node is
+/// its edge, every later arc into it is dropped and counted.  On the transpose
+/// graph the same call draws the *ancestors* of a node — where its value came
+/// from — since the transpose's successors are the graph's predecessors.
+///
+/// Visited nodes live in a map rather than in a vector a slot per node,
+/// because a pruned walk touches a bounded neighbourhood of a graph whose node
+/// count may be nine of memory's ten figures.
+///
+/// A root already drawn under an earlier root is passed over — it is in the
+/// picture, under the parent that reached it first.  A root the node budget is
+/// too spent to place is an error rather than a silently smaller picture: the
+/// caller asked for that subtree by name.
+pub fn build_rooted<G: RandomAccessGraph>(
+    graph: &G,
+    arena: &mut Arena,
+    roots: &[usize],
+    prune: &Prune,
+) -> Result<Sampled, String> {
+    let n = graph.num_nodes();
+
+    if roots.is_empty() {
+        return Err("no root to draw from".to_string());
+    }
+    if prune.max_nodes == 0 {
+        return Err("a budget of 0 nodes draws nothing".to_string());
+    }
+    for &r in roots {
+        if r >= n {
+            return Err(format!("node {r} is not in a graph of {n} nodes"));
+        }
+    }
+
+    let mut ids: HashMap<usize, NodeId> = HashMap::new();
+    let mut dropped_arcs = 0u64;
+    let mut truncated: HashSet<usize> = HashSet::new();
+    let mut placed_roots: Vec<NodeId> = Vec::new();
+
+    // (node, its level below its root); breadth first for the reason `build`
+    // is, and for what it makes of a budget — see [`Prune::max_nodes`].
+    let mut queue: Vec<(usize, usize)> = Vec::new();
+
+    for &r in roots {
+        if ids.contains_key(&r) {
+            // Reached from an earlier root: already in the picture.
+            continue;
+        }
+        if ids.len() >= prune.max_nodes {
+            return Err(format!(
+                "the node budget was spent before root {r} was reached; raise --max-nodes"
+            ));
+        }
+
+        let id = arena.add_node(r + 1, DIAMETER, DIAMETER, SUBTREE_MARGIN, false);
+        ids.insert(r, id);
+        placed_roots.push(id);
+
+        queue.clear();
+        queue.push((r, 0));
+
+        let mut head = 0;
+        while head < queue.len() {
+            let (u, level) = queue[head];
+            head += 1;
+            let parent = ids[&u];
+
+            if prune.depth.is_some_and(|limit| level >= limit)
+                || prune.expand.as_ref().is_some_and(|spine| !spine.contains(&u))
+            {
+                // Drawn, not expanded.  Whether anything was cut is one
+                // outdegree probe, so the report never calls a true leaf cut.
+                if graph.outdegree(u) > 0 {
+                    truncated.insert(u);
+                }
+                continue;
+            }
+
+            // The successors that are not already in the picture, gathered so
+            // that the fanout can be taken off both ends of them.
+            let mut fresh: Vec<usize> = Vec::new();
+            for w in graph.successors(u) {
+                if ids.contains_key(&w) {
+                    dropped_arcs += 1;
+                } else {
+                    fresh.push(w);
+                }
+            }
+
+            if let Some(k) = prune.fanout {
+                if fresh.len() > k {
+                    // The first and last of the fan stand for the rest — see
+                    // [`Prune::fanout`] for why not the head alone.
+                    truncated.insert(u);
+                    let head = k.div_ceil(2);
+                    fresh.drain(head..fresh.len() - (k - head));
+                }
+            }
+
+            for w in fresh {
+                if ids.len() >= prune.max_nodes {
+                    truncated.insert(u);
+                    break;
+                }
+                let child = arena.add_node(w + 1, DIAMETER, DIAMETER, SUBTREE_MARGIN, false);
+                ids.insert(w, child);
+                arena.push_child(parent, child);
+                queue.push((w, level + 1));
+            }
+        }
+    }
+
+    let synthetic_root = placed_roots.len() > 1;
+    let root = if synthetic_root {
+        // Zero by zero, exactly as in [`build`]: the chosen roots land where
+        // they would have landed on their own.
+        let r = arena.add_node(0, 0.0, 0.0, 0.0, true);
+        arena.set_children(r, &placed_roots);
+        r
+    } else {
+        placed_roots[0]
+    };
+
+    Ok(Sampled {
+        root,
+        synthetic_root,
+        nodes: ids.len(),
+        dropped_arcs,
+        truncated,
+    })
+}
+
 /// Places every node of `arena`, depth running left to right.
 ///
 /// The layout is what the module's last section describes; this is only where it
 /// is asked for.  The arena goes over and comes back rather than being borrowed,
 /// so a caller cannot look at it half laid out: the arena it had is gone, and the
 /// one it gets back is finished.
-pub fn lay_out(mut arena: Arena, root: NodeId) -> Arena {
+pub fn lay_out(arena: Arena, root: NodeId) -> Arena {
+    lay_out_oriented(arena, root, false)
+}
+
+/// [`lay_out`], with the axes the caller's to choose: depth runs left to right,
+/// or down the page when `vertically` is set.
+///
+/// The choice matters once a drawing is a page rather than a window: a chain is
+/// deep and narrow and reads left to right, while a hub's fan is one level deep
+/// and thousands of siblings broad, and drawn horizontally it is a ribbon a few
+/// points wide.  Turned on its side it is a figure.
+pub fn lay_out_oriented(mut arena: Arena, root: NodeId, vertically: bool) -> Arena {
     let mut input = LayoutInput::new(root);
-    // Depth left to right, which is what makes the drawing horizontal.
-    input.vertically = false;
+    input.vertically = vertically;
     layout_flat(&mut arena, &input);
     arena
 }
@@ -411,6 +643,147 @@ mod tests {
             "3 nodes, 1 root(s)\n\
              1 arc(s) not drawn: they would have given a node a second parent"
         );
+    }
+
+    /// The rooted walk draws the subtree the caller names and nothing else,
+    /// counting the DAG's second parents exactly as the full sweep does.
+    #[test]
+    fn a_rooted_walk_draws_one_subtree() {
+        //  0 -> 1 -> {3, 4}, 0 -> 2 -> 5, 1 -> 5 dropped as a second parent
+        //  (2 comes first in successor order), 6 -> 7 untouched.
+        let g = graph_of(8, &[(0, 1), (0, 2), (1, 3), (1, 4), (1, 5), (2, 5), (6, 7)]);
+
+        let mut arena = Arena::new();
+        let sampled = build_rooted(&g, &mut arena, &[0], &Prune::default()).unwrap();
+
+        assert_eq!(sampled.nodes, 6, "0..=5 and neither of 6, 7");
+        assert_eq!(sampled.dropped_arcs, 1, "the second parent of 5");
+        assert!(sampled.truncated.is_empty(), "nothing was cut");
+        assert!(!sampled.synthetic_root, "one root needs no help");
+
+        let arena = lay_out(arena, sampled.root);
+        let drawn: Vec<usize> = drawing(&arena).iter().map(|&(v, ..)| v).collect();
+        assert_eq!(drawn, [0, 1, 2, 3, 4, 5]);
+    }
+
+    /// The three scissors: each cuts where it says, and the node whose
+    /// successors were left out is named rather than passed off as a leaf.
+    #[test]
+    fn the_cut_is_reported_not_hidden() {
+        // A chain with a fan in the middle: 0 -> 1 -> {2, 3, 4}, 2 -> 5 -> 6.
+        let g = graph_of(7, &[(0, 1), (1, 2), (1, 3), (1, 4), (2, 5), (5, 6)]);
+
+        // Depth: level 2 is drawn, level 3 is not, and 2 is named as cut.
+        let mut arena = Arena::new();
+        let sampled = build_rooted(
+            &g,
+            &mut arena,
+            &[0],
+            &Prune { depth: Some(2), ..Prune::default() },
+        )
+        .unwrap();
+        assert_eq!(sampled.nodes, 5, "0, 1 and the fan");
+        assert_eq!(sampled.truncated, HashSet::from([2]), "3 and 4 are true leaves");
+
+        // Fanout: two of the three children — the first and the last of the
+        // fan, not the head alone — and the parent named.
+        let mut arena = Arena::new();
+        let sampled = build_rooted(
+            &g,
+            &mut arena,
+            &[1],
+            &Prune { fanout: Some(2), ..Prune::default() },
+        )
+        .unwrap();
+        assert_eq!(sampled.nodes, 5, "1, then 2 and 4, then 2's chain");
+        assert_eq!(sampled.truncated, HashSet::from([1]));
+
+        let arena_holds: Vec<usize> = {
+            let mut v: Vec<usize> =
+                arena.iter().filter(|n| !n.isdummy).map(|n| n.idx - 1).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(arena_holds, [1, 2, 4, 5, 6], "3 is the one the cut took");
+
+        // Budget: breadth first, so what three nodes buy is the nearest three.
+        let mut arena = Arena::new();
+        let sampled = build_rooted(
+            &g,
+            &mut arena,
+            &[0],
+            &Prune { max_nodes: 3, ..Prune::default() },
+        )
+        .unwrap();
+        assert_eq!(sampled.nodes, 3, "0, 1 and 1's first child");
+        // Both 1 and 2 still had successors when the budget ran out, and both
+        // say so.
+        assert_eq!(sampled.truncated, HashSet::from([1, 2]));
+    }
+
+    /// A named spine is expanded and nothing else is: the drawing is the
+    /// chain with its legs one node deep, each leg with hidden successors
+    /// reported cut.
+    #[test]
+    fn a_spine_walks_alone() {
+        // A peel chain 0 -> {1, 2} -> {3, 4} -> {5, 6}, where every leg (1, 3)
+        // also spends onward and would drag the walk with it.
+        let g = graph_of(9, &[(0, 1), (0, 2), (2, 3), (2, 4), (4, 5), (4, 6), (1, 7), (3, 8)]);
+
+        let mut arena = Arena::new();
+        let sampled = build_rooted(
+            &g,
+            &mut arena,
+            &[0],
+            &Prune { expand: Some(HashSet::from([0, 2, 4])), ..Prune::default() },
+        )
+        .unwrap();
+
+        assert_eq!(sampled.nodes, 7, "the spine and its legs, not the legs' spends");
+        assert_eq!(
+            sampled.truncated,
+            HashSet::from([1, 3]),
+            "the legs that spend onward are reported cut; the sinks are not"
+        );
+    }
+
+    /// Several roots hang from an added node; a root inside an earlier root's
+    /// subtree is already in the picture and is passed over.
+    #[test]
+    fn several_roots_and_a_swallowed_one() {
+        let g = graph_of(5, &[(0, 1), (2, 3)]);
+
+        let mut arena = Arena::new();
+        let sampled = build_rooted(&g, &mut arena, &[0, 1, 2], &Prune::default()).unwrap();
+
+        assert_eq!(sampled.nodes, 4, "1 was reached under 0, and 4 is nobody's");
+        assert!(sampled.synthetic_root, "0 and 2 need a node to hang from");
+        assert!(arena[sampled.root].isdummy);
+    }
+
+    /// What the walk refuses: no roots, a root the graph does not have, and a
+    /// budget spent before a named root is reached.
+    #[test]
+    fn what_a_rooted_walk_refuses() {
+        let g = graph_of(3, &[(0, 1), (0, 2)]);
+
+        let mut arena = Arena::new();
+        assert!(build_rooted(&g, &mut arena, &[], &Prune::default()).is_err());
+
+        let mut arena = Arena::new();
+        assert!(build_rooted(&g, &mut arena, &[3], &Prune::default()).is_err());
+
+        let mut arena = Arena::new();
+        let spent = build_rooted(
+            &g,
+            &mut arena,
+            &[0, 1],
+            &Prune { max_nodes: 1, ..Prune::default() },
+        );
+        // The budget holds one node, so 0 is drawn and 1 is never reached
+        // under it; a named root that cannot be placed is an error rather
+        // than a silently smaller picture.
+        assert!(spent.is_err());
     }
 
     /// A chain of 200 000 nodes, laid out on an ordinary stack.

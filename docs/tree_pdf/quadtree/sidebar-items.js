@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CAPACITY","MAX_DEPTH","NO_CHILDREN"],"enum":["Patch"],"fn":["quadrant","quarter"],"struct":["Cell","Quadtree"]};

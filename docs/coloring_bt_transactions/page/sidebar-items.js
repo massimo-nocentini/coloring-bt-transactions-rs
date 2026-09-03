@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_PAGE","MAX_PAGE"],"fn":["shade","span","write_png_gray8"],"struct":["Writer"]};

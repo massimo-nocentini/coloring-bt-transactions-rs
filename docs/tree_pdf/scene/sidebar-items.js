@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["NO_PARENT"],"struct":["Placed","Scene"]};

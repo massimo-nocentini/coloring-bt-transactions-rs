@@ -1,9 +1,9 @@
 (function() {
-    const implementors = Object.fromEntries([["coloring_bt_transactions",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.0/core/fmt/trait.Debug.html\" title=\"trait core::fmt::Debug\">Debug</a> for <a class=\"struct\" href=\"coloring_bt_transactions/sexp/struct.Input.html\" title=\"struct coloring_bt_transactions::sexp::Input\">Input</a>",0]]]]);
+    const implementors = Object.fromEntries([["coloring_bt_transactions",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.0/core/fmt/trait.Debug.html\" title=\"trait core::fmt::Debug\">Debug</a> for <a class=\"struct\" href=\"coloring_bt_transactions/sexp/struct.Input.html\" title=\"struct coloring_bt_transactions::sexp::Input\">Input</a>",0]]],["tree_pdf",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.0/core/fmt/trait.Debug.html\" title=\"trait core::fmt::Debug\">Debug</a> for <a class=\"struct\" href=\"tree_pdf/camera/struct.Camera.html\" title=\"struct tree_pdf::camera::Camera\">Camera</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.0/core/fmt/trait.Debug.html\" title=\"trait core::fmt::Debug\">Debug</a> for <a class=\"struct\" href=\"tree_pdf/quadtree/struct.Cell.html\" title=\"struct tree_pdf::quadtree::Cell\">Cell</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.0/core/fmt/trait.Debug.html\" title=\"trait core::fmt::Debug\">Debug</a> for <a class=\"struct\" href=\"tree_pdf/scene/struct.Placed.html\" title=\"struct tree_pdf::scene::Placed\">Placed</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.0/core/fmt/trait.Debug.html\" title=\"trait core::fmt::Debug\">Debug</a> for <a class=\"struct\" href=\"tree_pdf/camera/struct.Rect.html\" title=\"struct tree_pdf::camera::Rect\">Rect</a>",0],["impl&lt;'a&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.0/core/fmt/trait.Debug.html\" title=\"trait core::fmt::Debug\">Debug</a> for <a class=\"enum\" href=\"tree_pdf/quadtree/enum.Patch.html\" title=\"enum tree_pdf::quadtree::Patch\">Patch</a>&lt;'a&gt;",0]]]]);
     if (window.register_implementors) {
         window.register_implementors(implementors);
     } else {
         window.pending_implementors = implementors;
     }
 })()
-//{"start":59,"fragment_lengths":[317]}
+//{"start":59,"fragment_lengths":[317,1330]}

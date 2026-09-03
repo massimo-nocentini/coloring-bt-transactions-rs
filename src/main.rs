@@ -155,10 +155,11 @@
 mod camera;
 mod colorset;
 mod image;
-// The page `--pdf` writes, which needs Cairo and so needs the feature that asks
-// for it.  Declared here rather than beside the viewers because it is this
-// binary's output, not theirs.
-#[cfg(feature = "pdf")]
+// The canvas `--pdf` and `--fold` fold the picture onto.  The fold itself is
+// plain arithmetic and builds everywhere; only the Cairo surface `--pdf`
+// paints it onto sits behind the feature, inside the module.  Declared here
+// rather than beside the viewers because it is this binary's output, not
+// theirs.
 mod page;
 mod poly;
 mod sexp;
@@ -252,6 +253,9 @@ enum Output {
     /// [`page`].
     #[cfg(feature = "pdf")]
     Page(page::Writer),
+    /// The same canvas, written as a greyscale PNG instead of a page: the one
+    /// folded output a build without Cairo can produce.
+    Fold(page::Writer),
     /// The same canvas again, shown in a window rather than written anywhere.
     /// See [`window`].
     #[cfg(feature = "gui")]
@@ -321,6 +325,10 @@ impl Output {
                 store.for_each_term(color, |exponent, weight| sheet.set(exponent, weight));
                 sheet.end_transaction()
             }
+            Output::Fold(sheet) => {
+                store.for_each_term(color, |exponent, weight| sheet.set(exponent, weight));
+                sheet.end_transaction()
+            }
             // The window folds the picture the way the page does and then shows
             // it, so up to here the two are the same run.
             #[cfg(feature = "gui")]
@@ -350,6 +358,7 @@ impl Output {
             Output::Picture(picture) => picture.finish(),
             #[cfg(feature = "pdf")]
             Output::Page(sheet) => sheet.finish(),
+            Output::Fold(sheet) => sheet.finish_png(),
             #[cfg(feature = "gui")]
             Output::Window { canvas, stem } => {
                 window::show(canvas, &stem).map_err(io::Error::other)
@@ -360,8 +369,8 @@ impl Output {
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
                      [--rings|--sets|--weighted] [--sum] \
-                     [--png <file>|--pdf <file>|--view] \
-                     [--blocks <n>] [--bin <n>] < records";
+                     [--png <file>|--pdf <file>|--fold <file>|--view] \
+                     [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] < records";
 
 /// Which of the three pictures was asked for.
 ///
@@ -378,6 +387,9 @@ enum Sheet {
     /// `--pdf`: the same, folded onto a canvas that fits on a page.  See the
     /// `page` module.
     Folded,
+    /// `--fold`: the same canvas, written as a greyscale PNG --- the folded
+    /// picture a build without Cairo can still produce.
+    FoldedPng,
     /// `--view`: the same canvas, in a window one can move and zoom.  See the
     /// `window` module.
     Shown,
@@ -389,6 +401,7 @@ impl Sheet {
         match self {
             Sheet::Raster => "--png",
             Sheet::Folded => "--pdf",
+            Sheet::FoldedPng => "--fold",
             Sheet::Shown => "--view",
         }
     }
@@ -463,26 +476,48 @@ fn plan(
     picture: Option<(Sheet, String)>,
     blocks: Option<usize>,
     bin: Option<usize>,
+    window: Option<(usize, usize)>,
+    gain: Option<f64>,
     ink: image::Ink,
     form: Line,
     limit: usize,
-) -> Result<(Output, Box<dyn io::Read>), String> {
+) -> Result<(Output, Box<dyn io::Read>, usize, usize), String> {
     // Held as a file when standard input is one, so that `survey` can read the
     // records and put them back.
     let mut source = rewindable_stdin();
 
     let Some((sheet, path)) = picture else {
-        if let Some(name) = blocks.map(|_| "--blocks").or(bin.map(|_| "--bin")) {
+        if let Some(name) = blocks
+            .map(|_| "--blocks")
+            .or(bin.map(|_| "--bin"))
+            .or(window.map(|_| "--rows"))
+        {
             return Err(format!(
-                "{} describes the picture, so it needs --png <file>, --pdf <file> \
-                 or --view",
+                "{} describes the picture, so it needs --png <file>, --pdf <file>, \
+                 --fold <file> or --view",
                 name
             ));
         }
         return Ok((
             Output::text(Box::new(io::stdout().lock()), form),
             records_from(source),
+            0,
+            limit,
         ));
+    };
+
+    // A row window bounds the run as well as the picture: the colors of every
+    // record before the window still have to be computed --- a color is the
+    // whole history of its coins --- but nothing past its end is wanted.
+    let (skip, limit) = match window {
+        None => (0, limit),
+        Some((a, b)) if a < b => (a, limit.min(b)),
+        Some((a, b)) => {
+            return Err(format!(
+                "--rows {}..{} is a window with nothing in it: the start has to come first",
+                a, b
+            ))
+        }
     };
 
     // Said before the survey rather than after it, so that a build missing what
@@ -520,6 +555,19 @@ fn plan(
     if blocks == Some(0) {
         return Err("--blocks 0 leaves the picture no columns to draw in".into());
     }
+    // Gain shades the folded canvas, so a picture that is not folded has
+    // nothing for it to do; refused rather than quietly dropped.
+    let gain = match gain {
+        None => 1.0,
+        Some(g) if sheet == Sheet::Raster => {
+            let _ = g;
+            return Err("--gain shades the folded canvas; it goes with --pdf, --fold or --view, \
+                        not --png"
+                .into());
+        }
+        Some(g) if g > 0.0 && g.is_finite() => g,
+        Some(g) => return Err(format!("--gain {} is not a usable factor", g)),
+    };
 
     // Both dimensions, before a single pixel: the header names the size in
     // front of the picture and is not gone back to afterwards, so the records
@@ -545,13 +593,23 @@ fn plan(
     if records == 0 {
         return Err(format!("no records, so there is no picture to draw in {}", path));
     }
+    // The rows are the records inside the window; records the window starts
+    // after do not exist as far as the picture is concerned, and a window the
+    // records never reach is refused the way no records at all is.
+    if records <= skip {
+        return Err(format!(
+            "the records end at {} — before the row window starting at {}, so there is \
+             no picture to draw in {}",
+            records, skip, path
+        ));
+    }
     let width = blocks.unwrap_or(seen);
-    let rows = records.div_ceil(bin);
+    let rows = (records - skip).div_ceil(bin);
     // Worth a line on stderr: it is a whole pass over the input, so a long run
     // is otherwise silent for a while before anything happens.
     eprintln!(
         "circular-polynomial: {} records over {} blocks, so a {} x {} picture",
-        records, seen, width, rows
+        records - skip, seen, width, rows
     );
 
     let output = match sheet {
@@ -560,11 +618,12 @@ fn plan(
                 .map_err(|e| format!("{}: {}", path, e))?;
             Output::Picture(writer)
         }
+        Sheet::FoldedPng => Output::Fold(fold(&path, width, rows, bin, gain)?),
         #[cfg(feature = "pdf")]
-        Sheet::Folded => Output::Page(fold(&path, width, rows, bin)?),
+        Sheet::Folded => Output::Page(fold(&path, width, rows, bin, gain)?),
         #[cfg(feature = "gui")]
         Sheet::Shown => Output::Window {
-            canvas: fold(&path, width, rows, bin)?,
+            canvas: fold(&path, width, rows, bin, gain)?,
             stem: path,
         },
         // The refusals above are what run in a build without the feature; these
@@ -574,18 +633,25 @@ fn plan(
         #[cfg(not(feature = "gui"))]
         Sheet::Shown => unreachable!("refused before the records were counted"),
     };
-    Ok((output, records_from(source)))
+    Ok((output, records_from(source), skip, limit))
 }
 
 /// The canvas both folding sheets accumulate into, and a line on stderr saying
 /// how much of the picture each of its cells is standing for.
 ///
-/// One function because a page and a window differ in nothing until the records
-/// have all been read: the same fold, and then either written or shown.
-#[cfg(feature = "pdf")]
-fn fold(path: &str, width: usize, rows: usize, bin: usize) -> Result<page::Writer, String> {
-    let writer = page::Writer::new(path, width, rows, bin, page::DEFAULT_PAGE)
+/// One function because a page, a folded PNG and a window differ in nothing
+/// until the records have all been read: the same fold, and then written one
+/// way or the other, or shown.
+fn fold(
+    path: &str,
+    width: usize,
+    rows: usize,
+    bin: usize,
+    gain: f64,
+) -> Result<page::Writer, String> {
+    let mut writer = page::Writer::new(path, width, rows, bin, page::DEFAULT_PAGE)
         .map_err(|e| format!("{}: {}", path, e))?;
+    writer.set_gain(gain);
     // The second pair is the one to know: it is how much of the picture each
     // cell is standing for, and so what the drawing can no longer tell apart.
     let (across, down) = writer.canvas();
@@ -665,6 +731,8 @@ fn main() -> ExitCode {
     let mut picture: Option<(Sheet, String)> = None;
     let mut blocks: Option<usize> = None;
     let mut bin: Option<usize> = None;
+    let mut window: Option<(usize, usize)> = None;
+    let mut gain: Option<f64> = None;
 
     // What a page exported from `--view`'s window is named after: the program,
     // the way the viewers name theirs, so that two windows open in one directory
@@ -716,7 +784,11 @@ fn main() -> ExitCode {
             }
             "all" => limit = usize::MAX,
             _ => {
-                let sheets = [("--png", Sheet::Raster), ("--pdf", Sheet::Folded)];
+                let sheets = [
+                    ("--png", Sheet::Raster),
+                    ("--pdf", Sheet::Folded),
+                    ("--fold", Sheet::FoldedPng),
+                ];
                 let mut taken = 0;
                 for (name, sheet) in sheets {
                     if let Some((path, used)) = option(&args, i, name) {
@@ -753,6 +825,35 @@ fn main() -> ExitCode {
                     i += taken;
                     continue;
                 }
+                if let Some((g, used)) = option(&args, i, "--gain") {
+                    match g.parse::<f64>() {
+                        Ok(g) => gain = Some(g),
+                        Err(_) => {
+                            eprintln!("circular-polynomial: --gain wants a factor, got {:?}", g);
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    i += used;
+                    continue;
+                }
+                if let Some((range, used)) = option(&args, i, "--rows") {
+                    let parsed = range.split_once("..").and_then(|(a, b)| {
+                        Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))
+                    });
+                    match parsed {
+                        Some(w) => window = Some(w),
+                        None => {
+                            eprintln!(
+                                "circular-polynomial: --rows wants a window like 830000..834096, \
+                                 got {:?}",
+                                range
+                            );
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    i += used;
+                    continue;
+                }
                 match args[i].parse::<usize>() {
                     Ok(n) => limit = n,
                     Err(_) => {
@@ -786,7 +887,8 @@ fn main() -> ExitCode {
         Backend::Rings | Backend::Sets => image::Ink::Flat,
     };
 
-    let (output, input) = match plan(picture, blocks, bin, ink, form, limit) {
+    let (output, input, skip, limit) =
+        match plan(picture, blocks, bin, window, gain, ink, form, limit) {
         Ok(plan) => plan,
         Err(message) => {
             eprintln!("circular-polynomial: {}", message);
@@ -797,9 +899,9 @@ fn main() -> ExitCode {
     // One instantiation of the loop per backend, so none of them pays for the
     // others existing.
     let outcome = match backend {
-        Backend::Rings => run::<RingStore>(limit, stats, output, input),
-        Backend::Sets => run::<colorset::SetStore>(limit, stats, output, input),
-        Backend::Weighted => run::<weighted::WeightedSets>(limit, stats, output, input),
+        Backend::Rings => run::<RingStore>(limit, skip, stats, output, input),
+        Backend::Sets => run::<colorset::SetStore>(limit, skip, stats, output, input),
+        Backend::Weighted => run::<weighted::WeightedSets>(limit, skip, stats, output, input),
     };
 
     match outcome {
@@ -815,6 +917,7 @@ fn main() -> ExitCode {
 
 fn run<S: ColorStore>(
     limit: usize,
+    skip: usize,
     stats: bool,
     mut out: Output,
     input: Box<dyn io::Read>,
@@ -954,7 +1057,12 @@ fn run<S: ColorStore>(
             store.observe(&color);
         }
 
-        out.emit::<S>(&store, &color, record.tx_id)?;
+        // A record before a `--rows` window is colored --- its color is history
+        // every later record may inherit --- and not shown: the window is about
+        // the picture, not about the fold that feeds it.
+        if records >= skip {
+            out.emit::<S>(&store, &color, record.tx_id)?;
+        }
 
         if record.outputs > 0 {
             if let Some((displaced, _)) = colors.insert(record.tx_id, (color, record.outputs)) {
@@ -1008,6 +1116,7 @@ fn run<S: ColorStore>(
             }
             #[cfg(feature = "pdf")]
             Output::Page(sheet) => folded(sheet),
+            Output::Fold(sheet) => folded(sheet),
             #[cfg(feature = "gui")]
             Output::Window { canvas, .. } => folded(canvas),
             Output::Text { .. } => {}
@@ -1019,7 +1128,6 @@ fn run<S: ColorStore>(
 
 /// What `--stats` says about a folded picture: the size it would have had, and
 /// the size it was drawn at.
-#[cfg(feature = "pdf")]
 fn folded(canvas: &page::Writer) {
     let (columns, rows) = canvas.dimensions();
     let (across, down) = canvas.canvas();
@@ -1145,7 +1253,7 @@ mod tests {
     fn lines<S: ColorStore>(records: &str, form: Line, limit: usize) -> Vec<String> {
         let sink = Shared::default();
         let out = Output::text(Box::new(sink.clone()), form);
-        run::<S>(limit, false, out, Box::new(io::Cursor::new(records.to_string().into_bytes())))
+        run::<S>(limit, 0, false, out, Box::new(io::Cursor::new(records.to_string().into_bytes())))
             .expect("the records are well formed");
         let written = sink.0.borrow().clone();
         String::from_utf8(written)
@@ -1331,7 +1439,7 @@ mod tests {
     fn spending_an_unknown_transaction_is_an_error() {
         let records = record(0, 9, &[(42, 5)], 1);
         let out = Output::text(Box::new(Shared::default()), Line::Terms);
-        let error = run::<RingStore>(usize::MAX, false, out, Box::new(io::Cursor::new(records.into_bytes())))
+        let error = run::<RingStore>(usize::MAX, 0, false, out, Box::new(io::Cursor::new(records.into_bytes())))
             .expect_err("transaction 42 was never read");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(

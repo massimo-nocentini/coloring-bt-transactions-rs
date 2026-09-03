@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["BLANK","IDAT","INK","NO_FILTER","PAPER","SIGNATURE"],"fn":["chunk"],"struct":["Writer"]};
+window.SIDEBAR_ITEMS = {"constant":["BLANK","IDAT","INK","NO_FILTER","PAPER","PAPER_8","SIGNATURE","TONE"],"enum":["Ink"],"fn":["chunk","shade"],"struct":["Writer"]};

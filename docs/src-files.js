@@ -1,2 +1,2 @@
-createSrcSidebar('[["coloring_bt_transactions",["",[],["colorset.rs","image.rs","main.rs","poly.rs","sexp.rs","simd.rs","store.rs","weighted.rs"]]],["tree_jp2",["",[["tree",[],["forest.rs"]]],["tree-jp2.rs"]]]]');
-//{"start":19,"fragment_lengths":[128,62]}
+createSrcSidebar('[["coloring_bt_transactions",["",[],["colorset.rs","image.rs","main.rs","page.rs","poly.rs","sexp.rs","simd.rs","store.rs","weighted.rs"]]],["tree_jp2",["",[["tree",[],["forest.rs"]]],["tree-jp2.rs"]]],["tree_pdf",["",[["tree",[],["forest.rs","pdf.rs","quadtree.rs","scene.rs"]]],["camera.rs","tree-pdf.rs"]]]]');
+//{"start":19,"fragment_lengths":[138,62,108]}
