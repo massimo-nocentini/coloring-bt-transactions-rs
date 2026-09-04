@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DIGIT","LABEL_SIZE","STUB","USAGE"],"enum":["Labels"],"fn":["beside","draw","main","outward","run"],"mod":["blocks","camera","forest","ink","pdf"],"struct":["Layout"]};

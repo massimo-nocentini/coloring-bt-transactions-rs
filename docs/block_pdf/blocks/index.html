@@ -1,0 +1,110 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="A webgraph, read as blocks"><title>block_pdf::blocks - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="block_pdf" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module blocks</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../block_pdf/index.html">block_<wbr>pdf</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module blocks</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#a-webgraph-read-as-blocks" title="A webgraph, read as blocks">A webgraph, read as blocks</a></li><li><a href="#what-a-spanning-tree-hides-and-this-does-not" title="What a spanning tree hides, and this does not">What a spanning tree hides, and this does not</a></li><li><a href="#where-a-root-leads" title="Where a root leads">Where a root leads</a></li><li><a href="#fetching-a-block" title="Fetching a block">Fetching a block</a></li><li><a href="#who-is-drawn-where" title="Who is drawn where">Who is drawn where</a></li><li><a href="#the-layout" title="The layout">The layout</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate block_<wbr>pdf</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">block_pdf</a></div><h1>Module <span>blocks</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/block_pdf/tree/blocks.rs.html#1-1637">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="a-webgraph-read-as-blocks"><a class="doc-anchor" href="#a-webgraph-read-as-blocks">§</a>A webgraph, read as blocks</h2>
+<p>The part of a block drawing that is about the <em>graph</em> rather than about the
+ink.  <a href="../index.html" title="mod block_pdf"><code>forest</code></a> reads a graph as a spanning tree, one parent per
+node; this reads it as the theorem of the payments graph says it is made:
+a set of complete bipartite <strong>blocks</strong> K(I, O), one per transaction, whose
+inputs I are the outputs it spent and whose outputs O are the ones it
+created, with every one of the |I|·|O| arcs of I × O in the graph and no
+other arc into O.  A node is an output of at most one block and an input of
+at most one, so the blocks chain through the nodes they share, and the
+<em>quotient</em> — blocks as nodes, “an output of b is an input of c” as arcs —
+is a DAG the same breadth-first walk can spread over a page.</p>
+<h2 id="what-a-spanning-tree-hides-and-this-does-not"><a class="doc-anchor" href="#what-a-spanning-tree-hides-and-this-does-not">§</a>What a spanning tree hides, and this does not</h2>
+<p>In a spanning tree of the graph exactly one arc per non-source node
+survives, so a block with two inputs is drawn with one input feeding all
+its outputs and the other a bare leaf — its arcs “dropped” as second
+parents.  Over the whole graph three arcs in four go that way.  Here a
+block is drawn whole or not at all: every input on a row, every output on
+the row below, every arc between them.  Nothing is ever dropped, and the
+report says <code>dropped=0</code> on every run so that a caption can say so.</p>
+<p>What <em>can</em> go undrawn is declared instead.  The walk has three scissors
+(<a href="struct.BlockPrune.html" title="struct block_pdf::blocks::BlockPrune"><code>BlockPrune</code></a>): a depth in blocks, a budget of blocks, a budget of nodes,
+and a fanout per side that keeps the first and last inputs and outputs of a
+hub and stands an ellipsis for the rest.  A block the scissors did not admit
+is not in the picture, and the outputs that lead to it are inked as a
+frontier, exactly as <code>tree-pdf</code> inks a node the cut robbed of successors.</p>
+<h2 id="where-a-root-leads"><a class="doc-anchor" href="#where-a-root-leads">§</a>Where a root leads</h2>
+<p>A node names a block two ways: the block that <em>produced</em> it (it is one of
+the outputs) and the block that <em>consumes</em> it (it is one of the inputs).
+<code>--root</code> reads as the producing block by default — the first output of a
+block is then the block’s name, as the tables key it — and falls back to
+the consuming one for a source, which no block produced.  The choice is
+said on stderr so that a caption never has to guess.  Several roots are
+several seeds, side by side — unless one seed’s outputs lead to another,
+in which case the second is drawn under the first, as the chain it is, and
+stderr says so.</p>
+<h2 id="fetching-a-block"><a class="doc-anchor" href="#fetching-a-block">§</a>Fetching a block</h2>
+<p>The transpose gives an output’s predecessors, which are the block’s inputs;
+the graph gives the first input’s successors, which are the whole output
+side.  Two probes.  The theorem’s clauses that a gadget stands on are then
+checked on the block just fetched — outputs contiguous, every input’s
+successors exactly O, every output’s predecessors exactly I, inputs before
+outputs — and a block that fails is a hard error naming it, because a
+bipartite gadget of a non-block would be the drawing lying.  The second and
+third of those are |I| + |O| probes, which <code>--no-check</code> may spare a drawing
+of thousands of blocks; together they are what makes <code>dropped=0</code> a
+certified statement rather than a promise: no arc into a drawn output
+comes from anywhere but the drawn input side.  Random access only: memory
+is proportional to the drawing, never to the graph.</p>
+<h2 id="who-is-drawn-where"><a class="doc-anchor" href="#who-is-drawn-where">§</a>Who is drawn where</h2>
+<p>Roles are settled <em>after</em> the walk.  Every kept output of every drawn block
+is a node on that block’s output row.  An input of a drawn block is then
+either one of those — drawn once, where its producer put it — or an
+<em>outside input</em>: a node whose producing block is not on the page.  An
+outside input is a source, or the output of a block the scissors left out
+(drawn with a stub, “something made this”) — told apart in <a href="enum.Producer.html" title="enum block_pdf::blocks::Producer"><code>Producer</code></a>,
+and counted apart.</p>
+<p>Settling roles after the walk rather than at discovery is what makes
+“outside” exact whatever the breadth-first order: a producer discovered
+later in the same level still claims its outputs.  One more thing is
+settled then: a node that is on the page cannot also be behind an ellipsis.
+A fanout-hidden output that a drawn block consumes, or a fanout-hidden
+input that a drawn block produced, is un-hidden — kept at its own place in
+its row, the ellipsis splitting around it — so that a node is drawn once,
+where its producer put it, and never stands twice on the page.</p>
+<h2 id="the-layout"><a class="doc-anchor" href="#the-layout">§</a>The layout</h2>
+<p>Every input of a block sits on the row above the block’s outputs.  That is
+the whole rule; the boxes of the tidy-tree layout are arranged to keep it.
+A block is one box, as broad as its output row and one row deep, hung
+under the block that fed it; its drawn inputs are then on the parent’s
+output row, which is the row above.  Its outside inputs go in a box of
+their own, <em>beside</em> the parent’s box on the same row, so that they too are
+one row above the outputs they feed and no arc of the gadget is longer
+than a row.  A seed has no parent to sit under, so its outside inputs are a
+row of its own box, which is two rows deep.  Rows are one unit apart
+everywhere, as levels are everywhere else in this crate; inside its box a
+row is centred, its nodes two units apart as siblings are.</p>
+<p>An arc that spans exactly one row can pass over nothing, since rows are
+the only places nodes are.  The arcs that can are the quotient’s non-tree
+edges: an input that is an output of a drawn block <em>other</em> than the parent
+is a <em>cross</em> arc, drawn to the node where it already is and counted, never
+duplicated — and it may skip rows.  Whether any arc crosses a row within a
+unit of a node it does not end at is checked after placement and reported
+as <code>over_nodes=</code>, so that a caption can say the picture has none.  And the
+one arc between two drawn nodes that no drawn block owns — from a frontier
+output to an outside input, an arc of a block the scissors cut — is found
+exactly by asking the transpose about every outside input, drawn dotted in
+the cut’s colour, and counted as <em>stray</em>.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Arc.html" title="struct block_pdf::blocks::Arc">Arc</a></dt><dd>One drawn arc, by indices into the nodes.</dd><dt><a class="struct" href="struct.Block.html" title="struct block_pdf::blocks::Block">Block</a></dt><dd>One complete bipartite block K(I, O) of the theorem, keyed by its first
+output — the id the tables use.</dd><dt><a class="struct" href="struct.BlockPrune.html" title="struct block_pdf::blocks::BlockPrune">Block<wbr>Prune</a></dt><dd>Where a walk over blocks is told to stop — in blocks, since that is the
+unit here.</dd><dt><a class="struct" href="struct.BlockScene.html" title="struct block_pdf::blocks::BlockScene">Block<wbr>Scene</a></dt><dd>Everything the page needs, already laid out: the block analogue of
+<code>tree-pdf</code>’s <code>Scene</code>.</dd><dt><a class="struct" href="struct.Ellipsis.html" title="struct block_pdf::blocks::Ellipsis">Ellipsis</a></dt><dd>A mark standing for a fanout-hidden run: three dots in the cut’s colour at
+a slot of its own, so that the row’s spacing stays uniform.</dd><dt><a class="struct" href="struct.Placed.html" title="struct block_pdf::blocks::Placed">Placed</a></dt><dd>One drawn node: the identity of a graph node on the page.</dd><dt><a class="struct" href="struct.Report.html" title="struct block_pdf::blocks::Report">Report</a></dt><dd>The numbers a caption quotes.  Every field is printed by <a href="struct.Report.html#method.lines" title="method block_pdf::blocks::Report::lines"><code>Report::lines</code></a>,
+one <code>key=value</code> per quantity under stable names, <code>dropped=0</code> included —
+printed on every run precisely so that the caption can quote it.</dd><dt><a class="struct" href="struct.Walk.html" title="struct block_pdf::blocks::Walk">Walk</a></dt><dd>What the walk produced: the blocks in discovery order, the seed sentences,
+and the part of the report the walk alone can fill.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.ArcKind.html" title="enum block_pdf::blocks::ArcKind">ArcKind</a></dt><dt><a class="enum" href="enum.Entry.html" title="enum block_pdf::blocks::Entry">Entry</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A box of the tidy tree: a block, or the outside inputs of one.</dd><dt><a class="enum" href="enum.Kept.html" title="enum block_pdf::blocks::Kept">Kept</a></dt><dd>What <code>--fanout</code> kept of one side of a block: everything, or the first
+<code>head</code> and the last <code>tail</code> entries plus any the page needed un-hidden,
+with the rest standing behind an ellipsis.</dd><dt><a class="enum" href="enum.Producer.html" title="enum block_pdf::blocks::Producer">Producer</a></dt><dd>Who made an outside input.</dd><dt><a class="enum" href="enum.Role.html" title="enum block_pdf::blocks::Role">Role</a></dt><dd>Where a drawn node sits and what it is.</dd><dt><a class="enum" href="enum.Row.html" title="enum block_pdf::blocks::Row">Row</a></dt><dd>Which row of a block a mark sits on.</dd><dt><a class="enum" href="enum.RowSlot.html" title="enum block_pdf::blocks::RowSlot">RowSlot</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>One place on a row as it is drawn: a node by index, or an ellipsis.</dd><dt><a class="enum" href="enum.Seed.html" title="enum block_pdf::blocks::Seed">Seed</a></dt><dd>Which block a <code>--root</code> names: the one that produced it, or the one that
+consumes it.  See the module’s third section.</dd><dt><a class="enum" href="enum.Slot.html" title="enum block_pdf::blocks::Slot">Slot</a></dt><dd>One place on a row: a kept entry of the side, or the run of hidden ones
+between two kept entries.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.CLEARANCE.html" title="constant block_pdf::blocks::CLEARANCE">CLEARANCE</a></dt><dd>How close to a node an arc may cross the node’s row before the arc is
+counted as passing over it, in node units of breadth: half a slot.</dd><dt><a class="constant" href="constant.DEFAULT_MAX_BLOCKS.html" title="constant block_pdf::blocks::DEFAULT_MAX_BLOCKS">DEFAULT_<wbr>MAX_<wbr>BLOCKS</a></dt><dd>Blocks the walk may draw when the caller does not say.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.arcs_over_nodes.html" title="fn block_pdf::blocks::arcs_over_nodes">arcs_<wbr>over_<wbr>nodes</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How many of <code>arcs</code> cross a row within <a href="constant.CLEARANCE.html" title="constant block_pdf::blocks::CLEARANCE"><code>CLEARANCE</code></a> of a node or an
+ellipsis that is not one of their ends.</dd><dt><a class="fn" href="fn.fetch_block.html" title="fn block_pdf::blocks::fetch_block">fetch_<wbr>block</a></dt><dd>The block one of whose outputs <code>key</code> is: inputs from the transpose, outputs
+from the first input, and the theorem’s clauses checked on the result.</dd><dt><a class="fn" href="fn.lay_out_blocks.html" title="fn block_pdf::blocks::lay_out_blocks">lay_<wbr>out_<wbr>blocks</a></dt><dd>Settles the roles, lays the blocks out as boxes of the tidy tree, places
+every node and ellipsis, lists the arcs by kind, and checks what they pass
+over.</dd><dt><a class="fn" href="fn.relevel.html" title="fn block_pdf::blocks::relevel">relevel</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Levels from the parents, once adoption has settled who hangs under whom.</dd><dt><a class="fn" href="fn.row_centre.html" title="fn block_pdf::blocks::row_centre">row_<wbr>centre</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Breadth-axis centre of slot <code>k</code> of a row of <code>n</code> slots centred in a box of
+breadth <code>w</code> starting at <code>s0</code>.</dd><dt><a class="fn" href="fn.seed_of.html" title="fn block_pdf::blocks::seed_of">seed_of</a></dt><dd>The block a <code>--root</code> names, and the sentence saying which reading was
+taken, for stderr.</dd><dt><a class="fn" href="fn.successors_of.html" title="fn block_pdf::blocks::successors_of">successors_<wbr>of</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="fn" href="fn.unhide.html" title="fn block_pdf::blocks::unhide">unhide</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Un-hides what the page shows anyway: a hidden output that a drawn block
+consumes through a kept input, and a hidden input that a drawn block
+produced as a kept output.  One pass settles it: an entry un-hidden by one
+rule is by construction not a case for the other.</dd><dt><a class="fn" href="fn.walk.html" title="fn block_pdf::blocks::walk">walk</a></dt><dd>The breadth-first walk over blocks from the blocks the roots name, under
+<code>prune</code>.</dd></dl></section></div></main></body></html>

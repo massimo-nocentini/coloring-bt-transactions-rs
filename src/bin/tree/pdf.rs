@@ -10,9 +10,9 @@
 //! # What a page holds
 //!
 //! A PDF content stream is a program for a very small machine: operands, then
-//! an operator.  The five this file ever emits are
+//! an operator.  The six this file ever emits are
 //!
-//! - `w`, `RG`, `rg` — line width, stroke colour, fill colour;
+//! - `w`, `RG`, `rg`, `d` — line width, stroke colour, fill colour, dash;
 //! - `m`/`l` … `S` — a polyline path, stroked;
 //! - `m`/`c` … `f` — a path of cubic Béziers, filled (`b` closes, fills and
 //!   strokes in one, for the hollow rings).
@@ -139,6 +139,22 @@ impl Page {
     /// colour, in one operator: what a hollow ring with a rim is.
     pub fn fill_and_stroke(&mut self) {
         self.ops.push_str("B\n");
+    }
+
+    /// Dashes every stroke from here on: `on` points of ink, then `off` of
+    /// paper, repeating from the start of each subpath.
+    ///
+    /// The one way this crate's pages tell two strokes of the same colour
+    /// apart --- an arc from a block that is not on the page, say, from one
+    /// that is.  Set once before a batch and undone by [`Page::solid`] after
+    /// it, so that a page with nothing to dash never carries the operator.
+    pub fn set_dash(&mut self, on: f64, off: f64) {
+        let _ = writeln!(self.ops, "[{} {}] 0 d", num(on), num(off));
+    }
+
+    /// Back to solid strokes.
+    pub fn solid(&mut self) {
+        self.ops.push_str("[] 0 d\n");
     }
 
     /// Writes `s` at `(x, y)` --- the baseline's left end --- in `size` points
@@ -353,6 +369,26 @@ mod tests {
             String::from_utf8_lossy(&bytes).contains("/BaseFont /Helvetica"),
             "the font the text names is declared on the page"
         );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A dash pattern goes into the stream as the array PDF wants, and
+    /// `solid` empties it again.
+    #[test]
+    fn dashes_are_set_and_undone() {
+        let mut page = Page::new(100.0, 100.0);
+        page.set_dash(2.0, 1.5);
+        page.segment(0.0, 0.0, 10.0, 10.0);
+        page.stroke();
+        page.solid();
+
+        let path = scratch("dash");
+        page.write(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let ops = content_of(&bytes);
+        assert!(ops.contains("[2 1.5] 0 d\n"), "{ops}");
+        assert!(ops.contains("S\n[] 0 d\n"), "solid again after the stroke: {ops}");
 
         std::fs::remove_file(&path).ok();
     }

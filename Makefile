@@ -83,6 +83,18 @@ subtree: ## Draw ROOT=<id>'s subtree of GRAPH=<basename> into PDF=<file>
 	cargo run --release --bin tree-pdf -- $(GRAPH) --root $(ROOT) $(ARGS) \
 		-o $(or $(PDF),subtree.pdf)
 
+.PHONY: blocks
+blocks: ## Draw the blocks around ROOT=<id> of GRAPH=<basename>, TRANSPOSE=<basename>, into PDF=<file>
+#	`block-pdf` is `subtree` with the block as its unit: every transaction it
+#	admits drawn as a complete bipartite gadget, inputs over outputs, all its
+#	arcs.  The transpose is what finds a block's inputs, so it is not optional.
+#	Same writer as `tree-pdf`, so no C library; the cut is the caller's --
+#	pass ARGS='--depth 2 --labels' and so on, or run the binary with -h.
+	@test -n "$(GRAPH)" && test -n "$(TRANSPOSE)" && test -n "$(ROOT)" || { \
+		echo "usage: make blocks GRAPH=<graph-basename> TRANSPOSE=<transpose-basename> ROOT=<id>[,<id>...] [PDF=<file>] [ARGS='--depth 2 ...']"; exit 1; }
+	cargo run --release --bin block-pdf -- $(GRAPH) $(TRANSPOSE) --root $(ROOT) $(ARGS) \
+		-o $(or $(PDF),blocks.pdf)
+
 .PHONY: pdf
 pdf: ## Draw RECORDS=<file> as one page in PDF=<file>
 #	`--pdf` draws with Cairo, so it wants a `libcairo` and its headers on the
@@ -160,15 +172,74 @@ asm-check: build ## Check the weight-scaling loops still vectorise
 #	nothing but the disassembly can confirm it did.  A refactor that quietly
 #	stops it would cost speed silently, which is what this guards.
 #
-#	Two operand syntaxes are accepted: LLVM's Mach-O output writes the lane
-#	arrangement on the mnemonic (`fmul.2d v0, v1, v2`), GNU's writes it on the
-#	registers (`fmul v0.2d, v1.2d, v2.2d`).
-	@count=$$(objdump -d $(BIN) \
-		| grep -cE '(\bfmul\.2d\b|\bfmul[[:space:]]+v[0-9]+\.2d)' || true); \
-	echo "vector f64 multiplies (2 lanes each): $$count"; \
-	if [ "$$count" -eq 0 ]; then \
-		echo "FAIL: the weight scaling is running one lane at a time"; exit 1; \
-	fi
+#	The mnemonic to look for is the architecture's, so the pattern is picked by
+#	`uname -m` rather than tried everywhere: a grep that accepted both would pass
+#	on aarch64 for an x86 reason and say nothing useful about either.
+#
+#	aarch64 -- two operand syntaxes, since LLVM's Mach-O output writes the lane
+#	arrangement on the mnemonic (`fmul.2d v0, v1, v2`) and GNU's writes it on the
+#	registers (`fmul v0.2d, v1.2d, v2.2d`).  Both mean two `f64` lanes, which is
+#	all NEON has.
+#
+#	x86-64 -- the lane count is not fixed the way NEON's is, it is a function of
+#	what the build was told to target, so the width is read off the register the
+#	instruction names and reported rather than assumed.  A default `x86-64` build
+#	is SSE2 and gets `mulpd %xmm` at two lanes; `-C target-cpu=native` reaches
+#	`vmulpd`/`vfmadd...pd` on `%ymm` at four, or `%zmm` at eight where LLVM
+#	judges the downclocking worth it.  The width is worth watching -- the default
+#	target leaves half the machine's lanes unused -- but it is not what fails the
+#	check, which is only ever about the loops having vectorised.
+#
+#	## Only the loops this is about
+#
+#	Counting vector multiplies across the whole binary fails *open*, which is the
+#	worst way for a guard to be wrong.  Today's build has seventeen of them and
+#	only ten are the scale loops: six are in `main` and one is in a closure in
+#	`emit`.  So de-vectorising both loops entirely still left seven, and the
+#	target printed a healthy number and exited 0 -- verified by wrapping the two
+#	loop bodies in `core::hint::black_box`, which took the count inside
+#	`WeightedSets::combine` from ten to zero and passed anyway.
+#
+#	Hence the enclosing symbol.  `objdump -d` writes `<symbol>:` above each
+#	function, so awk carries the last one seen and only counts matches inside the
+#	symbols the scale loops inline into -- the ones whose mangled name carries
+#	this crate's `weighted` module.  A refactor that moves the call site
+#	elsewhere makes this fail rather than pass, which is the right way round: a
+#	false failure gets looked at, a false pass ships.
+#
+#	The register cannot be found by scanning forward from the mnemonic, which is
+#	the obvious thing and is wrong: an AVX memory operand is `(%rdx,%rdi,8)` and
+#	carries commas of its own, so any "up to the first comma" pattern stops
+#	inside the addressing mode and never reaches the register.  Hence awk over
+#	the whole line, widest register wins.
+	@arch=$$(uname -m); \
+	case "$$arch" in \
+	  aarch64|arm64) \
+	    objdump -d $(BIN) | awk ' \
+	      /^[0-9a-f]+ <.*>:/ { sym = $$2 } \
+	      /(^|[ \t])(fmul\.2d|fmul[ \t]+v[0-9]+\.2d)/ { \
+	        n++; if (sym ~ /weighted/) w++ } \
+	      END { printf "vector f64 multiplies in the scale loops: %d (2 lanes each)", w+0; \
+	            printf "  [%d elsewhere in the binary, not counted]\n", n-w; \
+	            exit (w+0) == 0 } ';; \
+	  x86_64|amd64) \
+	    objdump -d $(BIN) | awk ' \
+	      /^[0-9a-f]+ <.*>:/ { sym = $$2 } \
+	      /(^|[ \t])(v?mulpd|vfmadd[0-9]*pd)[ \t]/ { \
+	        n++; \
+	        if (sym !~ /weighted/) next; \
+	        w++; \
+	        if (/%zmm/) z++; else if (/%ymm/) y++; else if (/%xmm/) x++ } \
+	      END { printf "vector f64 multiplies in the scale loops: %d", w+0; \
+	            if (x) printf "  %%xmm (2 lanes): %d", x; \
+	            if (y) printf "  %%ymm (4 lanes): %d", y; \
+	            if (z) printf "  %%zmm (8 lanes): %d", z; \
+	            printf "  [%d elsewhere in the binary, not counted]\n", n-w; \
+	            exit (w+0) == 0 } ';; \
+	  *) \
+	    echo "asm-check: no pattern for $$arch, skipping"; exit 0;; \
+	esac || { \
+	  echo "FAIL: the weight scaling is running one lane at a time"; exit 1; }
 
 .PHONY: test
 test: ## Run the test suite

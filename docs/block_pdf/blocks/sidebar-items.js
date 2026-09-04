@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CLEARANCE","DEFAULT_MAX_BLOCKS"],"enum":["ArcKind","Entry","Kept","Producer","Role","Row","RowSlot","Seed","Slot"],"fn":["arcs_over_nodes","fetch_block","lay_out_blocks","relevel","row_centre","seed_of","successors_of","unhide","walk"],"struct":["Arc","Block","BlockPrune","BlockScene","Ellipsis","Placed","Report","Walk"]};

@@ -253,6 +253,18 @@ pub fn build<G: RandomAccessGraph>(graph: &G, arena: &mut Arena) -> Result<Fores
 /// Whatever gets cut, the node whose successors were left out is reported in
 /// [`Sampled::truncated`], so a drawing can say where it stops short rather
 /// than passing a pruned frontier off as leaves.
+/// How many dropped arcs a rooted walk keeps the endpoints of, beyond
+/// counting them: enough for any drawing a page can hold, at 8 bytes a pair.
+///
+/// The count in [`Sampled::dropped_arcs`] is exact however many there are —
+/// it is the number a caption quotes — but the *pairs* are only wanted by a
+/// caller that means to draw them, and a walk over a hub of this graph drops
+/// them by the hundred million.  Past the cap the list stops growing and
+/// [`Sampled::dropped_is_complete`] says so, which is how `tree-pdf --ghost`
+/// knows to refuse rather than draw a picture missing arcs it does not
+/// mention.
+pub const GHOST_LIMIT: usize = 1 << 20;
+
 pub struct Prune {
     pub depth: Option<usize>,
     pub max_nodes: usize,
@@ -283,6 +295,12 @@ pub struct Sampled {
     /// Arcs into nodes already drawn: the DAG's second parents, dropped exactly
     /// as [`build`] drops them.
     pub dropped_arcs: u64,
+    /// The endpoints of those arcs, `(tail, head)` as graph ids, up to
+    /// [`GHOST_LIMIT`] pairs of them.  Both ends are always drawn nodes: an
+    /// arc is dropped precisely because its head was placed already, and its
+    /// tail is the node being expanded.  A caller with these can put back on
+    /// the page what the tree left off it.
+    pub dropped: Vec<(u32, u32)>,
     /// Graph ids of drawn nodes with successors the cut left out — by depth, by
     /// fanout, or by the node budget.  They are drawn like any node, but they
     /// are *not* leaves of the graph, and a caller can ink them apart.
@@ -290,6 +308,12 @@ pub struct Sampled {
 }
 
 impl Sampled {
+    /// Whether [`Sampled::dropped`] holds every arc [`Sampled::dropped_arcs`]
+    /// counted, or the cap cut the list short.
+    pub fn dropped_is_complete(&self) -> bool {
+        self.dropped.len() as u64 == self.dropped_arcs
+    }
+
     /// What a run has to say about the cut, for stderr.
     pub fn summary(&self) -> String {
         let mut out = format!("{} node(s) drawn", self.nodes);
@@ -348,6 +372,7 @@ pub fn build_rooted<G: RandomAccessGraph>(
 
     let mut ids: HashMap<usize, NodeId> = HashMap::new();
     let mut dropped_arcs = 0u64;
+    let mut dropped: Vec<(u32, u32)> = Vec::new();
     let mut truncated: HashSet<usize> = HashSet::new();
     let mut placed_roots: Vec<NodeId> = Vec::new();
 
@@ -396,6 +421,12 @@ pub fn build_rooted<G: RandomAccessGraph>(
             for w in graph.successors(u) {
                 if ids.contains_key(&w) {
                     dropped_arcs += 1;
+                    // Kept as well as counted, while the cap allows: the arc
+                    // is the one thing a tree of this graph destroys, and a
+                    // caller may want it back.  See [`GHOST_LIMIT`].
+                    if dropped.len() < GHOST_LIMIT {
+                        dropped.push((u as u32, w as u32));
+                    }
                 } else {
                     fresh.push(w);
                 }
@@ -440,6 +471,7 @@ pub fn build_rooted<G: RandomAccessGraph>(
         synthetic_root,
         nodes: ids.len(),
         dropped_arcs,
+        dropped,
         truncated,
     })
 }

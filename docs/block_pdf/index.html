@@ -1,0 +1,68 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="The blocks of a neighbourhood, written as a page"><title>block_pdf - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="block_pdf" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate block_pdf</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../block_pdf/index.html">block_<wbr>pdf</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#the-blocks-of-a-neighbourhood-written-as-a-page" title="The blocks of a neighbourhood, written as a page">The blocks of a neighbourhood, written as a page</a></li><li><a href="#the-ink" title="The ink">The ink</a></li><li><a href="#the-labels" title="The labels">The labels</a></li><li><a href="#the-page" title="The page">The page</a></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>block_<wbr>pdf</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/block_pdf/block-pdf.rs.html#1-840">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="the-blocks-of-a-neighbourhood-written-as-a-page"><a class="doc-anchor" href="#the-blocks-of-a-neighbourhood-written-as-a-page">§</a>The blocks of a neighbourhood, written as a page</h2>
+<p>The sibling of <code>tree-pdf</code> whose unit is the <strong>block</strong> K(I, O) of the
+payments graph — one transaction, its inputs and its outputs, every arc
+between them — rather than the node:</p>
+<div class="example-wrap"><pre class="language-text"><code>block-pdf &lt;graph-basename&gt; &lt;transpose-basename&gt; --root &lt;id&gt;[,&lt;id&gt;...] -o &lt;file&gt;
+          [--depth &lt;n&gt;] [--max-blocks &lt;n&gt;] [--max-nodes &lt;n&gt;]
+          [--fanout &lt;n&gt;] [--fanout-in &lt;n&gt;] [--fanout-out &lt;n&gt;]
+          [--seed producing|consuming]
+          [--horizontal] [--fill] [--width &lt;pt&gt;] [--max-height &lt;pt&gt;]
+          [--mark &lt;id&gt;[,&lt;id&gt;...]] [--labels [compact]] [--label-base &lt;id&gt;]
+          [--dash-cross] [--no-check]</code></pre></div>
+<p>A spanning tree keeps one arc per node, so of a block with two inputs it
+draws one input feeding everything and the other a bare leaf, its arcs
+dropped and counted; three arcs in four of this graph go that way, and the
+picture structurally hides that the graph is made of complete bipartite
+pieces.  This binary walks the graph block by block — <a href="blocks/index.html" title="mod block_pdf::blocks"><code>blocks</code></a> says how —
+and draws each one it admits as a gadget: its inputs on one row, its
+outputs on the row below, all |I|·|O| arcs between them.  A node is drawn
+once, so consecutive blocks chain through the nodes they share; nothing is
+ever dropped, and the report says <code>dropped=0</code> so that a caption can quote
+it.</p>
+<p>The transpose is mandatory: a block cannot be found without knowing what
+points at a node, and that is what the transpose’s successors are.</p>
+<h2 id="the-ink"><a class="doc-anchor" href="#the-ink">§</a>The ink</h2>
+<p>The same ink as <code>tree-pdf</code>, from the same file, so that a reader carries
+one legend across the figures: a filled disc has drawn out-arcs, a hollow
+grey ring is a sink, a hollow ring in the warning colour is a <em>frontier</em>
+— its out-arcs exist and its consuming block is not on the page, whether
+the depth stopped there or a budget did — and a marked node wears the
+caller’s blue over anything else.  Three things are this binary’s own.  An
+<em>outside input</em> — an input no drawn block produced — sits on the row above
+the outputs it feeds like every other input, beside the block that fed the
+others, and carries a short dashed stub from the side it came from when
+something did produce it, and no stub when it is a true source.  A run of
+inputs or outputs the fanout hid is three dots in the warning colour at a
+slot of their own, with the hidden count at their side under <code>--labels</code>.
+And the one arc between two drawn nodes that no drawn block owns — from a
+frontier output to an outside input, an arc of a block the scissors cut —
+is dotted in the warning colour and counted as <em>stray</em>.</p>
+<p>An arc entering a block from a drawn block other than the one above it is
+a <em>cross</em> arc.  It is inked exactly like every other arc — two arcs of one
+block must never look different because of a layout accident — and
+counted, and <code>--dash-cross</code> dashes it for a reader who wants to see the
+quotient’s non-tree edges.  It is also the one kind of arc that can skip a
+row, so the layout counts the arcs that cross a row over a node they do
+not end at and reports them as <code>over_nodes=</code>; a caption can quote the 0.</p>
+<h2 id="the-labels"><a class="doc-anchor" href="#the-labels">§</a>The labels</h2>
+<p>A label is written <em>beside</em> its node, on the row, in the direction the
+row runs: arcs meet a row only at its nodes, so the paper between two
+nodes of a row is the one place near a node that no arc of the gadget can
+cross, whereas above or below the node is exactly where its arcs go.  A
+row label under <code>--labels compact</code> sits beside the row’s last slot for the
+same reason, and the hidden count of an ellipsis on the outward side of
+the row, where the dots have no arcs of their own.  The page keeps a
+margin on that side wide enough for the longest label.</p>
+<h2 id="the-page"><a class="doc-anchor" href="#the-page">§</a>The page</h2>
+<p>Sized, scaled and written as <code>tree-pdf</code> does it: one scale that hugs, or
+<code>--fill</code> for two scales to the page asked for; the same PDF writer, the
+same nothing to install.</p>
+</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="blocks/index.html" title="mod block_pdf::blocks">blocks</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A webgraph, read as blocks</dd><dt><a class="mod" href="camera/index.html" title="mod block_pdf::camera">camera</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Where the drawing is looked at from</dd><dt><a class="mod" href="forest/index.html" title="mod block_pdf::forest">forest</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A webgraph, read as a tree</dd><dt><a class="mod" href="ink/index.html" title="mod block_pdf::ink">ink</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The ink the pages share</dd><dt><a class="mod" href="pdf/index.html" title="mod block_pdf::pdf">pdf</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A page, written by hand</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Layout.html" title="struct block_pdf::Layout">Layout</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How the page is settled: everything about the drawing that is not a block.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.Labels.html" title="enum block_pdf::Labels">Labels</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>What <code>--labels</code> writes: nothing, every node’s id, or one label per row.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.DIGIT.html" title="constant block_pdf::DIGIT">DIGIT</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="constant" href="constant.LABEL_SIZE.html" title="constant block_pdf::LABEL_SIZE">LABEL_<wbr>SIZE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The largest a label is set, in points, and the width of a Helvetica digit
+in ems — all a graph id is made of: enough metrics to place a label, and
+to keep a margin for it, without carrying a font.</dd><dt><a class="constant" href="constant.STUB.html" title="constant block_pdf::STUB">STUB</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How much of a node unit an outside input’s stub reaches back, along the
+depth axis: past the box’s edge, short of the row above.</dd><dt><a class="constant" href="constant.USAGE.html" title="constant block_pdf::USAGE">USAGE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.beside.html" title="fn block_pdf::beside">beside</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Where the baseline of a label of <code>width</code> points starts when it is set
+beside the mark at <code>(x, y)</code> that reaches <code>gap</code> points from its centre: to
+the right of it when depth runs down the page, under it when depth runs
+across.</dd><dt><a class="fn" href="fn.draw.html" title="fn block_pdf::draw">draw</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Draws a laid-out block scene as one page, <code>marks</code> being the ids the
+caller asked to have inked apart.</dd><dt><a class="fn" href="fn.main.html" title="fn block_pdf::main">main</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="fn" href="fn.outward.html" title="fn block_pdf::outward">outward</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Where a label starts when it is set on the outward side of a row’s mark:
+the past’s side for an input row, the future’s for an output row.</dd><dt><a class="fn" href="fn.run.html" title="fn block_pdf::run">run</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt></dl></section></div></main></body></html>

@@ -8,6 +8,7 @@
 //!          [--depth <n>] [--max-nodes <n>] [--fanout <n>]
 //!          [--vertical] [--fill] [--width <pt>] [--max-height <pt>]
 //!          [--mark <id>[,<id>...]] [--labels] [--spine <id>[,<id>...]]
+//!          [--ghost]
 //!          [--ancestors <transpose-basename> [--depth-up <n>] [--fanout-up <n>] [--max-nodes-up <n>]]
 //! ```
 //!
@@ -31,6 +32,29 @@
 //! lying about the graph.  The count of such nodes is on stderr too, and a
 //! caption quoting it is telling the truth about the picture.
 //!
+//! # What a tree cannot draw
+//!
+//! A spanning tree keeps one arc per node — the first one to reach it — and
+//! that is not a small loss on this graph.  Its arcs are the disjoint union
+//! of complete bipartite blocks `K(I, O)`, one per transaction, so when the
+//! walk expands the first input of a block it meets, the whole of `O` hangs
+//! under that one input and each later input finds its `|O|` successors drawn
+//! already and keeps none: every block is flattened to a star `K(1, |O|)`
+//! with `|I| - 1` childless nodes beside it.  Three arcs in four go this way.
+//! A figure drawn under that rule is a true picture of the *tree* and a
+//! misleading picture of the *graph*, which is why the count of dropped arcs
+//! has always been on stderr for a caption to quote.
+//!
+//! `--ghost` puts them back.  The walk keeps the endpoints of the arcs it
+//! drops, and they are stroked behind the tree in a dashed, paler ink: the
+//! same page then carries both readings, the tree in its own grey and, under
+//! it, the biclique the tree turned into a star.  The tree arcs go from a
+//! node to its one parent; the ghosts go from a node to every *other* parent
+//! it has, which is a picture of exactly the structure the numbering imposes.
+//! Only the pairs are capped ([`forest::GHOST_LIMIT`]) — the count never is —
+//! and a run whose ledger the cap cut short refuses to draw rather than
+//! quietly omit arcs the caption would claim.
+//!
 //! # The page
 //!
 //! Written by [`pdf`], which is this crate and `flate2` and nothing else — no
@@ -46,7 +70,7 @@
 //! still finds every one of them a circle, because a page description has no
 //! resolution to run out of.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::process::ExitCode;
 
@@ -57,6 +81,8 @@ use webgraph::prelude::BvGraph;
 mod camera;
 #[path = "tree/forest.rs"]
 mod forest;
+#[path = "tree/ink.rs"]
+mod ink;
 #[path = "tree/pdf.rs"]
 mod pdf;
 #[path = "tree/quadtree.rs"]
@@ -64,6 +90,7 @@ mod quadtree;
 #[path = "tree/scene.rs"]
 mod scene;
 
+use ink::*;
 use pdf::Page;
 use scene::{Scene, NO_PARENT};
 
@@ -71,64 +98,8 @@ const USAGE: &str = "usage: tree-pdf <graph-basename> --root <id>[,<id>...] -o <
        [--depth <n>] [--max-nodes <n>] [--fanout <n>]\n\
        [--vertical] [--fill] [--width <pt>] [--max-height <pt>]\n\
        [--mark <id>[,<id>...]] [--labels] [--spine <id>[,<id>...]]\n\
+       [--ghost]\n\
        [--ancestors <transpose-basename> [--depth-up <n>] [--fanout-up <n>] [--max-nodes-up <n>]]";
-
-/// A colour as the page takes them, and the tones of the viewers, plus one.
-type Rgb = (f64, f64, f64);
-const PAPER: Rgb = (1.0, 1.0, 1.0);
-const INNER: Rgb = (0.0, 0.0, 0.0);
-const LEAF: Rgb = (0.5, 0.5, 0.5);
-const LINK: Rgb = (0.78, 0.78, 0.78);
-/// A node whose successors the cut left out: drawn apart, so that the pruned
-/// frontier cannot pass for a fringe of true leaves.
-const CUT: Rgb = (0.82, 0.24, 0.10);
-
-/// A node the caller named with `--mark`: the subject of the drawing --- a
-/// stolen output, a payout leg --- inked apart from everything structural.
-const MARK: Rgb = (0.16, 0.47, 0.84);
-
-/// The ink labels are written in, when `--labels` asks for them.
-const LABEL: Rgb = (0.32, 0.32, 0.32);
-
-/// How wide the drawing may be, in points, when the caller does not say.
-/// A little under a typical `\textwidth`, so the figure drops straight in.
-const DEFAULT_WIDTH: f64 = 420.0;
-
-/// How tall it may grow before the height binds instead.
-const DEFAULT_MAX_HEIGHT: f64 = 620.0;
-
-/// Nodes the walk may place when the caller does not say.  A page is legible
-/// into the tens of thousands of nodes; past that the raster of `tree-jp2` is
-/// the better picture anyway.
-const DEFAULT_MAX_NODES: usize = 100_000;
-
-/// Clear paper kept around the drawing, in points.
-const MARGIN: f64 = 4.0;
-
-/// Below this radius a circle would be finer than any press: the floor the
-/// nodes are held at, whatever the scale.
-const MIN_RADIUS: f64 = 0.3;
-
-/// How much of its box a node inks.  The layout puts neighbouring levels edge
-/// to edge, so circles drawn at the full box fuse into a bar along every
-/// chain; a shade under it leaves a sliver of paper between the beads.
-const INK: f64 = 0.85;
-
-/// And above this radius a circle is a balloon: a drawing of a dozen nodes
-/// scaled to a page would ink them shoulder to shoulder, where holding the
-/// circles down turns the same page into an airy diagram whose edges do the
-/// talking.
-const MAX_RADIUS: f64 = 5.0;
-
-/// A leaf is hollow — its rim inked, paper inside — from this radius up, as in
-/// the windowed viewer; below it a ring closes into a smudge and the leaf is
-/// filled like everything else.
-const MIN_HOLLOW: f64 = 1.0;
-
-/// How many shapes go into one path before it is painted.  One fill per
-/// colour is the idea; a bound per path is kindness to readers that walk a
-/// path recursively.
-const BATCH: usize = 4096;
 
 /// One tree of a drawing: the descendants of the root, or --- `flipped`, on
 /// the other side of it --- its ancestors.
@@ -142,6 +113,11 @@ const BATCH: usize = 4096;
 struct Part<'a> {
     scene: &'a Scene,
     truncated: &'a HashSet<usize>,
+    /// The arcs this part's walk dropped, `(tail, head)` as graph ids, for
+    /// `--ghost` to stroke behind the tree; empty when the caller did not ask
+    /// for them.  Both ends are drawn nodes of *this* part, so the drawing
+    /// resolves them against this part's own scene and no other.
+    dropped: &'a [(u32, u32)],
     flipped: bool,
 }
 
@@ -152,6 +128,9 @@ struct Layout {
     fill: bool,
     vertical: bool,
     labels: bool,
+    /// Whether each part's dropped arcs are stroked behind its tree.  See the
+    /// module's "What a tree cannot draw".
+    ghost: bool,
 }
 
 /// Draws laid-out scenes as one page: each part's `truncated` being the graph
@@ -253,8 +232,50 @@ fn draw(parts: &[Part], marks: &HashSet<usize>, opts: &Layout) -> Page {
 
     let mut page = Page::new(page_w, page_h);
 
-    // The arcs first, behind everything: one grey, one width, one stroke per
-    // batch.
+    // The ghosts first of all, under even the tree's own arcs: what the walk
+    // dropped is the *background* against which what it kept is read, and an
+    // arc drawn over a ghost says which of the two the tree chose.  A part's
+    // pairs are graph ids, so each part carries its own id-to-index map;
+    // built here rather than in the scene because only this flag wants it.
+    if opts.ghost && parts.iter().any(|part| !part.dropped.is_empty()) {
+        page.set_stroke(GHOST);
+        page.set_line_width((radius / 3.5).clamp(0.14, 0.9));
+        page.set_dash(GHOST_DASH.0, GHOST_DASH.1);
+        let mut in_path = 0;
+        for part in parts {
+            if part.dropped.is_empty() {
+                continue;
+            }
+            let mut index: HashMap<u32, u32> =
+                HashMap::with_capacity(part.scene.len());
+            for i in 0..part.scene.len() as u32 {
+                index.insert(part.scene.node(i).graph, i);
+            }
+            for &(tail, head) in part.dropped {
+                // A pair whose ends are not both on the page is not drawn and
+                // not silently forgotten either: `run` compares the count it
+                // drew with the count the walk reported.
+                let (Some(&t), Some(&h)) = (index.get(&tail), index.get(&head)) else {
+                    continue;
+                };
+                let (tx, ty) = at(part, t);
+                let (hx, hy) = at(part, h);
+                page.segment(tx, ty, hx, hy);
+                in_path += 1;
+                if in_path == BATCH {
+                    page.stroke();
+                    in_path = 0;
+                }
+            }
+        }
+        if in_path > 0 {
+            page.stroke();
+        }
+        page.solid();
+    }
+
+    // The tree's own arcs next, behind the nodes: one grey, one width, one
+    // stroke per batch.
     page.set_stroke(LINK);
     page.set_line_width((radius / 3.0).clamp(0.16, 1.2));
     let mut in_path = 0;
@@ -393,6 +414,7 @@ fn run() -> Result<(), String> {
     let mut vertical = false;
     let mut fill = false;
     let mut labels = false;
+    let mut ghost = false;
     let mut marks: HashSet<usize> = HashSet::new();
     let mut ancestors: Option<&str> = None;
     let mut depth_up: Option<usize> = None;
@@ -467,6 +489,10 @@ fn run() -> Result<(), String> {
             // Each node's graph id at its shoulder; for drawings small enough
             // that a reader can be told which node is which.
             "--labels" => labels = true,
+            // The arcs the walk dropped, stroked behind the tree it kept: a
+            // page that shows the biclique as well as the star it became.
+            // See the module's "What a tree cannot draw".
+            "--ghost" => ghost = true,
             "--mark" => {
                 i += 1;
                 let v = argv.get(i).ok_or_else(|| format!("--mark wants a node id\n{USAGE}"))?;
@@ -550,15 +576,26 @@ fn run() -> Result<(), String> {
     let mut arena = Arena::new();
     let sampled = forest::build_rooted(&graph, &mut arena, &roots, &prune)?;
     eprintln!("{}", sampled.summary());
+    if ghost && !sampled.dropped_is_complete() {
+        return Err(format!(
+            "--ghost: the walk dropped {} arcs and only {} were kept, so the page would \
+             be missing arcs its caption claims; draw a smaller neighbourhood",
+            sampled.dropped_arcs,
+            sampled.dropped.len()
+        ));
+    }
 
     let arena = forest::lay_out_oriented(arena, sampled.root, vertical);
     let scene = Scene::of(&arena, sampled.root)?;
     drop(arena);
     let mut truncated = sampled.truncated;
+    // Kept only when they are going to be drawn: the walk always records
+    // them, the page need not carry them.
+    let dropped: Vec<(u32, u32)> = if ghost { sampled.dropped } else { Vec::new() };
 
     // The other side of the hourglass: the same root walked on the transpose,
     // under its own scissors where the caller gave any.
-    let ancestry: Option<(Scene, HashSet<usize>)> = match ancestors {
+    let ancestry: Option<(Scene, HashSet<usize>, Vec<(u32, u32)>)> = match ancestors {
         None => None,
         Some(anc_name) => {
             let [root] = roots.as_slice() else {
@@ -579,6 +616,14 @@ fn run() -> Result<(), String> {
             let mut arena = Arena::new();
             let up = forest::build_rooted(&tgraph, &mut arena, &roots, &prune_up)?;
             eprintln!("ancestors: {}", up.summary());
+            if ghost && !up.dropped_is_complete() {
+                return Err(format!(
+                    "--ghost: the ancestor walk dropped {} arcs and only {} were kept; \
+                     draw a smaller neighbourhood",
+                    up.dropped_arcs,
+                    up.dropped.len()
+                ));
+            }
             let arena = forest::lay_out_oriented(arena, up.root, vertical);
             let up_scene = Scene::of(&arena, up.root)?;
             // The root is drawn by the descendant part, so a cut on its
@@ -586,21 +631,38 @@ fn run() -> Result<(), String> {
             if up.truncated.contains(root) {
                 truncated.insert(*root);
             }
-            Some((up_scene, up.truncated))
+            let up_dropped = if ghost { up.dropped } else { Vec::new() };
+            Some((up_scene, up.truncated, up_dropped))
         }
     };
 
-    let mut parts = vec![Part { scene: &scene, truncated: &truncated, flipped: false }];
-    if let Some((up_scene, up_truncated)) = &ancestry {
-        parts.push(Part { scene: up_scene, truncated: up_truncated, flipped: true });
+    let mut parts = vec![Part {
+        scene: &scene,
+        truncated: &truncated,
+        dropped: &dropped,
+        flipped: false,
+    }];
+    if let Some((up_scene, up_truncated, up_dropped)) = &ancestry {
+        parts.push(Part {
+            scene: up_scene,
+            truncated: up_truncated,
+            dropped: up_dropped,
+            flipped: true,
+        });
     }
 
-    let opts = Layout { width, max_height, fill, vertical, labels };
+    let opts = Layout { width, max_height, fill, vertical, labels, ghost };
     let page = draw(&parts, &marks, &opts);
     let (w, h) = (page.width(), page.height());
     page.write(out_path)?;
 
-    let drawn = scene.len() + ancestry.as_ref().map_or(0, |(s, _)| s.len() - 1);
+    let drawn = scene.len() + ancestry.as_ref().map_or(0, |(s, _, _)| s.len() - 1);
+    if ghost {
+        // Said in its own line because it is the figure's own claim: these
+        // are the arcs of the graph that the tree is not evidence for.
+        let ghosts = dropped.len() + ancestry.as_ref().map_or(0, |(_, _, d)| d.len());
+        eprintln!("{ghosts} dropped arc(s) drawn as ghosts");
+    }
     let size = std::fs::metadata(out_path)
         .map(|m| m.len())
         .map_err(|e| format!("{out_path}: {e}"))?;
@@ -643,9 +705,16 @@ mod tests {
     /// tests were written against.
     fn page_of(scene: &Scene, truncated: &HashSet<usize>, w: f64, h: f64, fill: bool) -> Page {
         draw(
-            &[Part { scene, truncated, flipped: false }],
+            &[Part { scene, truncated, dropped: &[], flipped: false }],
             &HashSet::new(),
-            &Layout { width: w, max_height: h, fill, vertical: false, labels: false },
+            &Layout {
+                width: w,
+                max_height: h,
+                fill,
+                vertical: false,
+                labels: false,
+                ghost: false,
+            },
         )
     }
 
@@ -709,6 +778,69 @@ mod tests {
     /// The cut frontier is drawn in its own colour: the page of a pruned walk
     /// names [`CUT`] where the page of the whole subtree does not.
     #[test]
+    /// The dropped arcs are drawn only when they are asked for, in their own
+    /// ink and dashed, and the page carries as many of them as the walk said
+    /// it dropped.
+    ///
+    /// The diamond `0 -> {1, 2} -> 3` is the smallest block-shaped thing there
+    /// is: the walk hangs 3 under 1 and drops `2 -> 3`, so a ghosted page must
+    /// hold one more segment than a plain one, and `--ghost` must be what puts
+    /// it there.
+    #[test]
+    fn the_ghosts_are_drawn_and_opt_in() {
+        let arcs = [(0, 1), (0, 2), (1, 3), (2, 3)];
+        let g = forest::graph_of(4, &arcs);
+        let mut arena = Arena::new();
+        let sampled =
+            forest::build_rooted(&g, &mut arena, &[0], &forest::Prune::default()).unwrap();
+
+        assert_eq!(sampled.dropped_arcs, 1, "2 -> 3 is the second parent of 3");
+        assert_eq!(sampled.dropped, vec![(2, 3)], "and it is kept, not only counted");
+        assert!(sampled.dropped_is_complete(), "one arc is under any cap");
+
+        let dropped = sampled.dropped.clone();
+        let arena = forest::lay_out(arena, sampled.root);
+        let scene = Scene::of(&arena, sampled.root).unwrap();
+
+        let render = |dropped: &[(u32, u32)], ghost: bool, name: &str| {
+            let page = draw(
+                &[Part {
+                    scene: &scene,
+                    truncated: &sampled.truncated,
+                    dropped,
+                    flipped: false,
+                }],
+                &HashSet::new(),
+                &Layout {
+                    width: 300.0,
+                    max_height: 300.0,
+                    fill: false,
+                    vertical: false,
+                    labels: false,
+                    ghost,
+                },
+            );
+            ops_of(page, name)
+        };
+
+        // The ghost colour's operands, as `pdf::num` spells them, and the dash.
+        // The scratch names are this test's own: `ops_of` keys its temp file on
+        // them, and the suite runs its tests in one process, in parallel.
+        let plain = render(&dropped, false, "ghost-off");
+        assert!(!plain.contains("0.62 0.72 0.86"), "no ghost was asked for: {plain}");
+        assert!(!plain.contains("] 0 d"), "and so nothing is dashed: {plain}");
+
+        let ghosted = render(&dropped, true, "ghost-on");
+        assert!(ghosted.contains("0.62 0.72 0.86"), "the dropped arc is inked: {ghosted}");
+        assert!(ghosted.contains("[1.6 1.3] 0 d"), "and dashed: {ghosted}");
+        assert!(ghosted.contains("[] 0 d"), "the dash is undone before the tree: {ghosted}");
+
+        // Three tree arcs plus the one ghost, against three tree arcs alone.
+        let segments = |ops: &str| ops.matches(" l\n").count();
+        assert_eq!(segments(&plain), 3, "the tree has three arcs: {plain}");
+        assert_eq!(segments(&ghosted), 4, "the ghost is the fourth: {ghosted}");
+    }
+
     fn the_cut_is_inked_apart() {
         let arcs = [(0, 1), (1, 2), (2, 3), (3, 4)];
 
@@ -739,8 +871,19 @@ mod tests {
 
         let marks: HashSet<usize> = HashSet::from([1]);
         let opts =
-            Layout { width: 300.0, max_height: 300.0, fill: false, vertical: false, labels: true };
-        let page = draw(&[Part { scene: &scene, truncated: &truncated, flipped: false }], &marks, &opts);
+            Layout {
+                width: 300.0,
+                max_height: 300.0,
+                fill: false,
+                vertical: false,
+                labels: true,
+                ghost: false,
+            };
+        let page = draw(
+            &[Part { scene: &scene, truncated: &truncated, dropped: &[], flipped: false }],
+            &marks,
+            &opts,
+        );
         let ops = ops_of(page, "marked");
         assert!(ops.contains("0.16 0.47 0.84"), "node 1 wears the mark: {ops}");
         assert!(ops.contains("(0) Tj") && ops.contains("(2) Tj"), "every node is labelled: {ops}");
@@ -767,11 +910,18 @@ mod tests {
 
         let one_sided = page_of(&down, &down_cut, 300.0, 300.0, false);
         let parts = [
-            Part { scene: &down, truncated: &down_cut, flipped: false },
-            Part { scene: &up, truncated: &up_cut, flipped: true },
+            Part { scene: &down, truncated: &down_cut, dropped: &[], flipped: false },
+            Part { scene: &up, truncated: &up_cut, dropped: &[], flipped: true },
         ];
         let opts =
-            Layout { width: 300.0, max_height: 300.0, fill: false, vertical: false, labels: false };
+            Layout {
+                width: 300.0,
+                max_height: 300.0,
+                fill: false,
+                vertical: false,
+                labels: false,
+                ghost: false,
+            };
         let both = draw(&parts, &HashSet::new(), &opts);
         // The width binds in both cases, so the wider drawing shows up as a
         // smaller scale: the page that hugs it is shorter.

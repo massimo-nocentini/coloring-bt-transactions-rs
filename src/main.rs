@@ -19,18 +19,18 @@
 //! One line goes out per record: the transaction's id, a tab, and then the
 //! color.  What follows the tab is one of two things, and `--sum` is which:
 //!
-//! - by default, the color in full — each term as `(exponent . coefficient)`
-//!   followed by a space, so a transaction with no color prints nothing after
-//!   the tab.  That half of the line is byte for byte what Chicken's `(print*
-//!   (car p*) " ")` produces, which is the point: `cut -f2` off this output and
-//!   the reference can be diffed against it.
+//! - by default, the color in full — each term as `coefficient:exponent`, terms
+//!   separated by a comma and nothing trailing the last of them, so a
+//!   transaction with no color prints nothing after the tab.  The colon is what
+//!   takes a term apart: a weighted coefficient carries dots of its own, and
+//!   `0.5:3` is half a unit of block 3.
 //! - under `--sum`, one number — `sum_b b . weight(b)`, the color's terms added
 //!   up.  See [`Line::Sum`] for what that number is and why it takes weights.
 //!
 //! # A picture instead
 //!
-//! That output is enormous — a color of a thousand blocks is fourteen thousand
-//! bytes of `(block . 1)` — and most of every line is punctuation.  `--png
+//! That output is enormous — a color of a thousand blocks is some nine thousand
+//! bytes of `1:<block>` — and a good part of every line is punctuation.  `--png
 //! <file>` draws the same answer instead: one row per record in the order the
 //! records arrive, one column per block id counting up from 0, and a pixel
 //! saying what the color says about that block — black where the block is in it
@@ -111,15 +111,17 @@
 //! ```
 //!
 //! Every color is then a distribution over block ids summing to 1, and
-//! coefficients print as fixed-point decimals rather than the integer 1.  That
-//! makes the output *not* comparable with the Scheme's, which is why it is a
-//! separate mode rather than a change to the existing one.
+//! coefficients print as decimals rather than the integer 1.  That makes the
+//! output *not* comparable with the Scheme's, which is why it is a separate mode
+//! rather than a change to the existing one.
 //!
-//! Be aware of what the fixed format hides.  Weights decay by roughly a factor
-//! per hop of ancestry, so on a long chain the great majority of a color's terms
-//! fall below what [`PLACES`] decimals can show and print as `0.000000`.  They
-//! are still there and still counted — the sum is still 1 — but they cannot be
-//! read off the output.  See [`push_fixed`].
+//! Those decimals are printed for all the `f64` is worth: the shortest text that
+//! reads back as the same bit pattern, which is exact and no wider than it has
+//! to be — see [`push_f64`].  Weights decay by roughly a factor per hop of
+//! ancestry, so a deep color's terms get very small, and small is where a fixed
+//! format loses them; here they survive, at the cost of a column that does not
+//! line up and of terms that vary in width.  [`Line::Sum`]'s one number is
+//! printed the same way, for the same reason.
 //!
 //! # One number instead
 //!
@@ -130,6 +132,45 @@
 //! reads on the same scale as a block id and the distance between two of them is
 //! a distance along the chain.  It needs weights to mean anything, so it selects
 //! [`weighted`] the way `--weighted` does; see [`Line::Sum`].
+//!
+//! # Threads
+//!
+//! `--threads <n>` spends `n` threads on formatting lines and one more on
+//! reading records, leaving this thread nothing but the fold.  The output is
+//! byte-identical at every width — which it has to be, since diffing `--rings`
+//! against `--sets` is how the fast backend is checked against the exercise,
+//! and a threaded run has to stay usable for that.
+//!
+//! It is worth having because formatting is most of what a text run does.
+//! Holding the fold and the parse constant by comparing against `--sum`, which
+//! walks exactly the same terms and prints one number rather than all of them,
+//! over the first 150,000 records of `cargo run --release --example records --
+//! --window 4000` (see `examples/records.rs`, which is what makes these
+//! checkable):
+//!
+//! ```text
+//!                      serial   threaded          the fold alone
+//!     --weighted       50.44s     5.22s (x16)              3.37s
+//!     --sets            4.67s     1.67s (x8)
+//!     --rings          11.16s     6.48s (x8)
+//! ```
+//!
+//! So a weighted run is ten times faster and lands within two seconds of the
+//! fold it cannot go below.  What crosses the thread boundary is a *copy* of
+//! the color's terms rather than a handle on it — twelve bytes a term against
+//! the hundred and thirty nanoseconds one costs to format — which is why the
+//! backends keep their `Rc` and their layouts, and why [`poly`]'s arena, which
+//! could not have been shared at all, is in the table too.  See [`emit`].
+//!
+//! Two things it is not for.  `--sum` collapses a color to one number, so there
+//! is nothing to spread and copying the terms to spread it costs more than
+//! adding them up here; it is refused rather than obeyed.  A picture has no
+//! lines at all, so `--png`, `--pdf`, `--fold` and `--view` refuse it too.
+//!
+//! `--threads auto` asks the machine, less one for the fold.  Wider is not
+//! always better: the pool saturates once this thread is the bottleneck, which
+//! is around 8 for `--sets` and 16 for `--weighted` on the records measured
+//! above, and past that the extra threads only contend.
 //!
 //! # The other binaries
 //!
@@ -154,6 +195,10 @@
 #[cfg(feature = "gui")]
 mod camera;
 mod colorset;
+// Formatting lines on threads of their own, which is where a text run spends
+// most of itself.  Beside the backends rather than inside one because it works
+// off a copy of a color and so serves all three of them.
+mod emit;
 mod image;
 // The canvas `--pdf` and `--fold` fold the picture onto.  The fold itself is
 // plain arithmetic and builds everywhere; only the Cairo surface `--pdf`
@@ -162,6 +207,9 @@ mod image;
 // theirs.
 mod page;
 mod poly;
+// Reading the records on a thread of its own, which is what `--threads` spends
+// its extra one on.
+mod prefetch;
 mod sexp;
 mod simd;
 mod store;
@@ -202,8 +250,15 @@ enum Backend {
 /// out of the way.  `--sum` is the choice between them.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Line {
-    /// Every term, as `(exponent . coefficient)` followed by a space.  The whole
-    /// color, and the Scheme's own line.
+    /// Every term, as `coefficient:exponent`, with a comma between one term and
+    /// the next.  The whole color, on one line.
+    ///
+    /// The two punctuation marks do not overlap, which is the point of using
+    /// two: under `--weighted` the coefficient is a decimal and brings a dot of
+    /// its own, so `0.5:3` reads as half a unit of block 3 and `split_once(':')`
+    /// takes a term apart wherever the coefficient's dots fall.  A whole color
+    /// splits on `','` and then each term on `':'`, with no rule about which
+    /// occurrence to look at.
     Terms,
     /// One number: `sum_b b . weight(b)`.
     ///
@@ -214,19 +269,22 @@ enum Line {
     /// against — the sum *is* the weighted mean of the block ids, and so reads
     /// on the same scale as a block id: a coinbase minted in block `b` prints
     /// exactly `b`, and a transaction taking half its value from block 0 and
-    /// half from block 3 prints `1.500000`.
+    /// half from block 3 prints `1.5`.
     ///
-    /// Nothing here divides by the total to make that so.  It could, and an
-    /// earlier `tx-mean` binary did; the measured drift from 1 over 42,000
+    /// Printed the way a coefficient is — [`push_f64`], the shortest text that
+    /// reads back as the same bits — so the number on the line *is* the `f64`
+    /// the fold arrived at, and two sums that differ are two lines that differ.
+    /// The column no longer lines up, which a fixed format used to buy; that
+    /// went the way the terms went, since a reader that parses a field cares
+    /// about the bits and one that eyeballs it can pad.
+    ///
+    /// Nothing here divides by the total to make the sum a mean.  It could, and
+    /// an earlier `tx-mean` binary did; the measured drift from 1 over 42,000
     /// records is 5.6e-16, which moves a mean the size of a block id by around
-    /// 1e-12 — six orders of magnitude below the last decimal [`PLACES`] prints.
-    /// The division would buy nothing and would quietly turn a broken invariant
-    /// into a plausible number, where a sum that is not a mean shows up as one.
-    ///
-    /// It is also the form that survives the fixed format best.  A weight too
-    /// small to print as anything but `0.000000` still moves this by its full
-    /// share, because the terms are added before they are rounded rather than
-    /// each rounded on its own.
+    /// 1e-12 — the last few digits of what now prints, and nothing a reader of
+    /// this number is asking about.  The division would buy nothing and would
+    /// quietly turn a broken invariant into a plausible number, where a sum that
+    /// is not a mean shows up as one.
     Sum,
 }
 
@@ -247,6 +305,10 @@ enum Output {
         line: Vec<u8>,
         form: Line,
     },
+    /// The same lines, formatted on a pool of threads and written in order by
+    /// one more.  What `--threads` selects; see [`emit`] for why this is the
+    /// part of a run worth parallelising and what crosses the thread boundary.
+    Threaded(emit::Pool),
     /// A row of pixels per record, in a file.  See [`image`].
     Picture(image::Writer),
     /// The same picture folded onto a canvas and written as one PDF page.  See
@@ -282,31 +344,32 @@ impl Output {
                 // line the Scheme printed.
                 push_int(line, tx_id);
                 line.push(b'\t');
-                match form {
-                    Line::Terms => store.for_each_term(color, |exponent, coefficient| {
-                        line.push(b'(');
-                        push_int(line, exponent);
-                        line.extend_from_slice(b" . ");
-                        if S::WEIGHTED {
-                            push_fixed(line, coefficient);
-                        } else {
-                            // Always exactly 1 here, and printed as the integer
-                            // the Scheme prints, so an unweighted run stays byte
-                            // for byte comparable.
-                            push_int(line, coefficient as usize);
-                        }
-                        line.extend_from_slice(b") ");
-                    }),
-                    Line::Sum => {
-                        let mut sum = 0.0f64;
-                        store.for_each_term(color, |block, weight| {
-                            sum += block as f64 * weight;
-                        });
-                        push_fixed(line, sum);
-                    }
-                }
-                line.push(b'\n');
+                // The body is `emit`'s, and so is the threaded path's: one
+                // definition of what a line says, driven here straight off the
+                // store and there off a copy of the color.
+                let mut body = emit::Body::new(&mut *line, *form, S::WEIGHTED);
+                store.for_each_term(color, |exponent, coefficient| {
+                    body.term(exponent, coefficient)
+                });
+                body.finish();
                 out.write_all(line)
+            }
+            // The same line, made somewhere else.  All this thread does is copy
+            // the terms out of the store -- about a nanosecond each, against the
+            // hundred and thirty a weighted one costs to format -- and hand them
+            // on.
+            Output::Threaded(pool) => {
+                let mut snapshot = pool.stage(tx_id);
+                if S::WEIGHTED {
+                    store.for_each_term(color, |exponent, coefficient| {
+                        snapshot.push_weighted(exponent, coefficient)
+                    });
+                } else {
+                    // Every coefficient is 1, so only the block is worth
+                    // carrying: four bytes a term rather than sixteen.
+                    store.for_each_term(color, |exponent, _| snapshot.push_flat(exponent));
+                }
+                pool.dispatch(snapshot)
             }
             // The coefficient goes with the block: under the unweighted
             // backends it is 1 for every term there is and the pixel is simply
@@ -355,6 +418,9 @@ impl Output {
     fn finish(self) -> io::Result<()> {
         match self {
             Output::Text { mut out, .. } => out.flush(),
+            // Closes the dispatch channels, lets the pipeline drain, and answers
+            // whatever the writing thread made of it.
+            Output::Threaded(pool) => pool.finish(),
             Output::Picture(picture) => picture.finish(),
             #[cfg(feature = "pdf")]
             Output::Page(sheet) => sheet.finish(),
@@ -368,7 +434,7 @@ impl Output {
 }
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
-                     [--rings|--sets|--weighted] [--sum] \
+                     [--rings|--sets|--weighted] [--sum] [--threads <n>|auto] \
                      [--png <file>|--pdf <file>|--fold <file>|--view] \
                      [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] < records";
 
@@ -480,8 +546,9 @@ fn plan(
     gain: Option<f64>,
     ink: image::Ink,
     form: Line,
+    threads: usize,
     limit: usize,
-) -> Result<(Output, Box<dyn io::Read>, usize, usize), String> {
+) -> Result<(Output, Box<dyn io::Read + Send>, usize, usize), String> {
     // Held as a file when standard input is one, so that `survey` can read the
     // records and put them back.
     let mut source = rewindable_stdin();
@@ -498,13 +565,28 @@ fn plan(
                 name
             ));
         }
-        return Ok((
-            Output::text(Box::new(io::stdout().lock()), form),
-            records_from(source),
-            0,
-            limit,
-        ));
+        // `io::stdout()` rather than a lock of it, because the writing happens
+        // on a thread of the pool's own and a `StdoutLock` does not cross one.
+        // Nothing is lost: the megabyte of buffering is on this side of it, so
+        // the lock is taken once a megabyte either way.
+        let output = match threads {
+            0 => Output::text(Box::new(io::stdout().lock()), form),
+            n => Output::Threaded(emit::Pool::new(Box::new(io::stdout()), form, n)),
+        };
+        return Ok((output, records_from(source), 0, limit));
     };
+
+    // A picture has no lines to format, so there is nothing for a pool of
+    // formatters to do with one.  Refused rather than ignored, for the reason
+    // `--blocks` without a picture is: a flag that quietly does nothing is a run
+    // doing something other than what was asked.
+    if threads > 0 {
+        return Err(format!(
+            "--threads spreads the work of writing lines, and {} draws a picture \
+             instead; drop one of them",
+            sheet.flag()
+        ));
+    }
 
     // A row window bounds the run as well as the picture: the colors of every
     // record before the window still have to be computed --- a color is the
@@ -671,10 +753,14 @@ fn fold(
 /// Boxed rather than made another type parameter of [`run`]: this is read a
 /// megabyte at a time, so a virtual call per refill is nothing, where another
 /// parameter would be another copy of the driver per backend.
-fn records_from(source: Option<File>) -> Box<dyn io::Read> {
+fn records_from(source: Option<File>) -> Box<dyn io::Read + Send> {
     match source {
         Some(file) => Box::new(file),
-        None => Box::new(io::stdin().lock()),
+        // The handle rather than a lock of it, so that it can be given to the
+        // reading thread `--threads` starts -- a `StdinLock` does not cross
+        // one.  `sexp::Reader` fills a megabyte before it asks again, so this
+        // is one lock a megabyte either way.
+        None => Box::new(io::stdin()),
     }
 }
 
@@ -733,6 +819,8 @@ fn main() -> ExitCode {
     let mut bin: Option<usize> = None;
     let mut window: Option<(usize, usize)> = None;
     let mut gain: Option<f64> = None;
+    // 0 is the serial path, which is what runs unless a count is asked for.
+    let mut threads: usize = 0;
 
     // What a page exported from `--view`'s window is named after: the program,
     // the way the viewers name theirs, so that two windows open in one directory
@@ -825,6 +913,30 @@ fn main() -> ExitCode {
                     i += taken;
                     continue;
                 }
+                if let Some((n, used)) = option(&args, i, "--threads") {
+                    // `auto` is what the machine says, less one for the fold
+                    // thread that feeds the pool -- it is the producer, and
+                    // oversubscribing it is how a pipeline goes slower.
+                    let parsed = if n == "auto" {
+                        std::thread::available_parallelism()
+                            .map(|p| usize::from(p).saturating_sub(1).max(1))
+                            .ok()
+                    } else {
+                        n.parse::<usize>().ok()
+                    };
+                    match parsed {
+                        Some(n) => threads = n,
+                        None => {
+                            eprintln!(
+                                "circular-polynomial: --threads wants a count or `auto`, got {:?}",
+                                n
+                            );
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    i += used;
+                    continue;
+                }
                 if let Some((g, used)) = option(&args, i, "--gain") {
                     match g.parse::<f64>() {
                         Ok(g) => gain = Some(g),
@@ -877,6 +989,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         backend = Backend::Weighted;
+        // A pool of formatters is worth having because formatting a color is
+        // expensive, and `--sum` is the one line form for which it is not: the
+        // whole color collapses to one number, and handing a worker a copy of
+        // the terms to add up costs more than adding them up here does.
+        // Measured over the corpus `emit` names -- 150,000 records of
+        // `--example records -- --window 4000` -- `--sum` goes from 3.34s
+        // serial to 5.20s at two threads, 4.54s at four and 4.51s at eight.
+        // Batching the dispatch, which fixed the same shape of loss for small
+        // colors, does not help here: the copy is the cost, not the channel.
+        // So this is refused rather than obeyed.
+        if threads > 0 {
+            eprintln!(
+                "circular-polynomial: --sum prints one number a line, so there is \
+                 nothing for --threads to spread; drop one of them"
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
     // A picture is drawn in whichever ink the backend has to offer, and that is
@@ -888,7 +1017,17 @@ fn main() -> ExitCode {
     };
 
     let (output, input, skip, limit) =
-        match plan(picture, blocks, bin, window, gain, ink, form, limit) {
+        match plan(
+            picture,
+            blocks,
+            bin,
+            window,
+            gain,
+            ink,
+            form,
+            threads,
+            limit,
+        ) {
         Ok(plan) => plan,
         Err(message) => {
             eprintln!("circular-polynomial: {}", message);
@@ -896,12 +1035,22 @@ fn main() -> ExitCode {
         }
     };
 
+    // `--threads` spends one more than it is given: the pool formats and this
+    // one parses, so neither is on the fold's critical path.  Without it the
+    // records are read here, between one colour and the next, exactly as they
+    // always were.
+    let source = if threads > 0 {
+        prefetch::Records::ahead(input)
+    } else {
+        prefetch::Records::here(input)
+    };
+
     // One instantiation of the loop per backend, so none of them pays for the
     // others existing.
     let outcome = match backend {
-        Backend::Rings => run::<RingStore>(limit, skip, stats, output, input),
-        Backend::Sets => run::<colorset::SetStore>(limit, skip, stats, output, input),
-        Backend::Weighted => run::<weighted::WeightedSets>(limit, skip, stats, output, input),
+        Backend::Rings => run::<RingStore>(limit, skip, stats, output, source),
+        Backend::Sets => run::<colorset::SetStore>(limit, skip, stats, output, source),
+        Backend::Weighted => run::<weighted::WeightedSets>(limit, skip, stats, output, source),
     };
 
     match outcome {
@@ -920,13 +1069,10 @@ fn run<S: ColorStore>(
     skip: usize,
     stats: bool,
     mut out: Output,
-    input: Box<dyn io::Read>,
+    mut source: prefetch::Records,
 ) -> io::Result<()> {
-    let mut reader = sexp::Reader::new(input);
-
     let mut store = S::new();
     let mut colors: HashMap<usize, (S::Color, usize)> = HashMap::new();
-    let mut inputs: Vec<sexp::Input> = Vec::new();
 
     // Only read when `--stats` is on, but started unconditionally: the clock has
     // to be running before the first record, and one `Instant::now()` per
@@ -936,8 +1082,12 @@ fn run<S: ColorStore>(
 
     let mut records: usize = 0;
     while records < limit {
-        let record = match reader.next_record(&mut inputs)? {
-            Some(r) => r,
+        // The record and its inputs, borrowed from whichever buffer they were
+        // parsed into -- this thread's, or the reading thread's batch.  The
+        // borrow ends at the next call, which is after the fold has turned the
+        // inputs into a colour.
+        let (record, inputs) = match source.next()? {
+            Some(pair) => pair,
             None => break,
         };
 
@@ -1119,7 +1269,7 @@ fn run<S: ColorStore>(
             Output::Fold(sheet) => folded(sheet),
             #[cfg(feature = "gui")]
             Output::Window { canvas, .. } => folded(canvas),
-            Output::Text { .. } => {}
+            Output::Text { .. } | Output::Threaded(_) => {}
         }
     }
 
@@ -1156,47 +1306,27 @@ fn rate(records: usize, seconds: f64) -> String {
     }
 }
 
-/// How many decimal places a weight, or a sum of them, is printed to.
+/// An `f64` at full precision: the shortest decimal that reads back as exactly
+/// this number, which is what Rust's `Display` gives and what every float this
+/// program prints — a term's coefficient, and `--sum`'s one number — goes
+/// through.
 ///
-/// Enough to separate two transactions that differ, few enough to hold a column.
-/// Six is also well inside what an `f64` can say about a number the size of a
-/// block id: a sum near a million still has nine significant digits to spare.
-const PLACES: u32 = 6;
-
-/// A non-negative value to [`PLACES`] fixed decimals.
+/// Shortest-round-trip rather than a fixed width because a coefficient is a
+/// weight, weights decay by roughly a factor per hop of ancestry, and a fixed
+/// six places turns everything below a millionth into `0.000000` — present in
+/// the sum, unreadable on the line.  Nothing here is rounded away: parse a term
+/// back and the same bits come out.  [`Line::Sum`]'s number goes through here
+/// too, so that is true of a whole line either way it is printed.
 ///
-/// Fixed rather than shortest-round-trip so a column lines up, and done in
-/// integers rather than with `{}`, for the same reason [`push_int`] exists: this
-/// runs once per term, tens of millions of times, and float formatting is not
-/// cheap.  Scaling by a power of ten and printing two integers costs one
-/// multiply and one rounding.
-///
-/// What that gives up is resolution.  A weight below half of the smallest
-/// representable place prints as `0.000000` — the term is still there, and still
-/// counts toward [`Line::Sum`], it just cannot be read off the output.  Deep
-/// enough ancestry will do that to a weight.
-///
-/// The scaled value has to fit a `u64`, which at six places leaves room up to
-/// about 1.8e13 — some ten million times the length of the chain, so the cast is
-/// not a limit anything printed here will reach.
-fn push_fixed(out: &mut Vec<u8>, value: f64) {
-    let scale = 10u64.pow(PLACES);
-    let units = (value * scale as f64).round() as u64;
-
-    push_int(out, (units / scale) as usize);
-    out.push(b'.');
-
-    // The fraction is zero-padded to a fixed width, which `push_int` will not do
-    // -- it prints 5 as "5" where this needs "000005".
-    let mut fraction = units % scale;
-    let mut digits = [b'0'; PLACES as usize];
-    let mut i = digits.len();
-    while fraction > 0 {
-        i -= 1;
-        digits[i] = b'0' + (fraction % 10) as u8;
-        fraction /= 10;
-    }
-    out.extend_from_slice(&digits);
+/// This is the formatting machinery [`push_int`] exists to avoid.  Only
+/// `--weighted` pays it per term; an unweighted coefficient is the integer 1 and
+/// takes the cheap path, and `--sum` pays it once a line.  `Display` never
+/// switches to an exponent, so a denormal weight would print its leading zeros
+/// in full -- far below what a chain of any length produces, and the alternative
+/// is an `e` in a field a reader is splitting on punctuation.
+fn push_f64(out: &mut Vec<u8>, value: f64) {
+    // Writing to a `Vec` cannot fail, and there is no error here to report.
+    let _ = write!(out, "{}", value);
 }
 
 /// Decimal, straight into the line buffer.  `write!` would do it too, but its
@@ -1249,18 +1379,74 @@ mod tests {
         format!("((1 {} {} 0 0 0 0) ({}) ({}))\n", block, tx, inputs, outs)
     }
 
-    /// Color `records` with the backend `form` implies and answer the lines.
-    fn lines<S: ColorStore>(records: &str, form: Line, limit: usize) -> Vec<String> {
-        let sink = Shared::default();
-        let out = Output::text(Box::new(sink.clone()), form);
-        run::<S>(limit, 0, false, out, Box::new(io::Cursor::new(records.to_string().into_bytes())))
-            .expect("the records are well formed");
-        let written = sink.0.borrow().clone();
+    /// A sink a threaded run can write to.  `Send`, unlike [`Shared`], because
+    /// `Output::Threaded` writes from a thread of the pool's own.
+    #[derive(Clone, Default)]
+    struct SharedSend(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for SharedSend {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The whole driver, run through the formatter pool rather than the serial
+    /// writer.
+    ///
+    /// This is the seam nothing else covers: `emit`'s own tests drive `Pool`
+    /// directly and every other test here goes through `Output::text`, so the
+    /// arm of `Output::emit` that fills a `Snapshot` -- and its choice of
+    /// `push_flat` against `push_weighted` -- was only ever exercised by
+    /// running the binary.
+    fn threaded_lines<S: ColorStore>(
+        records: &str,
+        form: Line,
+        limit: usize,
+        threads: usize,
+    ) -> Vec<String> {
+        let sink = SharedSend::default();
+        let out = Output::Threaded(emit::Pool::new(Box::new(sink.clone()), form, threads));
+        run::<S>(limit, 0, false, out, source(records)).expect("the records are well formed");
+        let written = sink.0.lock().unwrap().clone();
         String::from_utf8(written)
             .expect("the output is digits and punctuation")
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    /// The records as something `run` can read, parsed on this thread.
+    fn source(records: &str) -> prefetch::Records {
+        prefetch::Records::here(Box::new(io::Cursor::new(records.to_string().into_bytes())))
+    }
+
+    /// Color `records` with the backend `form` implies and answer the lines.
+    ///
+    /// Run twice, once against each reader, and the two are required to agree:
+    /// reading ahead is a thread and a batch and nothing about what a record
+    /// says, so every assertion in this file is an assertion about both.
+    fn lines<S: ColorStore>(records: &str, form: Line, limit: usize) -> Vec<String> {
+        let read = |source| {
+            let sink = Shared::default();
+            let out = Output::text(Box::new(sink.clone()), form);
+            run::<S>(limit, 0, false, out, source).expect("the records are well formed");
+            let written = sink.0.borrow().clone();
+            String::from_utf8(written)
+                .expect("the output is digits and punctuation")
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        };
+        let here = read(source(records));
+        let ahead = read(prefetch::Records::ahead(Box::new(io::Cursor::new(
+            records.to_string().into_bytes(),
+        ))));
+        assert_eq!(ahead, here, "the two readers coloured the records differently");
+        here
     }
 
     /// The sums of a run, which is `--sum`'s backend and no other.
@@ -1270,22 +1456,90 @@ mod tests {
 
     /// Every line names its transaction and then says what it has to say, with a
     /// tab between the two -- and what follows the tab under [`Line::Terms`] is
-    /// still exactly the Scheme's line, trailing space and all.
+    /// `coefficient:exponent` terms with a comma between them and nothing after
+    /// the last.
     #[test]
     fn a_line_is_the_transaction_then_a_tab_then_the_color() {
         let records = record(3, 0, &[], 1) + &record(4, 1, &[(0, 50)], 0);
         let terms = lines::<RingStore>(&records, Line::Terms, usize::MAX);
-        assert_eq!(terms, ["0\t(3 . 1) ", "1\t(3 . 1) "]);
+        assert_eq!(terms, ["0\t1:3", "1\t1:3"]);
         for line in &terms {
             let (id, color) = line.split_once('\t').expect("a tab in every line");
             assert!(id.bytes().all(|b| b.is_ascii_digit()), "{:?}", id);
-            assert!(color.ends_with(' '), "the Scheme's trailing space: {:?}", color);
+            assert!(!color.ends_with(','), "the comma separates, it does not trail: {:?}", color);
         }
+    }
+
+    /// A weighted coefficient is written out for all the `f64` is worth, and the
+    /// colon that separates it from the block is the only one in the term --
+    /// which is the only thing a reader has to know to take the two apart.
+    #[test]
+    fn a_weighted_term_is_the_whole_coefficient_then_the_block() {
+        let records = record(0, 0, &[], 1) + &record(3, 1, &[], 1)
+            + &record(5, 2, &[(0, 1), (1, 2)], 1);
+        let line = lines::<weighted::WeightedSets>(&records, Line::Terms, usize::MAX)
+            .pop()
+            .expect("three records in, three lines out");
+        let (_, color) = line.split_once('\t').unwrap();
+        let mut terms = color.split(',').map(|t| {
+            let (coefficient, block) = t.split_once(':').expect("a colon in every term");
+            (block.parse::<usize>().unwrap(), coefficient.parse::<f64>().unwrap())
+        });
+        // Decreasing block order, which is the order the store walks a color in.
+        assert_eq!(terms.next(), Some((3, 2.0 / 3.0)), "two thirds of the value, exactly");
+        assert_eq!(terms.next(), Some((0, 1.0 / 3.0)));
+        assert_eq!(terms.next(), None);
     }
 
     /// The three backends are three ways to the same answer, and two of them
     /// promise the same bytes.  A color with no terms is an empty half-line
     /// rather than a missing one.
+    /// A threaded run and a serial one are the same run.
+    ///
+    /// Every backend, both line forms, several widths -- and the width is
+    /// varied because dispatch is round-robin over the workers, so a count that
+    /// divides the number of batches and one that does not take different paths
+    /// through the writer's collection order.
+    #[test]
+    fn the_pool_colours_exactly_what_the_serial_writer_does() {
+        let mut records = String::new();
+        for tx in 0..400 {
+            let block = tx / 5;
+            let spends: Vec<(usize, usize)> = if tx == 0 {
+                Vec::new()
+            } else {
+                // A couple of recent ancestors, so colours grow and the lines
+                // get long enough to be worth batching.
+                (1..=2usize)
+                    .filter(|k| tx >= *k)
+                    .map(|k| (tx - k, 1 + tx % 7))
+                    .collect()
+            };
+            records.push_str(&record(block, tx, &spends, 4));
+        }
+
+        for threads in [1usize, 2, 3, 8] {
+            assert_eq!(
+                threaded_lines::<colorset::SetStore>(&records, Line::Terms, usize::MAX, threads),
+                lines::<colorset::SetStore>(&records, Line::Terms, usize::MAX),
+                "--sets disagreed at {} threads",
+                threads
+            );
+            assert_eq!(
+                threaded_lines::<RingStore>(&records, Line::Terms, usize::MAX, threads),
+                lines::<RingStore>(&records, Line::Terms, usize::MAX),
+                "--rings disagreed at {} threads",
+                threads
+            );
+            assert_eq!(
+                threaded_lines::<weighted::WeightedSets>(&records, Line::Terms, usize::MAX, threads),
+                lines::<weighted::WeightedSets>(&records, Line::Terms, usize::MAX),
+                "--weighted disagreed at {} threads",
+                threads
+            );
+        }
+    }
+
     #[test]
     fn the_unweighted_backends_agree_line_for_line() {
         let records = record(0, 0, &[], 2)
@@ -1298,7 +1552,7 @@ mod tests {
         );
         assert_eq!(
             lines::<RingStore>(&records, Line::Terms, usize::MAX).last().unwrap(),
-            "3\t(5 . 1) (0 . 1) "
+            "3\t1:5,1:0"
         );
     }
 
@@ -1306,7 +1560,7 @@ mod tests {
     /// and the sum is that block, exactly.
     #[test]
     fn a_coinbase_sits_on_its_own_block() {
-        assert_eq!(sums(&record(7, 0, &[], 1), usize::MAX), ["0\t7.000000"]);
+        assert_eq!(sums(&record(7, 0, &[], 1), usize::MAX), ["0\t7"]);
     }
 
     /// Half the value from block 0 and half from block 3 puts the sum halfway
@@ -1315,7 +1569,7 @@ mod tests {
     fn two_equal_inputs_land_between_their_blocks() {
         let records =
             record(0, 0, &[], 1) + &record(3, 1, &[], 1) + &record(5, 2, &[(0, 50), (1, 50)], 1);
-        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t1.500000");
+        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t1.5");
     }
 
     /// Weighting is by amount, not by input count: nine tenths of the value
@@ -1324,7 +1578,7 @@ mod tests {
     fn the_sum_follows_the_value_not_the_inputs() {
         let records =
             record(0, 0, &[], 1) + &record(10, 1, &[], 1) + &record(11, 2, &[(0, 90), (1, 10)], 1);
-        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t1.000000");
+        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t1");
     }
 
     /// A chain of single-input transactions carries its ancestor's sum along
@@ -1339,7 +1593,7 @@ mod tests {
         }
         let lines = sums(&records, usize::MAX);
         assert!(
-            lines[3..].iter().all(|l| l.ends_with("\t2.000000")),
+            lines[3..].iter().all(|l| l.ends_with("\t2")),
             "{:?}",
             lines
         );
@@ -1351,7 +1605,7 @@ mod tests {
     fn inputs_worth_nothing_share_equally() {
         let records =
             record(0, 0, &[], 1) + &record(6, 1, &[], 1) + &record(9, 2, &[(0, 0), (1, 0)], 1);
-        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t3.000000");
+        assert_eq!(sums(&records, usize::MAX).last().unwrap(), "2\t3");
     }
 
     /// The claim [`Line::Sum`] rests on: a color's weights sum to 1, so the sum
@@ -1414,12 +1668,13 @@ mod tests {
             colors.insert(record.tx_id, (color, 1));
         }
 
-        // A few ULPs, over a fold forty deep.  The invariant holds, and the
-        // division `Line::Sum` does not do would have changed nothing.
+        // A few ULPs, over a fold forty deep.  The invariant holds, so the
+        // division `Line::Sum` does not do would move the number by a few of the
+        // last digits it prints and by nothing a reader of a block id reads.
         assert!(worst_drift < 1e-12, "weights drifted from 1 by {}", worst_drift);
         assert!(
             worst_gap < 1e-9,
-            "the sum and the mean differ by {}, which the printed decimals would show",
+            "the sum and the mean differ by {}, far enough up to be worth dividing",
             worst_gap
         );
     }
@@ -1429,7 +1684,7 @@ mod tests {
     #[test]
     fn the_limit_takes_a_prefix() {
         let records = record(0, 0, &[], 1) + &record(1, 1, &[], 1) + &record(2, 2, &[], 1);
-        assert_eq!(sums(&records, 2), ["0\t0.000000", "1\t1.000000"]);
+        assert_eq!(sums(&records, 2), ["0\t0", "1\t1"]);
         assert!(sums(&records, 0).is_empty());
     }
 
@@ -1439,7 +1694,7 @@ mod tests {
     fn spending_an_unknown_transaction_is_an_error() {
         let records = record(0, 9, &[(42, 5)], 1);
         let out = Output::text(Box::new(Shared::default()), Line::Terms);
-        let error = run::<RingStore>(usize::MAX, 0, false, out, Box::new(io::Cursor::new(records.into_bytes())))
+        let error = run::<RingStore>(usize::MAX, 0, false, out, source(&records))
             .expect_err("transaction 42 was never read");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(
@@ -1449,16 +1704,23 @@ mod tests {
         );
     }
 
-    /// The fixed format pads the fraction and does not pad the integer part.
+    /// A float is written for all it is worth and no wider: no padding, no
+    /// trailing zeros, and nothing rounded away -- what comes out reads back as
+    /// the bits that went in.  This is both a coefficient's format and, since
+    /// the fixed one went, a sum's.
     #[test]
-    fn the_fixed_format_pads_only_the_fraction() {
+    fn a_float_is_the_shortest_text_that_reads_back() {
+        for value in [0.5, 12.0, 900_000.000_001_5, 2.0 / 3.0, 1e-300] {
+            let mut line = Vec::new();
+            push_f64(&mut line, value);
+            let text = String::from_utf8(line).unwrap();
+            assert_eq!(text.parse::<f64>().unwrap(), value, "{} did not survive", text);
+        }
+
         let mut line = Vec::new();
-        push_fixed(&mut line, 0.5);
-        push_fixed(&mut line, 12.0);
-        push_fixed(&mut line, 900_000.000_001_5);
-        assert_eq!(
-            String::from_utf8(line).unwrap(),
-            "0.50000012.000000900000.000002"
-        );
+        push_f64(&mut line, 0.5);
+        push_f64(&mut line, 12.0);
+        push_f64(&mut line, 900_000.000_001_5);
+        assert_eq!(String::from_utf8(line).unwrap(), "0.512900000.0000015");
     }
 }
