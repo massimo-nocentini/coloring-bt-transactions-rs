@@ -93,6 +93,32 @@ Three representations of a colour, all driven by the one loop:
   its ancestor's colour, and every colour sums to 1.  Different output, on
   purpose, so it is a separate mode rather than a flag on the others.
 
+### A colour ramp instead of grey
+
+`--palette` draws the weighted picture through a colour ramp.  The samples are
+the same numbers and the image data is *byte for byte* what the greyscale run
+writes — the file differs by 780 bytes, which is the `PLTE` chunk and its
+header, and `IHDR` saying colour type 3 instead of 0.
+
+What it buys is levels.  Grey has 254 and an eye reads perhaps thirty of them,
+and a weight here lives in a fraction of a percent, so most of what the picture
+distinguishes is invisible in it.  The ramp is built in
+[Oklab](https://bottosson.github.io/posts/oklab/) rather than HSL — HSL's
+"lightness" is not luminance and its hue circle is wildly non-uniform, so a ramp
+built in it has bands where the eye sees a step that is not there — and it
+carries the magnitude on lightness, monotonically, so the picture stays readable
+photocopied, by a colour-deficient eye, and folded small enough that a cell is
+one sample.  Hue and chroma only separate levels that lightness leaves adjacent.
+
+It needs a quantity to spend the levels on, so it wants `--weighted`; and it
+colours pixels, so it wants `--png` — the folded outputs shade a cell by how
+much of it is inked and have no sample to look up.  Both are refused rather than
+ignored.
+
+```sh
+coloring-bt-transactions all --weighted --palette --png colors.png --bin 4096 < records
+```
+
 ### Three numbers instead
 
 `--sum` is the colour's first moment and nothing else, which loses more than it

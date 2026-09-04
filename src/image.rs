@@ -145,6 +145,9 @@
 use std::fs::File;
 use std::io::{self, Write};
 
+use crate::oklch;
+#[cfg(test)]
+use crate::oklch::Rgb;
 use flate2::write::ZlibEncoder;
 use flate2::{Compression, Crc};
 
@@ -196,6 +199,19 @@ pub enum Ink {
     /// Eight bits: how much of the transaction's value came through the block,
     /// [`shade`]d.
     Weighted,
+    /// The same eight bits, read through a palette rather than as a grey.
+    ///
+    /// The sample is exactly [`Ink::Weighted`]'s -- same [`shade`], same
+    /// counting up to paper, so same union when two transactions share a row --
+    /// and what changes is only that the file says colour type 3 and carries a
+    /// `PLTE` chunk, so the reader looks the number up instead of taking it for
+    /// a grey.  The picture is the same size to the byte.
+    ///
+    /// It is worth the chunk because grey has 254 steps and an eye reads some
+    /// thirty of them, and the quantity here lives in a fraction of a percent:
+    /// see [`crate::oklch`], which builds the ramp and says why it is built in
+    /// a perceptual space rather than in HSL.
+    Palette,
 }
 
 impl Ink {
@@ -203,7 +219,18 @@ impl Ink {
     fn depth(self) -> u8 {
         match self {
             Ink::Flat => 1,
-            Ink::Weighted => 8,
+            Ink::Weighted | Ink::Palette => 8,
+        }
+    }
+
+    /// What `IHDR` calls the pixel: 0 is greyscale, 3 is a palette index.
+    ///
+    /// A palette makes the file say `PLTE` as well, which is the only other
+    /// difference between this ink and [`Ink::Weighted`].
+    fn colour_type(self) -> u8 {
+        match self {
+            Ink::Flat | Ink::Weighted => 0,
+            Ink::Palette => 3,
         }
     }
 
@@ -211,7 +238,7 @@ impl Ink {
     fn stride(self, width: usize) -> usize {
         match self {
             Ink::Flat => width.div_ceil(8),
-            Ink::Weighted => width,
+            Ink::Weighted | Ink::Palette => width,
         }
     }
 }
@@ -315,11 +342,22 @@ impl Writer {
         ihdr[..4].copy_from_slice(&(width as u32).to_be_bytes());
         ihdr[4..8].copy_from_slice(&(height as u32).to_be_bytes());
         ihdr[8] = ink.depth(); // one bit a sample, or eight for a weighted one
-        ihdr[9] = 0; // greyscale: no palette, no colour, no alpha
+        ihdr[9] = ink.colour_type(); // greyscale, or an index into `PLTE`
         ihdr[10] = 0; // deflate, which is the only compression PNG has
         ihdr[11] = 0; // the filtering PNG always uses; `NO_FILTER` is per row
         ihdr[12] = 0; // not interlaced
         chunk(&mut out, b"IHDR", &ihdr)?;
+
+        // `PLTE` is required for colour type 3 and has to come before the first
+        // `IDAT`.  One entry a sample, so the indices the rows already carry
+        // need no translating.
+        if ink == Ink::Palette {
+            let mut plte = Vec::with_capacity(3 * oklch::RAMP_LEN);
+            for entry in oklch::ramp() {
+                plte.extend_from_slice(&entry);
+            }
+            chunk(&mut out, b"PLTE", &plte)?;
+        }
 
         let stride = ink.stride(width);
         let mut row = vec![BLANK; 1 + stride];
@@ -373,7 +411,11 @@ impl Writer {
                 self.row[1 + byte] &= !(0x80 >> (block % 8));
                 byte
             }
-            Ink::Weighted => {
+            // The palette's sample is the weighted one: the ramp is ordered so
+            // that a smaller index is heavier ink, exactly as a smaller grey is,
+            // which is what lets the two share this arithmetic and the `min`
+            // that makes a binned row the union of its transactions.
+            Ink::Weighted | Ink::Palette => {
                 // A sample counts *up* to white, so the darker of two is the
                 // smaller, and the row keeps that one.
                 let sample = PAPER_8 - shade(weight);
@@ -536,14 +578,17 @@ mod tests {
             let info = reader.info();
             let depth = match ink {
                 Ink::Flat => png::BitDepth::One,
-                Ink::Weighted => png::BitDepth::Eight,
+                Ink::Weighted | Ink::Palette => png::BitDepth::Eight,
             };
             assert_eq!(info.bit_depth, depth, "the depth the picture was drawn at");
-            assert_eq!(
-                info.color_type,
-                png::ColorType::Grayscale,
-                "one greyscale channel"
-            );
+            // The ink decides this too: the palette one is the same samples
+            // read through `PLTE`, so a decoder has to see colour type 3 there
+            // and a plain greyscale channel everywhere else.
+            let (colour, what) = match ink {
+                Ink::Flat | Ink::Weighted => (png::ColorType::Grayscale, "one greyscale channel"),
+                Ink::Palette => (png::ColorType::Indexed, "an index into PLTE"),
+            };
+            assert_eq!(info.color_type, colour, "{}", what);
         }
         let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
         let frame = reader.next_frame(&mut buf).unwrap();
@@ -554,7 +599,7 @@ mod tests {
             for x in 0..w {
                 samples.push(match ink {
                     Ink::Flat => (row[x / 8] >> (7 - x % 8)) & 1,
-                    Ink::Weighted => row[x],
+                    Ink::Weighted | Ink::Palette => row[x],
                 });
             }
         }
@@ -880,6 +925,72 @@ mod tests {
 
     /// The claim the weighted picture rests on, asserted the way the bilevel one
     /// is: every sample the writer laid down is the sample a decoder gives back.
+    /// The palette picture has to be the weighted one with a `PLTE` chunk
+    /// bolted on: same indices, same size, and a decoder that shares no code
+    /// with the writer has to agree about both.
+    #[test]
+    fn a_palette_picture_is_the_weighted_one_plus_its_colours() {
+        let weights = [0.0, 0.001, 0.02, 0.25, 0.5, 1.0];
+        let path = scratch("palette-round-trip");
+        let grey_path = scratch("palette-round-trip-grey");
+
+        for (at, ink) in [(&path, Ink::Palette), (&grey_path, Ink::Weighted)] {
+            let mut w = Writer::new(at, weights.len(), 1, 1, ink).unwrap();
+            for (block, &weight) in weights.iter().enumerate() {
+                w.set(block, weight);
+            }
+            w.end_transaction().unwrap();
+            w.finish().unwrap();
+        }
+
+        // The samples are the same numbers under both inks, which is the claim
+        // that lets the two share `set` and its `min`.
+        let (_, _, palette_samples) = decode(&path, Ink::Palette);
+        let (_, _, grey_samples) = decode(&grey_path, Ink::Weighted);
+        assert_eq!(
+            palette_samples, grey_samples,
+            "a palette picture holds exactly the weighted picture's samples"
+        );
+
+        // And the file says so: colour type 3, carrying the ramp.
+        let file = io::BufReader::new(File::open(&path).expect("the picture is there"));
+        let reader = png::Decoder::new(file).read_info().expect("a PNG header");
+        let info = reader.info();
+        assert_eq!(
+            info.color_type,
+            png::ColorType::Indexed,
+            "a palette picture is colour type 3"
+        );
+        let plte = info.palette.as_ref().expect("colour type 3 requires PLTE");
+        assert_eq!(plte.len(), 3 * oklch::RAMP_LEN, "one RGB entry a sample");
+        let ramp = oklch::ramp();
+        for (index, entry) in ramp.iter().enumerate() {
+            assert_eq!(
+                &plte[3 * index..3 * index + 3],
+                &entry[..],
+                "palette entry {} is not the ramp's",
+                index
+            );
+        }
+
+        // Read back through the palette a viewer would use: no weight is paper,
+        // and the heaviest pixel is darker than it.  That is the ordering the
+        // `min` in `set` depends on, checked at the far end of the file.
+        let paper = ramp[palette_samples[0] as usize];
+        let heaviest = ramp[palette_samples[weights.len() - 1] as usize];
+        let ink_of = |c: Rgb| c.iter().map(|&v| v as u32).sum::<u32>();
+        assert_eq!(paper, ramp[PAPER_8 as usize], "no weight is paper");
+        assert!(
+            ink_of(heaviest) < ink_of(paper),
+            "the heaviest pixel has to be darker than paper: {:?} against {:?}",
+            heaviest,
+            paper
+        );
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&grey_path).ok();
+    }
+
     #[test]
     fn a_weighted_picture_round_trips_losslessly() {
         let colors: Vec<Vec<(usize, f64)>> = (0..9)

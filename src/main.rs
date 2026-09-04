@@ -50,6 +50,21 @@
 //!   number of records, so a picture always reads the records once before it
 //!   colors any of them and always wants an input that can be rewound.
 //!
+//! `--palette` draws that weighted picture through a colour ramp rather than as
+//! a grey.  The samples are the same numbers and the file is the same size —
+//! colour type 3 and a `PLTE` chunk, so the difference on disk is 780 bytes and
+//! the image data is byte for byte what the greyscale run writes.  What it buys
+//! is levels: grey has 254 of them and an eye reads perhaps thirty, and the
+//! weights here live in a fraction of a percent, so most of what the picture
+//! distinguishes is invisible in it.  The ramp is built in a perceptual space
+//! and carries the magnitude on lightness, monotonically, so it stays readable
+//! photocopied and to a colour-deficient eye; see [`oklch`].
+//!
+//! It needs a quantity to spend the levels on, so it wants `--weighted`, and it
+//! colours pixels, so it wants `--png` — the folded outputs shade a cell by how
+//! much of it is inked and have no sample to look up.  Both are refused rather
+//! than ignored.
+//!
 //! # A page instead
 //!
 //! `--bin` shrinks the picture down one axis, and nothing shrinks it along the
@@ -234,6 +249,8 @@ mod colorset;
 // off a copy of a color and so serves all three of them.
 mod emit;
 mod image;
+// The perceptual space the palette ink is built in, and the ramp itself.
+mod oklch;
 // The canvas `--pdf` and `--fold` fold the picture onto.  The fold itself is
 // plain arithmetic and builds everywhere; only the Cairo surface `--pdf`
 // paints it onto sits behind the feature, inside the module.  Declared here
@@ -511,7 +528,7 @@ const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
                      [--rings|--sets|--weighted] [--sum|--moments] \
                      [--threads <n>|auto] \
                      [--png <file>|--pdf <file>|--fold <file>|--view] \
-                     [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] < records";
+                     [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] [--palette] < records";
 
 /// Which of the three pictures was asked for.
 ///
@@ -894,6 +911,9 @@ fn main() -> ExitCode {
     let mut bin: Option<usize> = None;
     let mut window: Option<(usize, usize)> = None;
     let mut gain: Option<f64> = None;
+    // Whether a weighted picture is drawn through the colour ramp rather than
+    // as a grey.
+    let mut palette = false;
     // 0 is the serial path, which is what runs unless a count is asked for.
     let mut threads: usize = 0;
 
@@ -911,6 +931,10 @@ fn main() -> ExitCode {
     while i < args.len() {
         match args[i].as_str() {
             "--stats" => stats = true,
+            // The same weighted picture, read through `oklch`'s ramp.  A flag
+            // rather than a backend, because it changes nothing the run
+            // computes -- only what the file says a sample means.
+            "--palette" => palette = true,
             "--rings" => {
                 backend = Backend::Rings;
                 chose_backend = true;
@@ -1122,9 +1146,45 @@ fn main() -> ExitCode {
     // the depth of every sample in it: settled here, where the backend is, and
     // handed to the writer rather than discovered a term at a time.
     let ink = match backend {
+        Backend::Weighted if palette => image::Ink::Palette,
         Backend::Weighted => image::Ink::Weighted,
         Backend::Rings | Backend::Sets => image::Ink::Flat,
     };
+
+    // A flat pixel is in the colour or it is not, and a ramp between two states
+    // is a ramp with nothing on it: the palette wants a quantity to spend its
+    // levels on, which is what the weighted backend has and the other two do
+    // not.  Refused rather than ignored, as `--blocks` without a picture is.
+    if palette && backend != Backend::Weighted {
+        eprintln!(
+            "circular-polynomial: --palette draws the weight of a block as a colour, \
+             and the unweighted backends have only whether it is there; add --weighted"
+        );
+        return ExitCode::FAILURE;
+    }
+    // The ink is `image::Writer`'s, and only `--png` draws through that one.
+    // The other three fold the picture onto a canvas with `page`, which shades
+    // a cell by how much of it is inked and has no palette to look a sample up
+    // in -- so `--palette` there would be a flag that quietly did nothing,
+    // which is what every other contradiction in this file refuses.
+    match &picture {
+        None if palette => {
+            eprintln!(
+                "circular-polynomial: --palette describes the picture, so it needs \
+                 --png <file>"
+            );
+            return ExitCode::FAILURE;
+        }
+        Some((sheet, _)) if palette && *sheet != Sheet::Raster => {
+            eprintln!(
+                "circular-polynomial: --palette colours the pixels of a picture, and {} \
+                 folds it onto a canvas of shaded cells instead; use --png",
+                sheet.flag()
+            );
+            return ExitCode::FAILURE;
+        }
+        _ => {}
+    }
 
     let (output, input, skip, limit) =
         match plan(
