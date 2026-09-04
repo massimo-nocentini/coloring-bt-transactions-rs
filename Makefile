@@ -132,6 +132,27 @@ test-gui: ## Run the test suite including the windows', which needs GTK
 #	no toolkit at all.  `gui` includes `pdf`, so this is `test-pdf` and then some.
 	cargo test --features gui
 
+.PHONY: corpus
+corpus: ## Write the two corpora the measurements in the docs were taken over
+#	Every performance number in `emit`, `prefetch` and the driver's own docs
+#	names one of these two files.  Without them those numbers are assertions
+#	nobody can check, which is what this target is for -- the generator is
+#	deterministic, so a given seed is one exact file on every machine.
+#
+#	`records` is the shape a real chain has: a transaction reaches back across
+#	some hundreds of earlier ones, so ancestry mixes and colours grow to a few
+#	thousand blocks.  That is the regime where formatting a line is most of the
+#	run, and so the regime `--threads` exists for.
+#
+#	`flat` is the other end: every spend stays inside its own block, so every
+#	colour is one block and a line is ten bytes.  Nothing about the fold is
+#	interesting there -- what it measures is the pipeline's own overhead, which
+#	is what chose the batch bounds in `emit`.
+#
+#	About 180 MB the pair, and under a second to write.
+	cargo run --release --example records -- --window 4000 > $(or $(RECORDS),records)
+	cargo run --release --example records -- --window 0    > $(or $(FLAT),flat)
+
 .PHONY: asm-check
 asm-check: build ## Check the weight-scaling loops still vectorise
 #	`simd::scale_into` and `simd::scale_add_into` are plain loops that the
