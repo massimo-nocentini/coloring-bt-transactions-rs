@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEPTH","LINES","TERMS"],"struct":["Body","Pool","Snapshot"],"type":["Done"]};

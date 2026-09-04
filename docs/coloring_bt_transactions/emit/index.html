@@ -1,0 +1,61 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Formatting lines on more than one thread"><title>coloring_bt_transactions::emit - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module emit</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module emit</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#formatting-lines-on-more-than-one-thread" title="Formatting lines on more than one thread">Formatting lines on more than one thread</a><ul><li><a href="#what-crosses-the-thread-boundary" title="What crosses the thread boundary">What crosses the thread boundary</a></li><li><a href="#order-and-why-it-costs-nothing" title="Order, and why it costs nothing">Order, and why it costs nothing</a></li><li><a href="#closing-it-is-not-optional" title="Closing it is not optional">Closing it is not optional</a></li><li><a href="#what-bounds-the-memory" title="What bounds the memory">What bounds the memory</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#types" title="Type Aliases">Type Aliases</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate coloring_<wbr>bt_<wbr>transactions</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">coloring_bt_transactions</a></div><h1>Module <span>emit</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/coloring_bt_transactions/emit.rs.html#1-780">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="formatting-lines-on-more-than-one-thread"><a class="doc-anchor" href="#formatting-lines-on-more-than-one-thread">§</a>Formatting lines on more than one thread</h2>
+<p>Turning a color into a line is the most expensive thing a text run does, and
+by a long way.  Measured over the first 150,000 records of
+<code>cargo run --release --example records -- --window 4000</code> — colors of some
+three thousand blocks by the end of it — with the fold and the parse held
+constant by comparing against <code>--sum</code>, which walks exactly the same terms
+and prints one number instead of all of them:</p>
+<div class="example-wrap"><pre class="language-text"><code>    --sets --fold /dev/null    2.43s      parse and fold, no lines
+    --sets                     4.70s      + 2.3 GB of terms
+    --weighted --sum           3.37s      parse and weighted fold
+    --weighted                50.18s      + 9.9 GB of terms</code></pre></div>
+<p>Every number in this file names that corpus; <code>examples/records.rs</code> is what
+makes them checkable rather than merely stated.</p>
+<p>So formatting is 47% of an unweighted text run and 94% of a weighted one.
+The gap is <a href="../fn.push_f64.html" title="fn coloring_bt_transactions::push_f64"><code>crate::push_f64</code></a>: the shortest round-tripping decimal costs
+about 133ns a term against 15ns for the integer path, and a weighted color
+spends one on every block it names.</p>
+<p>It is also the one part of the driver that is embarrassingly parallel.  A
+line is a pure function of <code>(tx_id, color)</code> — nothing about it looks at the
+store, at the records still to come, or at the line before it.</p>
+<h3 id="what-crosses-the-thread-boundary"><a class="doc-anchor" href="#what-crosses-the-thread-boundary">§</a>What crosses the thread boundary</h3>
+<p>A copy of the terms, not a handle on the color.</p>
+<p>Sharing the color itself is the obvious move and it is the wrong one here.
+It would mean <code>Rc</code> becoming <code>Arc</code> in both set backends, atomics on a
+refcount the fold thread touches several times a record, and — the real
+cost — an ownership question the stores currently answer exactly:
+<a href="../store/trait.ColorStore.html#tymethod.release" title="method coloring_bt_transactions::store::ColorStore::release"><code>crate::store::ColorStore::release</code></a> decides whether an allocation is gone
+by asking whether it holds the last handle, and that question has no
+race-free answer once a second thread can hold one too.</p>
+<p>Copying sidesteps all of it.  A term is 12 bytes and a formatted term is
+about 22, so the copy is a memcpy against a decimal conversion: roughly 1ns
+a term against 133.  The stores keep their <code>Rc</code>, keep their layouts, and do
+not learn that threads exist; <a href="../poly/index.html" title="mod coloring_bt_transactions::poly"><code>crate::poly</code></a>’s arena, which could not have
+been shared at all, gets the same speedup as the others.</p>
+<h3 id="order-and-why-it-costs-nothing"><a class="doc-anchor" href="#order-and-why-it-costs-nothing">§</a>Order, and why it costs nothing</h3>
+<p>Record <code>i</code> goes to worker <code>i % threads</code> and the writer collects from worker
+<code>i % threads</code>, so the lines are written in the order they were dispatched
+without a sequence number, a reorder buffer, or a sort.  The output is
+byte-identical to the serial path — which matters beyond tidiness, since
+diffing <code>--rings</code> against <code>--sets</code> is how this crate checks one backend
+against the other, and a threaded run has to stay usable for that.
+<code>parallel_output_is_byte_identical</code> at the bottom of this file is the test.</p>
+<h3 id="closing-it-is-not-optional"><a class="doc-anchor" href="#closing-it-is-not-optional">§</a>Closing it is not optional</h3>
+<p><a href="struct.Pool.html#method.finish" title="method coloring_bt_transactions::emit::Pool::finish"><code>Pool::finish</code></a> drains the pipeline and reports what the writer made of it,
+and <code>run</code> calls it — but only on the path that reaches the end of the
+records.  Every early return skips it, and a detached writer thread takes
+its buffer to the grave with it.  So the closing is in <a href="https://doc.rust-lang.org/1.98.0/core/ops/drop/trait.Drop.html" title="trait core::ops::drop::Drop"><code>Drop</code></a> as well,
+where the language runs it; <code>finish</code> is then the way to get at the <em>error</em>,
+not the way to make the output happen.  See the <code>impl Drop</code> below for what
+this used to cost.</p>
+<h3 id="what-bounds-the-memory"><a class="doc-anchor" href="#what-bounds-the-memory">§</a>What bounds the memory</h3>
+<p>Every channel into the pipeline is bounded, so a fold thread that outruns
+the formatters blocks instead of queueing.  The two channels <em>backwards</em> —
+the ones that hand a line buffer back to the worker that filled it and a
+snapshot back to the fold thread — are best-effort <code>try_send</code>: dropping a
+recycled buffer costs an allocation, where blocking on one would close a
+cycle in the wait graph and deadlock.  Nothing waits on recycling.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Body.html" title="struct coloring_bt_transactions::emit::Body">Body</a></dt><dd>What follows the transaction id and the tab on a line.</dd><dt><a class="struct" href="struct.Pool.html" title="struct coloring_bt_transactions::emit::Pool">Pool</a></dt><dd>A pool of formatter threads and the one writer that puts their lines in
+order.</dd><dt><a class="struct" href="struct.Snapshot.html" title="struct coloring_bt_transactions::emit::Snapshot">Snapshot</a></dt><dd>A color copied out of the store, which is everything a line needs and
+nothing the store owns.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.DEPTH.html" title="constant coloring_bt_transactions::emit::DEPTH">DEPTH</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How many batches may be in flight per worker.</dd><dt><a class="constant" href="constant.LINES.html" title="constant coloring_bt_transactions::emit::LINES">LINES</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Records a batch carries, and terms it carries, whichever it reaches first.</dd><dt><a class="constant" href="constant.TERMS.html" title="constant coloring_bt_transactions::emit::TERMS">TERMS</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt></dl><h2 id="types" class="section-header">Type Aliases<a href="#types" class="anchor">§</a></h2><dl class="item-table"><dt><a class="type" href="type.Done.html" title="type coloring_bt_transactions::emit::Done">Done</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A batch’s lines and the snapshots they were formatted from, travelling
+together so that both can be handed back and filled again.</dd></dl></section></div></main></body></html>

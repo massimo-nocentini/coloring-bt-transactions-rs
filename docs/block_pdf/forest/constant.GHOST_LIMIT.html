@@ -1,0 +1,32 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Where a walk from a chosen root is told to stop."><title>GHOST_LIMIT in block_pdf::forest - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="block_pdf" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc constant"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">GHOST_LIMIT</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../block_pdf/index.html">block_<wbr>pdf</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In block_<wbr>pdf::<wbr>forest</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">block_pdf</a>::<wbr><a href="index.html">forest</a></div><h1>Constant <span class="constant">GHOST_<wbr>LIMIT</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/block_pdf/tree/forest.rs.html#266">Source</a> </span></div><pre class="rust item-decl"><code>pub const GHOST_LIMIT: <a class="primitive" href="https://doc.rust-lang.org/1.98.0/std/primitive.usize.html">usize</a> = _; // 1_048_576usize</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Where a walk from a chosen root is told to stop.</p>
+<p>The whole graph is billions of nodes and a page is a few hundred points
+across, so a drawing of <em>one node’s subtree</em> is only as good as its cut.
+Three independent scissors, each <code>None</code>/<code>MAX</code> by default:</p>
+<ul>
+<li><code>depth</code>: levels drawn below the root, the root itself being level 0.  A
+node on the last level is drawn, and what hangs under it is not.</li>
+<li><code>max_nodes</code>: how many nodes the whole drawing may hold, roots included.
+The walk is breadth first, so what a budget buys is the <em>nearest</em> part of
+the subtree rather than one long arm of it.</li>
+<li><code>fanout</code>: how many children a node may have drawn under it.  A hub with a
+million successors is a fact worth stating and not worth a million arcs of
+ink; the first and last of them in successor order stand for the rest,
+half the allowance each.  Both ends rather than one head, because a
+block’s outputs are a contiguous id range and what hangs off its <em>last</em>
+output is a different thing from what hangs off its first — the long
+2001-output fans of this graph chain into each other through their final
+output, and a head-only cut would draw every one of them as a dead star.</li>
+</ul>
+<p>Whatever gets cut, the node whose successors were left out is reported in
+<a href="struct.Sampled.html#structfield.truncated" title="field block_pdf::forest::Sampled::truncated"><code>Sampled::truncated</code></a>, so a drawing can say where it stops short rather
+than passing a pruned frontier off as leaves.
+How many dropped arcs a rooted walk keeps the endpoints of, beyond
+counting them: enough for any drawing a page can hold, at 8 bytes a pair.</p>
+<p>The count in <a href="struct.Sampled.html#structfield.dropped_arcs" title="field block_pdf::forest::Sampled::dropped_arcs"><code>Sampled::dropped_arcs</code></a> is exact however many there are —
+it is the number a caption quotes — but the <em>pairs</em> are only wanted by a
+caller that means to draw them, and a walk over a hub of this graph drops
+them by the hundred million.  Past the cap the list stops growing and
+<a href="struct.Sampled.html#method.dropped_is_complete" title="method block_pdf::forest::Sampled::dropped_is_complete"><code>Sampled::dropped_is_complete</code></a> says so, which is how <code>tree-pdf --ghost</code>
+knows to refuse rather than draw a picture missing arcs it does not
+mention.</p>
+</div></details></section></div></main></body></html>

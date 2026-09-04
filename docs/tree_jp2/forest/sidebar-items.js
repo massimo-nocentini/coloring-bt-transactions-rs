@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["DIAMETER","SUBTREE_MARGIN"],"fn":["build","build_rooted","lay_out","lay_out_oriented"],"struct":["Forest","Prune","Sampled"]};
+window.SIDEBAR_ITEMS = {"constant":["DIAMETER","GHOST_LIMIT","SUBTREE_MARGIN"],"fn":["build","build_rooted","lay_out","lay_out_oriented"],"struct":["Forest","Prune","Sampled"]};

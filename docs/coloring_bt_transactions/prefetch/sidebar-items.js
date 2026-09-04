@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BATCH","QUEUE"],"enum":["Records"],"struct":["Batch"]};
