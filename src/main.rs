@@ -172,6 +172,40 @@
 //! is around 8 for `--sets` and 16 for `--weighted` on the records measured
 //! above, and past that the extra threads only contend.
 //!
+//! # Three numbers instead
+//!
+//! `--sum` is the colour's first moment and nothing else, which loses more than
+//! it looks like: a transaction whose coins all came from block 500,000 and one
+//! that took half its value from block 0 and half from block 1,000,000 print
+//! the same number, and they could hardly be less alike.
+//!
+//! `--moments` prints the smallest summary that tells them apart — the mean
+//! block id, the spread about it, and the effective number of blocks, three
+//! tab-separated fields so a line is four columns:
+//!
+//! ```text
+//!     199999   39946.98043478284   4640.739930886573   459.99999999999346
+//!     200000   65570.37794351605  10102.826758127023    11.286387658100137
+//!     200001   94406               0                     1
+//! ```
+//!
+//! The first of those rests on some four hundred and sixty blocks, the second
+//! on eleven despite reaching twice as far across the chain, and the third is a
+//! coinbase — one block, no spread. `--sum` gives the first column alone and
+//! calls the three of them comparable.
+//!
+//! The spread and the effective count are not the same measurement and neither
+//! implies the other: a colour split evenly between two far-apart blocks has a
+//! huge spread and an effective count of 2, and one spread thinly over a
+//! thousand adjacent blocks has a small spread and an effective count of 1000.
+//! One is a distance along the chain, the other a count of what carries the
+//! weight — see [`Line::Moments`].
+//!
+//! It needs weights to mean anything, so it selects [`weighted`] the way
+//! `--sum` does, and contradicts it. Four running sums in one pass over the
+//! terms, so it costs what `--sum` costs: 3.58s against 3.57s over the records
+//! the [`emit`] numbers are taken on.
+//!
 //! # The other binaries
 //!
 //! This is the driver, and the rest of the crate is three programs that do
@@ -286,6 +320,46 @@ enum Line {
     /// quietly turn a broken invariant into a plausible number, where a sum that
     /// is not a mean shows up as one.
     Sum,
+    /// Three numbers: the mean block id, the spread about it, and the effective
+    /// number of blocks.
+    ///
+    /// [`Line::Sum`] is the first moment of the colour and nothing else, which
+    /// is a real loss: a transaction whose coins all came from block 500,000
+    /// and one that took half its value from block 0 and half from block
+    /// 1,000,000 print the same number, and they could hardly be less alike.
+    /// This is the smallest summary that tells them apart.
+    ///
+    /// - **mean** — `sum_b b . weight(b)`, exactly [`Line::Sum`]'s number, up
+    ///   to the division by the total weight that makes it a mean rather than
+    ///   a sum.  The weights sum to 1 by construction, so the two agree to
+    ///   within the accumulated drift from that: over the first 50,000 records
+    ///   of the 2022 chain, 237 lines differ in their last digit or two and the
+    ///   worst relative difference is 9.8e-15.  The division is what makes this
+    ///   a mean rather than a sum when the invariant is not exact, so the two
+    ///   flags are cross-checkable but not byte-identical.
+    /// - **spread** — the standard deviation of the block ids under those
+    ///   weights.  Zero for a coinbase, and large for coins that have been
+    ///   through a long history.  It is in blocks, so it reads on the same
+    ///   scale as the mean.
+    /// - **effective** — the participation ratio `1 / sum_b weight(b)^2`, the
+    ///   number of blocks the colour *really* rests on.  It is 1 for a
+    ///   coinbase, 2 for two blocks at half each, and stays near 1 for a colour
+    ///   that is nearly all one block however long its tail of small terms.
+    ///   That is what distinguishes it from the support size, which counts
+    ///   every block that appears at any weight at all.
+    ///
+    /// The two say different things and neither implies the other: a colour
+    /// split evenly between two far-apart blocks has a huge spread and an
+    /// effective count of 2, and one spread thinly over a thousand adjacent
+    /// blocks has a small spread and an effective count of 1000.
+    ///
+    /// Three tab-separated fields after the transaction's own, so a line is
+    /// four columns and `cut -f2,3,4` is the triple.  Each printed the way
+    /// [`Line::Sum`]'s number is, through [`push_f64`].
+    ///
+    /// One pass over the terms and four running sums, so this costs what
+    /// [`Line::Sum`] costs; see [`emit::Body`].
+    Moments,
 }
 
 /// Where a finished color goes.
@@ -434,7 +508,8 @@ impl Output {
 }
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
-                     [--rings|--sets|--weighted] [--sum] [--threads <n>|auto] \
+                     [--rings|--sets|--weighted] [--sum|--moments] \
+                     [--threads <n>|auto] \
                      [--png <file>|--pdf <file>|--fold <file>|--view] \
                      [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] < records";
 
@@ -861,7 +936,25 @@ fn main() -> ExitCode {
             }
             // Which of the two line forms, rather than which backend -- but a
             // sum of weights needs weights, so it settles that too, below.
-            "--sum" => form = Line::Sum,
+            // Two ways of collapsing a color to numbers, so a run does one or
+            // the other; a later one quietly winning would be a run printing
+            // something nobody asked for, which is what `choose` refuses for
+            // the pictures.
+            "--sum" | "--moments" => {
+                let asked = if args[i] == "--sum" {
+                    Line::Sum
+                } else {
+                    Line::Moments
+                };
+                if form != Line::Terms && form != asked {
+                    eprintln!(
+                        "circular-polynomial: --sum and --moments are two ways of \
+                         collapsing a color; drop one of them"
+                    );
+                    return ExitCode::FAILURE;
+                }
+                form = asked;
+            }
             // The one picture option with nothing after it: a window is not
             // somewhere, so there is no path to take.
             "--view" => {
@@ -978,31 +1071,48 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    // Checked after the whole command line rather than as `--sum` is read, so
-    // that it holds whichever order the two flags came in.
-    if form == Line::Sum {
+    // Checked after the whole command line rather than as the flag is read, so
+    // that it holds whichever order the flags came in.
+    //
+    // The two collapsed forms are one case: both add up weights, so both need a
+    // backend that has weights, and both put so little on a line that a pool of
+    // formatters would cost more than it saves.
+    if let Some(flag) = match form {
+        Line::Sum => Some("--sum"),
+        Line::Moments => Some("--moments"),
+        Line::Terms => None,
+    } {
         if chose_backend && backend != Backend::Weighted {
             eprintln!(
-                "circular-polynomial: --sum adds up the weights of a color, and the \
-                 unweighted backends have none to add up; drop --rings or --sets"
+                "circular-polynomial: {} adds up the weights of a color, and the \
+                 unweighted backends have none to add up; drop --rings or --sets",
+                flag
             );
             return ExitCode::FAILURE;
         }
         backend = Backend::Weighted;
         // A pool of formatters is worth having because formatting a color is
-        // expensive, and `--sum` is the one line form for which it is not: the
-        // whole color collapses to one number, and handing a worker a copy of
-        // the terms to add up costs more than adding them up here does.
-        // Measured over the corpus `emit` names -- 150,000 records of
+        // expensive, and these two are the line forms for which it is not: the
+        // whole color collapses to a number or three, and handing a worker a
+        // copy of the terms to collapse costs more than collapsing them here
+        // does.  Measured over the corpus `emit` names -- 150,000 records of
         // `--example records -- --window 4000` -- `--sum` goes from 3.34s
-        // serial to 5.20s at two threads, 4.54s at four and 4.51s at eight.
-        // Batching the dispatch, which fixed the same shape of loss for small
-        // colors, does not help here: the copy is the cost, not the channel.
-        // So this is refused rather than obeyed.
+        // serial to 5.20s at two threads, 4.54s at four and 4.51s at eight, and
+        // `--moments` from 3.58s serial to 3.95s, 4.18s and 4.22s.  Batching
+        // the dispatch, which fixed the same loss for small colors, does not
+        // help: the copy is the cost, not the channel.  So this is refused
+        // rather than obeyed.
+        //
+        // Worth recording that the second row costs what the first does --
+        // 3.58s against 3.57s over the same records.  Four running sums rather
+        // than one is three more multiply-adds a term, and the loop is bound by
+        // walking the color, not by the arithmetic on it, so the two further
+        // moments are free.
         if threads > 0 {
             eprintln!(
-                "circular-polynomial: --sum prints one number a line, so there is \
-                 nothing for --threads to spread; drop one of them"
+                "circular-polynomial: {} prints a few numbers a line, so there is \
+                 nothing for --threads to spread; drop one of them",
+                flag
             );
             return ExitCode::FAILURE;
         }
@@ -1449,6 +1559,52 @@ mod tests {
         here
     }
 
+    /// A corpus whose colours actually mix blocks.
+    ///
+    /// The obvious loop -- one coinbase and then every transaction spending the
+    /// last few -- looks varied and is not: all ancestry funnels back to the
+    /// single coinbase, so every colour is that one block, every spread is
+    /// exactly zero and every effective count is exactly one.  A test written
+    /// over it passes whatever the spread is computed as, which is how the
+    /// first version of `the_three_numbers_are_what_the_definitions_say` came
+    /// to survive a mutation that returned a spread of zero for everything.
+    ///
+    /// So: a fresh coinbase every `mint` transactions, each in its own block,
+    /// and the rest spending a spread of recent ancestors.  That is what makes
+    /// a colour rest on several blocks at unequal weights.
+    fn mixed(n: usize, mint: usize) -> String {
+        let mut out = String::new();
+        for tx in 0..n {
+            let spends: Vec<(usize, usize)> = if tx % mint == 0 {
+                Vec::new()
+            } else {
+                [1usize, 2, 5]
+                    .iter()
+                    .filter(|k| tx >= **k)
+                    .map(|k| (tx - k, 1 + (tx * 7 + k) % 11))
+                    .collect()
+            };
+            out.push_str(&record(tx * 3, tx, &spends, 4));
+        }
+        out
+    }
+
+    /// The three moments of a run, as `(mean, spread, effective)` triples.
+    fn moments(records: &str, limit: usize) -> Vec<(f64, f64, f64)> {
+        lines::<weighted::WeightedSets>(records, Line::Moments, limit)
+            .iter()
+            .map(|line| {
+                let f: Vec<f64> = line
+                    .split('\t')
+                    .skip(1)
+                    .map(|v| v.parse().expect("three numbers after the tx id"))
+                    .collect();
+                assert_eq!(f.len(), 3, "a moments line is four columns: {}", line);
+                (f[0], f[1], f[2])
+            })
+            .collect()
+    }
+
     /// The sums of a run, which is `--sum`'s backend and no other.
     fn sums(records: &str, limit: usize) -> Vec<String> {
         lines::<weighted::WeightedSets>(records, Line::Sum, limit)
@@ -1612,6 +1768,146 @@ mod tests {
     /// of `b . weight(b)` is the weighted mean without anything dividing by
     /// them.  Asserted over a fold deep enough to accumulate drift if there were
     /// any -- and against the mean computed the other way, in full `f64`.
+    /// A coinbase rests on the one block that minted it: the mean is that
+    /// block, there is nothing to spread over, and one block is the whole of
+    /// what it rests on.
+    #[test]
+    fn a_coinbase_has_no_spread_and_rests_on_one_block() {
+        let records = record(7, 0, &[], 1);
+        assert_eq!(moments(&records, 10), vec![(7.0, 0.0, 1.0)]);
+    }
+
+    /// The case `--sum` cannot tell apart, which is the reason this exists.
+    ///
+    /// One transaction takes everything from block 500; another takes half from
+    /// block 0 and half from block 1000.  Both have a mean of 500.  The spread
+    /// and the effective count are what say they are nothing alike.
+    #[test]
+    fn two_colors_with_the_same_mean_are_told_apart() {
+        // tx 0 mints block 500; tx 1 spends it whole.
+        let concentrated = format!("{}{}", record(500, 0, &[], 1), record(501, 1, &[(0, 10)], 1));
+        // tx 0 mints block 0, tx 1 mints block 1000, tx 2 takes half of each.
+        let split = format!(
+            "{}{}{}",
+            record(0, 0, &[], 1),
+            record(1000, 1, &[], 1),
+            record(1001, 2, &[(0, 10), (1, 10)], 1)
+        );
+
+        let (m0, s0, e0) = *moments(&concentrated, 10).last().unwrap();
+        let (m1, s1, e1) = *moments(&split, 10).last().unwrap();
+
+        assert!((m0 - 500.0).abs() < 1e-9, "concentrated mean {}", m0);
+        assert!((m1 - 500.0).abs() < 1e-9, "split mean {}", m1);
+        assert_eq!(
+            sums(&concentrated, 10).last().unwrap().split('\t').nth(1),
+            sums(&split, 10).last().unwrap().split('\t').nth(1),
+            "--sum has to agree on these two, or the test is not about anything"
+        );
+
+        assert!(s0 < 1e-6, "all of it from one block, so no spread: {}", s0);
+        assert!((s1 - 500.0).abs() < 1e-9, "half at each end of 0..1000: {}", s1);
+        assert!((e0 - 1.0).abs() < 1e-9, "one block carries it: {}", e0);
+        assert!((e1 - 2.0).abs() < 1e-9, "two blocks carry it: {}", e1);
+    }
+
+    /// The effective count is not the support size: a colour that is nearly all
+    /// one block rests on nearly one block, however many others trail behind
+    /// it at small weight.  That is the whole difference between counting
+    /// blocks that matter and counting blocks that appear.
+    #[test]
+    fn the_effective_count_weighs_the_blocks_rather_than_counting_them() {
+        // tx 2 takes 99% of its value from block 0 and 1% from block 1000.
+        let records = format!(
+            "{}{}{}",
+            record(0, 0, &[], 1),
+            record(1000, 1, &[], 1),
+            record(1001, 2, &[(0, 99), (1, 1)], 1)
+        );
+        let (_, _, effective) = *moments(&records, 10).last().unwrap();
+        // 1 / (0.99^2 + 0.01^2) = 1.0203...
+        assert!(
+            (effective - 1.0 / (0.99f64.powi(2) + 0.01f64.powi(2))).abs() < 1e-9,
+            "two blocks appear but barely more than one carries it: {}",
+            effective
+        );
+        assert!(effective < 1.03, "and it is nowhere near the support size 2");
+    }
+
+    /// The mean is `--sum`'s number, since a colour's weights sum to 1.  Stated
+    /// as a test because it is what lets the two flags be compared.
+    #[test]
+    fn the_mean_agrees_with_the_sum() {
+        let records = mixed(60, 7);
+        let means: Vec<f64> = moments(&records, usize::MAX).iter().map(|m| m.0).collect();
+        let summed: Vec<f64> = sums(&records, usize::MAX)
+            .iter()
+            .map(|l| l.split('\t').nth(1).unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(means.len(), summed.len());
+        for (k, (mean, sum)) in means.iter().zip(&summed).enumerate() {
+            assert!(
+                (mean - sum).abs() <= 1e-9 * sum.abs().max(1.0),
+                "record {}: mean {} against sum {}",
+                k,
+                mean,
+                sum
+            );
+        }
+    }
+
+    /// Every triple, against the definitions written out slowly over the terms
+    /// the same run prints under `--weighted`.
+    #[test]
+    fn the_three_numbers_are_what_the_definitions_say() {
+        let records = mixed(80, 7);
+
+        let got = moments(&records, usize::MAX);
+        // The corpus has to be worth testing over, or the assertions below hold
+        // for reasons that have nothing to do with the arithmetic.  See
+        // `mixed`.
+        assert!(
+            got.iter().filter(|(_, spread, _)| *spread > 1.0).count() > 20,
+            "the corpus has to produce colours spread over several blocks"
+        );
+        assert!(
+            got.iter().filter(|(_, _, eff)| *eff > 2.0).count() > 20,
+            "the corpus has to produce colours resting on several blocks"
+        );
+        let terms = lines::<weighted::WeightedSets>(&records, Line::Terms, usize::MAX);
+        assert_eq!(got.len(), terms.len());
+
+        for (k, (line, &(mean, spread, effective))) in terms.iter().zip(&got).enumerate() {
+            let body = line.split('\t').nth(1).unwrap();
+            let pairs: Vec<(f64, f64)> = if body.is_empty() {
+                Vec::new()
+            } else {
+                body.split(',')
+                    .map(|t| {
+                        let (c, e) = t.rsplit_once(':').unwrap();
+                        (c.parse().unwrap(), e.parse::<f64>().unwrap())
+                    })
+                    .collect()
+            };
+            let mass: f64 = pairs.iter().map(|(w, _)| w).sum();
+            let want_mean: f64 = pairs.iter().map(|(w, b)| w * b).sum::<f64>() / mass;
+            let want_var: f64 =
+                pairs.iter().map(|(w, b)| w * (b - want_mean).powi(2)).sum::<f64>() / mass;
+            let want_eff: f64 = mass * mass / pairs.iter().map(|(w, _)| w * w).sum::<f64>();
+
+            let tol = |x: f64| 1e-7 * x.abs().max(1.0);
+            assert!((mean - want_mean).abs() < tol(want_mean), "record {} mean", k);
+            assert!(
+                (spread - want_var.max(0.0).sqrt()).abs() < tol(want_var.sqrt()),
+                "record {} spread: {} against {}",
+                k,
+                spread,
+                want_var.sqrt()
+            );
+            assert!((effective - want_eff).abs() < tol(want_eff), "record {} effective", k);
+        }
+    }
+
     #[test]
     fn a_color_sums_to_one_so_the_sum_is_the_mean() {
         let mut records = String::new();

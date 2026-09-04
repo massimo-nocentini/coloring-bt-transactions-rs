@@ -93,6 +93,38 @@ Three representations of a colour, all driven by the one loop:
   its ancestor's colour, and every colour sums to 1.  Different output, on
   purpose, so it is a separate mode rather than a flag on the others.
 
+### Three numbers instead
+
+`--sum` is the colour's first moment and nothing else, which loses more than it
+looks like: a transaction whose coins all came from block 500,000 and one that
+took half its value from block 0 and half from block 1,000,000 print the same
+number, and they could hardly be less alike.
+
+`--moments` prints the smallest summary that tells them apart — the mean block
+id, the spread about it, and the **effective number of blocks** — as three
+tab-separated fields, so a line is four columns and `cut -f2,3,4` is the triple:
+
+```
+199999   39946.98043478284   4640.739930886573   459.99999999999346
+200000   65570.37794351605  10102.826758127023    11.286387658100137
+200001   94406               0                     1
+```
+
+The first rests on some four hundred and sixty blocks; the second on eleven,
+despite reaching twice as far across the chain; the third is a coinbase — one
+block, no spread.
+
+The last column is the participation ratio, `1 / sum_b weight(b)^2`. It counts
+the blocks that *carry* the colour rather than the blocks that merely appear in
+it: a colour that is 99% one block and 1% another answers 1.02, where the
+support size would answer 2. So the spread and the effective count say
+different things and neither implies the other — one is a distance along the
+chain, the other a count of what holds the weight.
+
+Four running sums in one pass, so it costs what `--sum` costs (3.58s against
+3.57s over the same records).  Like `--sum` it needs weights, so it selects
+`--weighted` and contradicts the other two backends, and it contradicts `--sum`.
+
 ### Threads
 
 `--threads <n>` puts the formatting of lines on `n` threads and the reading of

@@ -129,7 +129,18 @@ pub struct Body<'a> {
     /// terms rather than after each of them.  `for_each_term` does not say
     /// which term is last, so it is this rather than a truncation at the end.
     written: bool,
-    sum: f64,
+    /// The four running sums both of the collapsed forms are built from, in one
+    /// pass over the terms and no memory at all:
+    /// `sum w`, `sum w.b`, `sum w.b^2`, `sum w^2`.
+    ///
+    /// [`Line::Sum`] prints the second on its own; [`Line::Moments`] turns all
+    /// four into a mean, a spread and an effective count.  Kept here rather
+    /// than in the driver's loop so the serial and threaded paths accumulate
+    /// them the same way, as they format the terms the same way.
+    mass: f64,
+    first: f64,
+    second: f64,
+    squares: f64,
 }
 
 impl<'a> Body<'a> {
@@ -139,7 +150,10 @@ impl<'a> Body<'a> {
             form,
             weighted,
             written: false,
-            sum: 0.0,
+            mass: 0.0,
+            first: 0.0,
+            second: 0.0,
+            squares: 0.0,
         }
     }
 
@@ -162,14 +176,64 @@ impl<'a> Body<'a> {
                 self.line.push(b':');
                 push_int(self.line, exponent);
             }
-            Line::Sum => self.sum += exponent as f64 * coefficient,
+            // Both collapsed forms want the same running sums, and `--sum`
+            // wants a strict subset of them.  Kept as one arm rather than two
+            // so there is one definition of what is accumulated; the three
+            // `--sum` does not read fold away to nothing next to the multiply
+            // it does.
+            Line::Sum | Line::Moments => {
+                let block = exponent as f64;
+                self.mass += coefficient;
+                self.first += block * coefficient;
+                self.second += block * block * coefficient;
+                self.squares += coefficient * coefficient;
+            }
         }
+    }
+
+    /// The mean block id, the spread about it, and the effective number of
+    /// blocks -- what [`Line::Moments`] prints, from the running sums.
+    ///
+    /// A colour with no terms answers three zeroes rather than three NaNs: it
+    /// is what [`Line::Sum`] already prints for one, and a NaN in a column is
+    /// worse than a zero for every reader of it.
+    fn moments(&self) -> (f64, f64, f64) {
+        if self.mass <= 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+        let mean = self.first / self.mass;
+        // `E[b^2] - E[b]^2` rather than a second pass, which a streaming line
+        // cannot make.  The cancellation is real but bounded: block ids reach
+        // some hundreds of thousands, so `mean^2` is around 1e11 and an `f64`
+        // still resolves a variance of 1e-4 -- a spread of a hundredth of a
+        // block, far below anything this number is read at.  What it can do is
+        // come out a hair below zero for a colour that sits on one block, and
+        // that is what the clamp is for; a negative under the root would be a
+        // NaN on the line.
+        let variance = (self.second / self.mass - mean * mean).max(0.0);
+        // The participation ratio, which is `1 / sum w^2` for weights that sum
+        // to one: two blocks at half each answers 2, a thousand blocks at a
+        // thousandth each answers 1000, and a colour that is nearly all one
+        // block answers nearly 1 however many blocks trail behind it.  That is
+        // the sense in which it counts blocks that *matter*, where the support
+        // size counts blocks that merely appear.
+        let effective = self.mass * self.mass / self.squares;
+        (mean, variance.sqrt(), effective)
     }
 
     /// Close the line, newline and all.
     pub fn finish(self) {
-        if self.form == Line::Sum {
-            push_f64(self.line, self.sum);
+        match self.form {
+            Line::Terms => {}
+            Line::Sum => push_f64(self.line, self.first),
+            Line::Moments => {
+                let (mean, spread, effective) = self.moments();
+                push_f64(self.line, mean);
+                self.line.push(b'\t');
+                push_f64(self.line, spread);
+                self.line.push(b'\t');
+                push_f64(self.line, effective);
+            }
         }
         self.line.push(b'\n');
     }
