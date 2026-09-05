@@ -40,7 +40,7 @@ this is the form that both fits the disk and says something a swatch would say:
 ```bash
 ./target/release/coloring-bt-transactions all --weighted --moments \
   < /data/bitcoin/2022/finalBCUTXO_2022.scm \
-| zstd -19 -T8 -o /data/bitcoin/2022/colors.zstd
+| zstd -12 -T16 -o /data/bitcoin/2022/colors.zstd
 ```
 
 Four tab-separated columns: the transaction id, the mean block its coins came
@@ -79,24 +79,29 @@ in place. Measured over 150,000 records of `make corpus`: 3.58s serial against
 
 So this run is one fold thread and nothing else, and the fold is the whole cost.
 
-### Why `-19 -T8` and no `--long`
+### Why `-12 -T16` and no `--long`
 
 Both differ from what the terms output wanted, and for the same reason: this is
 a trickle rather than a torrent.
 
-The fold produces around 3,000 records a second at this depth and falling, which
-at 47.6 bytes a record is some 140 KB/s. `zstd -19` compresses this data at
-about 2.2 MB/s a thread — *fifteen times faster than it arrives* — so the
-highest level is free here where it would have been the bottleneck on the terms
-output. It buys 5.0:1 against `--adapt`'s 4.0:1, a quarter off the file.
+The level is set by the knee, not by taste.  Measured on a 2,000,000-line tail
+of a whole-chain moments run with `-T16`: `-3` 14.64 B/record at 627 MB/s, `-9`
+12.42 at 151 MB/s, **`-12` 12.28 at 66 MB/s**, `-15` 12.19 at 22 MB/s, `-19`
+9.98 at 4.4 MB/s.  The fold produces this output at about 48 MB/s, so `-12` is
+the strongest level that still consumes faster than the fold produces — free —
+and `-19`, which this file used to recommend, would turn a twelve-minute run
+into two and a half hours for a further 19%.  That was a mistake: the earlier
+reasoning measured `zstd -19` at 2.2 MB/s on a 4.7 MB sample held in cache and
+concluded it was fifteen times faster than the producer, when against the real
+byte rate it is fourteen times *slower*.
 
 `--long=27` is dropped because it earns nothing on this data: 1,191,944 bytes
 with it against 1,192,447 without, on a 4.7 MB sample. The terms output repeated
 across enormous lines and wanted a big window; four short numbers repeat locally
 and the default window already catches it.
 
-`-T8` is generosity — one thread would keep up — but it costs nothing and leaves
-`--adapt` room if you switch to it.
+`-T16` because the level is high enough that threads now matter; at `-12` a
+single thread does not keep up with the fold.
 
 ### On zstd versus the alternatives
 
@@ -177,7 +182,7 @@ store, not the writer, and every output mode runs the same fold.
 ```bash
 ./target/release/coloring-bt-transactions 5000000 --weighted --moments \
   < /data/bitcoin/2022/finalBCUTXO_2022.scm \
-| zstd -19 -T8 -o /data/bitcoin/2022/colors.zstd
+| zstd -12 -T16 -o /data/bitcoin/2022/colors.zstd
 ```
 
 Five million records stays under roughly 150 GB resident, and the output is

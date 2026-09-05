@@ -775,9 +775,6 @@ mod tests {
         assert_eq!((filled.width(), filled.height()), (400.0, 700.0));
     }
 
-    /// The cut frontier is drawn in its own colour: the page of a pruned walk
-    /// names [`CUT`] where the page of the whole subtree does not.
-    #[test]
     /// The dropped arcs are drawn only when they are asked for, in their own
     /// ink and dashed, and the page carries as many of them as the walk said
     /// it dropped.
@@ -841,6 +838,9 @@ mod tests {
         assert_eq!(segments(&ghosted), 4, "the ghost is the fourth: {ghosted}");
     }
 
+    /// The cut frontier is drawn in its own colour: the page of a pruned walk
+    /// names [`CUT`] where the page of the whole subtree does not.
+    #[test]
     fn the_cut_is_inked_apart() {
         let arcs = [(0, 1), (1, 2), (2, 3), (3, 4)];
 
