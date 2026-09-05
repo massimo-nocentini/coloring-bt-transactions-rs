@@ -230,12 +230,15 @@ asm-check: build ## Check the weight-scaling loops still vectorise
 	        if (sym !~ /weighted/) next; \
 	        w++; \
 	        if (/%zmm/) z++; else if (/%ymm/) y++; else if (/%xmm/) x++ } \
+	      /(^|[ \t])(v?(mul|add)ps|vfmadd[0-9]*ps)[ \t]/ && sym ~ /bands/ { bs++ } \
+	      /(^|[ \t])(v?(mul|add)pd|vfmadd[0-9]*pd)[ \t]/ && sym ~ /bands/ { bd++ } \
 	      END { printf "vector f64 multiplies in the scale loops: %d", w+0; \
 	            if (x) printf "  %%xmm (2 lanes): %d", x; \
 	            if (y) printf "  %%ymm (4 lanes): %d", y; \
 	            if (z) printf "  %%zmm (8 lanes): %d", z; \
 	            printf "  [%d elsewhere in the binary, not counted]\n", n-w; \
-	            exit (w+0) == 0 } ';; \
+	            printf "vector multiplies and adds in the band loops: %d f32, %d f64\n", bs+0, bd+0; \
+	            exit (w+0) == 0 || (bs+0) == 0 || (bd+0) == 0 } ';; \
 	  *) \
 	    echo "asm-check: no pattern for $$arch, skipping"; exit 0;; \
 	esac || { \

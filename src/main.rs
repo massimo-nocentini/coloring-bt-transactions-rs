@@ -239,6 +239,9 @@
 //!   reason to want installed, so they are absent from a default `cargo doc`
 //!   and from these pages; `cargo doc --features gui` builds them.
 
+// A colour as `K` weights over bands of block ids, for the runs the exact
+// polynomial does not fit in memory for.
+mod bands;
 // The camera `--view`'s window is moved by, which is the viewers' own -- see the
 // note at the top of the file for why it sits here rather than beside them.
 #[cfg(feature = "gui")]
@@ -295,6 +298,20 @@ enum Backend {
     Sets,
     /// Sorted sets carrying a weight per block.  Different output.
     Weighted,
+    /// A fixed vector of weights, one per band of block ids, in `f32` lanes.
+    /// The binned form of `--weighted`; see [`bands`].
+    Bands,
+    /// The same in `f64` lanes: twice the memory, for measuring what the
+    /// narrower lane costs.
+    Bands64,
+}
+
+impl Backend {
+    /// Whether the store carries a weight per term, which is what `--sum`,
+    /// `--moments` and `--palette` need.
+    fn weighted(self) -> bool {
+        matches!(self, Backend::Weighted | Backend::Bands | Backend::Bands64)
+    }
 }
 
 /// What a line says about a color, once the transaction's id and the tab are
@@ -376,6 +393,25 @@ enum Line {
     ///
     /// One pass over the terms and four running sums, so this costs what
     /// [`Line::Sum`] costs; see [`emit::Body`].
+    ///
+    /// # Under `--bands`
+    ///
+    /// The mean and the spread stay **exact, in blocks**.  They are linear in
+    /// the colour, so [`bands`] carries them alongside its band lanes and hands
+    /// them over rather than letting them be summed back off band indices,
+    /// which would put the mean at the centre of a band -- out by up to 372
+    /// blocks at `--bands 1024` and 1,488 at `--bands 256`.  Measured over the
+    /// first 200,000 records of the 2022 chain the worst disagreement with the
+    /// exact fold is 1.1e-8 blocks, whatever `K` is.
+    ///
+    /// The effective count is **not** exact there, and cannot be: it is
+    /// `mass^2 / sum_b weight(b)^2`, quadratic in the colour, and no bounded
+    /// per-colour state folds a quadratic.  Under `--bands` it counts the
+    /// *bands* the colour rests on rather than the blocks, which is a smaller
+    /// number -- over those same records it runs from 0.01 to 1.0 times the
+    /// exact value, averaging 0.41.  It is still the right shape of quantity
+    /// for comparing binned colours with each other; it is not comparable with
+    /// an exact run's fourth column.
     Moments,
 }
 
@@ -438,7 +474,19 @@ impl Output {
                 // The body is `emit`'s, and so is the threaded path's: one
                 // definition of what a line says, driven here straight off the
                 // store and there off a copy of the color.
-                let mut body = emit::Body::new(&mut *line, *form, S::WEIGHTED);
+                let mut body = emit::Body::new(&mut *line, *form, S::WEIGHTED)
+                    .placed(store.placement())
+                    .narrow(S::NARROW);
+                // A store that carries the first two moments hands them over
+                // rather than having them summed back off its terms.  Only
+                // `bands` does, and only there do the two differ: its terms are
+                // band indices, so summing them puts the mean at a band's
+                // centre.  See `ColorStore::exact_moments`.
+                if *form == Line::Moments {
+                    if let Some(moments) = store.exact_moments(color) {
+                        body = body.from_exact_moments(moments);
+                    }
+                }
                 store.for_each_term(color, |exponent, coefficient| {
                     body.term(exponent, coefficient)
                 });
@@ -525,7 +573,7 @@ impl Output {
 }
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
-                     [--rings|--sets|--weighted] [--sum|--moments] \
+                     [--rings|--sets|--weighted|--bands <K>|--bands64 <K>] [--sum|--moments] \
                      [--threads <n>|auto] \
                      [--png <file>|--pdf <file>|--fold <file>|--view] \
                      [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] [--palette] < records";
@@ -639,6 +687,7 @@ fn plan(
     ink: image::Ink,
     form: Line,
     threads: usize,
+    narrow: bool,
     limit: usize,
 ) -> Result<(Output, Box<dyn io::Read + Send>, usize, usize), String> {
     // Held as a file when standard input is one, so that `survey` can read the
@@ -663,7 +712,12 @@ fn plan(
         // the lock is taken once a megabyte either way.
         let output = match threads {
             0 => Output::text(Box::new(io::stdout().lock()), form),
-            n => Output::Threaded(emit::Pool::new(Box::new(io::stdout()), form, n)),
+            n => Output::Threaded(emit::Pool::with_lanes(
+                Box::new(io::stdout()),
+                form,
+                n,
+                narrow,
+            )),
         };
         return Ok((output, records_from(source), 0, limit));
     };
@@ -916,6 +970,8 @@ fn main() -> ExitCode {
     let mut palette = false;
     // 0 is the serial path, which is what runs unless a count is asked for.
     let mut threads: usize = 0;
+    // How many bands a `--bands` colour has, once one is asked for.
+    let mut bands: Option<usize> = None;
 
     // What a page exported from `--view`'s window is named after: the program,
     // the way the viewers name theirs, so that two windows open in one directory
@@ -1030,6 +1086,42 @@ fn main() -> ExitCode {
                     i += taken;
                     continue;
                 }
+                // `--bands <K>` and `--bands64 <K>`: the binned weighted
+                // store, in `f32` or `f64` lanes.  A backend of its own, as
+                // `--weighted` is, since its output says something different
+                // -- a term is a band and not a block.
+                let mut chose_bands = false;
+                for (name, which) in [("--bands64", Backend::Bands64), ("--bands", Backend::Bands)] {
+                    if let Some((k, used)) = option(&args, i, name) {
+                        match k.parse::<usize>() {
+                            Ok(k) if k > 0 => bands = Some(k),
+                            _ => {
+                                eprintln!(
+                                    "circular-polynomial: {} wants a positive count of bands, got {:?}",
+                                    name, k
+                                );
+                                return ExitCode::FAILURE;
+                            }
+                        }
+                        if chose_backend && !backend.weighted() {
+                            eprintln!(
+                                "circular-polynomial: {} bins the weighted colour, and the \
+                                 unweighted backends have no weights to bin; drop --rings or --sets",
+                                name
+                            );
+                            return ExitCode::FAILURE;
+                        }
+                        backend = which;
+                        chose_backend = true;
+                        chose_bands = true;
+                        taken = used;
+                        break;
+                    }
+                }
+                if chose_bands {
+                    i += taken;
+                    continue;
+                }
                 if let Some((n, used)) = option(&args, i, "--threads") {
                     // `auto` is what the machine says, less one for the fold
                     // thread that feeds the pool -- it is the producer, and
@@ -1106,7 +1198,7 @@ fn main() -> ExitCode {
         Line::Moments => Some("--moments"),
         Line::Terms => None,
     } {
-        if chose_backend && backend != Backend::Weighted {
+        if chose_backend && !backend.weighted() {
             eprintln!(
                 "circular-polynomial: {} adds up the weights of a color, and the \
                  unweighted backends have none to add up; drop --rings or --sets",
@@ -1114,7 +1206,9 @@ fn main() -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
-        backend = Backend::Weighted;
+        if !chose_backend {
+            backend = Backend::Weighted;
+        }
         // A pool of formatters is worth having because formatting a color is
         // expensive, and these two are the line forms for which it is not: the
         // whole color collapses to a number or three, and handing a worker a
@@ -1146,16 +1240,16 @@ fn main() -> ExitCode {
     // the depth of every sample in it: settled here, where the backend is, and
     // handed to the writer rather than discovered a term at a time.
     let ink = match backend {
-        Backend::Weighted if palette => image::Ink::Palette,
-        Backend::Weighted => image::Ink::Weighted,
-        Backend::Rings | Backend::Sets => image::Ink::Flat,
+        b if b.weighted() && palette => image::Ink::Palette,
+        b if b.weighted() => image::Ink::Weighted,
+        _ => image::Ink::Flat,
     };
 
     // A flat pixel is in the colour or it is not, and a ramp between two states
     // is a ramp with nothing on it: the palette wants a quantity to spend its
     // levels on, which is what the weighted backend has and the other two do
     // not.  Refused rather than ignored, as `--blocks` without a picture is.
-    if palette && backend != Backend::Weighted {
+    if palette && !backend.weighted() {
         eprintln!(
             "circular-polynomial: --palette draws the weight of a block as a colour, \
              and the unweighted backends have only whether it is there; add --weighted"
@@ -1186,6 +1280,24 @@ fn main() -> ExitCode {
         _ => {}
     }
 
+    // A band's exponent is a band and not a block, and every picture puts its
+    // exponents on a block axis, so the two do not meet yet.  Refused rather
+    // than drawn `K` columns wide with `--blocks` meaning something else.
+    if bands.is_some() && picture.is_some() {
+        eprintln!(
+            "circular-polynomial: --bands colours by band and the pictures draw by \
+             block; drop one of them"
+        );
+        return ExitCode::FAILURE;
+    }
+    // Under `--bands`, `--blocks` says how many block ids the bands cover
+    // rather than how wide a picture is, and the 2022 chain's count is the
+    // default.  Taken here so that `plan` does not see it as a picture flag.
+    let band_blocks = match bands {
+        Some(_) => blocks.take().unwrap_or(bands::CHAIN_BLOCKS),
+        None => 0,
+    };
+
     let (output, input, skip, limit) =
         match plan(
             picture,
@@ -1196,6 +1308,9 @@ fn main() -> ExitCode {
             ink,
             form,
             threads,
+            // The `f32` bands are the one store whose coefficients print
+            // narrower than the `f64` they travel as.
+            backend == Backend::Bands,
             limit,
         ) {
         Ok(plan) => plan,
@@ -1221,6 +1336,15 @@ fn main() -> ExitCode {
         Backend::Rings => run::<RingStore>(limit, skip, stats, output, source),
         Backend::Sets => run::<colorset::SetStore>(limit, skip, stats, output, source),
         Backend::Weighted => run::<weighted::WeightedSets>(limit, skip, stats, output, source),
+        Backend::Bands | Backend::Bands64 => {
+            let k = bands.expect("the backend was chosen by --bands");
+            bands::configure(bands::Layout::new(k, band_blocks));
+            if backend == Backend::Bands {
+                run::<bands::BandStore<f32>>(limit, skip, stats, output, source)
+            } else {
+                run::<bands::BandStore<f64>>(limit, skip, stats, output, source)
+            }
+        }
     };
 
     match outcome {
@@ -1499,6 +1623,14 @@ fn push_f64(out: &mut Vec<u8>, value: f64) {
     let _ = write!(out, "{}", value);
 }
 
+/// The same for an `f32`: the shortest decimal that reads back as this `f32`,
+/// which is what a `--bands` weight is.  Printing it through [`push_f64`] would
+/// be correct and twice as long -- `0.35835019` against `0.3583501875400543`,
+/// the latter being what it takes to read back as the same `f64`.
+fn push_f32(out: &mut Vec<u8>, value: f32) {
+    let _ = write!(out, "{}", value);
+}
+
 /// Decimal, straight into the line buffer.  `write!` would do it too, but its
 /// formatting machinery is a real cost across a million lines of thousands of
 /// terms each.
@@ -1579,7 +1711,12 @@ mod tests {
         threads: usize,
     ) -> Vec<String> {
         let sink = SharedSend::default();
-        let out = Output::Threaded(emit::Pool::new(Box::new(sink.clone()), form, threads));
+        let out = Output::Threaded(emit::Pool::with_lanes(
+            Box::new(sink.clone()),
+            form,
+            threads,
+            S::NARROW,
+        ));
         run::<S>(limit, 0, false, out, source(records)).expect("the records are well formed");
         let written = sink.0.lock().unwrap().clone();
         String::from_utf8(written)
@@ -2078,5 +2215,137 @@ mod tests {
         push_f64(&mut line, 12.0);
         push_f64(&mut line, 900_000.000_001_5);
         assert_eq!(String::from_utf8(line).unwrap(), "0.512900000.0000015");
+    }
+
+    /// A terms line taken apart into `(exponent, coefficient)` pairs.
+    fn terms_of(line: &str) -> Vec<(usize, f64)> {
+        let (_, body) = line.split_once('\t').expect("a tab after the tx id");
+        if body.is_empty() {
+            return Vec::new();
+        }
+        body.split(',')
+            .map(|term| {
+                let (coefficient, exponent) = term.split_once(':').expect("coefficient:exponent");
+                (exponent.parse().unwrap(), coefficient.parse().unwrap())
+            })
+            .collect()
+    }
+
+    /// The property the binned store rests on: binning is linear, so the fold
+    /// over binned leaves is the binned exact fold.  Checked end to end -- the
+    /// exact weighted lines, summed within each band, against the bands the
+    /// binned store prints -- in `f64` lanes, where the only slack is rounding.
+    #[test]
+    fn the_bands_are_the_exact_colour_summed_within_each_band() {
+        let records = mixed(400, 7);
+        let exact = lines::<weighted::WeightedSets>(&records, Line::Terms, usize::MAX);
+        // 400 transactions in blocks 0..1200, so 12 bands of 100 blocks.
+        bands::configure(bands::Layout::new(12, 1200));
+        let binned = lines::<bands::BandStore<f64>>(&records, Line::Terms, usize::MAX);
+        assert_eq!(exact.len(), binned.len());
+        let mut mixed_colours = 0;
+        for (e, b) in exact.iter().zip(&binned) {
+            let mut want = vec![0.0f64; 12];
+            for (block, weight) in terms_of(e) {
+                want[block / 100] += weight;
+            }
+            let got = terms_of(b);
+            // Highest band first, as the exact lines print highest block first.
+            let mut last = usize::MAX;
+            for &(band, _) in &got {
+                assert!(band < last, "bands out of order: {}", b);
+                last = band;
+            }
+            let mut got_dense = vec![0.0f64; 12];
+            for (band, weight) in got {
+                got_dense[band] = weight;
+            }
+            for band in 0..12 {
+                assert!(
+                    (got_dense[band] - want[band]).abs() < 1e-12,
+                    "band {} of {}: {} against {}",
+                    band,
+                    e,
+                    got_dense[band],
+                    want[band]
+                );
+            }
+            if want.iter().filter(|w| **w > 0.0).count() > 1 {
+                mixed_colours += 1;
+            }
+        }
+        assert!(mixed_colours > 50, "the corpus should mix bands: {}", mixed_colours);
+    }
+
+    /// The mean read off the bands sits within half a band of the exact one,
+    /// since every block is within half a band of its band's centre; and both
+    /// lanes hold the colour to sum 1 closely enough for that to be the only
+    /// error.
+    #[test]
+    fn the_binned_mean_lands_within_half_a_band_of_the_exact_one() {
+        let records = mixed(400, 7);
+        let exact = moments(&records, usize::MAX);
+        for width in [50usize, 100, 300] {
+            let k = 1200usize.div_ceil(width);
+            bands::configure(bands::Layout::new(k, 1200));
+            let f32_lines = lines::<bands::BandStore<f32>>(&records, Line::Moments, usize::MAX);
+            let f64_lines = lines::<bands::BandStore<f64>>(&records, Line::Moments, usize::MAX);
+            for binned in [f32_lines, f64_lines] {
+                assert_eq!(exact.len(), binned.len());
+                let mut worst = 0.0f64;
+                for ((mean, _, _), line) in exact.iter().zip(&binned) {
+                    let fields: Vec<f64> = line
+                        .split('\t')
+                        .skip(1)
+                        .map(|v| v.parse().unwrap())
+                        .collect();
+                    worst = worst.max((fields[0] - mean).abs());
+                }
+                assert!(
+                    worst <= width as f64 / 2.0 + 1e-3,
+                    "width {}: worst mean disagreement {}",
+                    width,
+                    worst
+                );
+            }
+        }
+    }
+
+    /// The pool formats a copy of the bands exactly as it does a copy of the
+    /// terms, so the lines are the same at every width.
+    #[test]
+    fn the_bands_print_the_same_lines_at_every_thread_count() {
+        let records = mixed(400, 7);
+        bands::configure(bands::Layout::new(16, 1200));
+        let serial = lines::<bands::BandStore<f32>>(&records, Line::Terms, usize::MAX);
+        for threads in [1usize, 2, 3, 8] {
+            assert_eq!(
+                threaded_lines::<bands::BandStore<f32>>(&records, Line::Terms, usize::MAX, threads),
+                serial,
+                "--bands disagreed at {} threads",
+                threads
+            );
+        }
+    }
+
+    /// `--bands` prints the band, not the block: a coinbase in block 250 over
+    /// bands of 100 is all of band 2.
+    #[test]
+    fn a_band_line_names_the_band() {
+        bands::configure(bands::Layout::new(8, 800));
+        let records = record(250, 0, &[], 1);
+        assert_eq!(
+            lines::<bands::BandStore<f32>>(&records, Line::Terms, usize::MAX),
+            vec!["0\t1:2".to_string()]
+        );
+        // Its moments read on the block axis and are *exact*: block 250, not
+        // the 249.5 centre of the band it falls in.  The band store carries
+        // them rather than letting them be summed back off the band index --
+        // see `ColorStore::exact_moments`.  The fourth column is the effective
+        // count, which is quadratic and so cannot be carried: it counts bands.
+        assert_eq!(
+            lines::<bands::BandStore<f32>>(&records, Line::Moments, usize::MAX),
+            vec!["0\t250\t0\t1".to_string()]
+        );
     }
 }

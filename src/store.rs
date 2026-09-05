@@ -57,6 +57,14 @@ pub trait ColorStore {
     /// unweighted path costs exactly what it did before weights existed.
     const WEIGHTED: bool;
 
+    /// Whether the coefficients [`ColorStore::for_each_term`] hands on as `f64`
+    /// are really `f32`s, so that a line prints them at the lane's own
+    /// precision: the shortest text that reads back as the same `f32` is nine
+    /// digits, where the same value widened needs seventeen to read back as the
+    /// same `f64` -- twice the bytes, none of them information.  Only
+    /// [`crate::bands`] in `f32` lanes says so.
+    const NARROW: bool = false;
+
     fn new() -> Self;
 
     /// The color of a coinbase transaction: the one block that minted it, with
@@ -90,6 +98,34 @@ pub trait ColorStore {
     /// the Scheme prints; carrying it as a float costs nothing there and saves
     /// the trait an associated type that only one backend would use.
     fn for_each_term(&self, color: &Self::Color, f: impl FnMut(usize, f64));
+
+    /// Where an exponent sits on the block axis, as `(scale, offset)`: block
+    /// `= exponent * scale + offset`.
+    ///
+    /// The identity for every store whose exponents *are* block ids, and the
+    /// collapsed line forms multiply through it -- `x * 1.0 + 0.0` is `x` for
+    /// every finite `x`, so their output is unchanged.  [`crate::bands`] yields
+    /// band indices and answers the band width and the centre of band 0, which
+    /// is what lets `--moments` over bands read in blocks.
+    fn placement(&self) -> (f64, f64) {
+        (1.0, 0.0)
+    }
+
+    /// `(sum w, sum w.b, sum w.b^2)` over block ids, when the store carries them
+    /// exactly rather than leaving them to be summed from the terms.
+    ///
+    /// `None` for every store whose terms *are* the blocks, since summing them
+    /// is then exact anyway and carrying them would be a second copy of the same
+    /// arithmetic.  [`crate::bands`] answers `Some`, because its terms are bands
+    /// and summing those gives the centre of a band where the block was wanted.
+    ///
+    /// The three are linear in the colour, which is the only reason a store can
+    /// carry them through a fold at all.  Nothing here offers the effective
+    /// block count: it is `mass^2 / sum w^2` and quadratic, so no bounded
+    /// per-colour state folds it.
+    fn exact_moments(&self, _color: &Self::Color) -> Option<[f64; 3]> {
+        None
+    }
 
     /// Offered each finished color, so a store with an invariant can watch it.
     ///

@@ -79,7 +79,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 use std::thread;
 
-use crate::{push_f64, push_int, Line};
+use crate::{push_f32, push_f64, push_int, Line};
 
 /// How many batches may be in flight per worker.
 ///
@@ -141,6 +141,18 @@ pub struct Body<'a> {
     first: f64,
     second: f64,
     squares: f64,
+    /// Set when the store handed over the first two moments outright, so
+    /// `term` must not add to them a second time.
+    exact: bool,
+    /// Where an exponent sits on the block axis, as
+    /// [`crate::store::ColorStore::placement`] gives it: the identity for the
+    /// stores whose exponents are block ids, and the band geometry for the one
+    /// whose exponents are bands.  Only the collapsed forms read it.
+    scale: f64,
+    offset: f64,
+    /// Whether a coefficient is an `f32` riding in an `f64`, and prints as one
+    /// -- [`crate::store::ColorStore::NARROW`].
+    narrow: bool,
 }
 
 impl<'a> Body<'a> {
@@ -154,7 +166,41 @@ impl<'a> Body<'a> {
             first: 0.0,
             second: 0.0,
             squares: 0.0,
+            exact: false,
+            scale: 1.0,
+            offset: 0.0,
+            narrow: false,
         }
+    }
+
+    /// The same body, reading exponents through `(scale, offset)`.
+    pub fn placed(mut self, placement: (f64, f64)) -> Self {
+        self.scale = placement.0;
+        self.offset = placement.1;
+        self
+    }
+
+    /// Take the first two moments from the store instead of summing them off
+    /// the terms, and say so.
+    ///
+    /// For a store whose terms are blocks the two agree, so nothing calls this.
+    /// For [`crate::bands`] they do not: summing its terms gives the *centre of
+    /// a band* where the block was wanted, out by up to half a band, and these
+    /// are exact.  The terms are then not walked at all for [`Line::Moments`],
+    /// which is also why a binned moments run is faster than a binned terms one.
+    pub fn from_exact_moments(mut self, moments: [f64; 3]) -> Self {
+        self.mass = moments[0];
+        self.first = moments[1];
+        self.second = moments[2];
+        self.exact = true;
+        self
+    }
+
+
+    /// The same body, printing coefficients as the `f32`s they are.
+    pub fn narrow(mut self, narrow: bool) -> Self {
+        self.narrow = narrow;
+        self
     }
 
     #[inline]
@@ -165,7 +211,9 @@ impl<'a> Body<'a> {
                     self.line.push(b',');
                 }
                 self.written = true;
-                if self.weighted {
+                if self.narrow {
+                    push_f32(self.line, coefficient as f32);
+                } else if self.weighted {
                     push_f64(self.line, coefficient);
                 } else {
                     // Always exactly 1 here, and an integer is what `push_f64`
@@ -182,11 +230,16 @@ impl<'a> Body<'a> {
             // `--sum` does not read fold away to nothing next to the multiply
             // it does.
             Line::Sum | Line::Moments => {
-                let block = exponent as f64;
-                self.mass += coefficient;
-                self.first += block * coefficient;
-                self.second += block * block * coefficient;
+                // `squares` is quadratic and no store can carry it, so it is
+                // summed here whatever else was handed over; the three linear
+                // sums are skipped when they were.
                 self.squares += coefficient * coefficient;
+                if !self.exact {
+                    let block = exponent as f64 * self.scale + self.offset;
+                    self.mass += coefficient;
+                    self.first += block * coefficient;
+                    self.second += block * block * coefficient;
+                }
             }
         }
     }
@@ -298,11 +351,11 @@ impl Snapshot {
 
     /// This color's line, onto the end of `line` -- a batch's lines share one
     /// buffer, so the writer makes one `write_all` of the lot.
-    fn append(&self, line: &mut Vec<u8>, form: Line) {
+    fn append(&self, line: &mut Vec<u8>, form: Line, narrow: bool) {
         push_int(line, self.tx_id);
         line.push(b'\t');
         let weighted = self.weighted();
-        let mut body = Body::new(line, form, weighted);
+        let mut body = Body::new(line, form, weighted).narrow(narrow);
         for k in 0..self.blocks.len() {
             // A color with no terms at all prints none either way, so the two
             // shapes cannot be told apart there and do not need to be.
@@ -345,8 +398,24 @@ pub struct Pool {
 
 impl Pool {
     /// `threads` formatter threads over `sink`, buffered a megabyte at a time
-    /// the way the serial path buffers it.
+    /// the way the serial path buffers it.  The driver goes through
+    /// [`Pool::with_lanes`], since it knows the store; this is the tests'.
+    #[cfg(test)]
     pub fn new(sink: Box<dyn Write + Send>, form: Line, threads: usize) -> Pool {
+        Pool::with_lanes(sink, form, threads, false)
+    }
+
+    /// `threads` formatter threads over `sink`, buffered a megabyte at a time
+    /// the way the serial path buffers it, with the coefficients printed as
+    /// `f32`s when `narrow` -- [`crate::store::ColorStore::NARROW`], which the
+    /// pool has to be told because it formats a copy of the colour and never
+    /// sees the store.
+    pub fn with_lanes(
+        sink: Box<dyn Write + Send>,
+        form: Line,
+        threads: usize,
+        narrow: bool,
+    ) -> Pool {
         let threads = threads.max(1);
         let failed = Arc::new(AtomicBool::new(false));
         // The writer keeps one receiver a worker and reads them round-robin,
@@ -371,7 +440,7 @@ impl Pool {
                     let mut lines = spare_line.try_recv().unwrap_or_default();
                     lines.clear();
                     for snapshot in &batch {
-                        snapshot.append(&mut lines, form);
+                        snapshot.append(&mut lines, form, narrow);
                     }
                     if send_done.send((lines, batch)).is_err() {
                         break;
