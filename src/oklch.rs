@@ -211,21 +211,34 @@ mod tests {
         );
     }
 
-    /// Every entry has to be a colour sRGB can actually show, which after
-    /// [`in_gamut`] means the round trip back through the space lands on it.
+    /// What [`in_gamut`] owes its caller, in both directions.
+    ///
+    /// The loop this replaces asserted that every channel of every entry was
+    /// `<= 255` -- of a `u8`, so it was true of any three bytes whatever and
+    /// the compiler said so (`comparison is useless due to type limits`).  It
+    /// would have passed for a ramp of pure grey, for a ramp of one repeated
+    /// colour, and for an `in_gamut` that ignored its arguments.  These are the
+    /// properties it was meant to be about.
     #[test]
-    fn every_entry_is_inside_the_gamut() {
-        for (index, rgb) in ramp().iter().enumerate() {
-            assert!(
-                rgb.iter().all(|&c| c <= 255),
-                "entry {} is not a colour: {:?}",
-                index,
-                rgb
+    fn the_gamut_mapping_only_moves_what_it_has_to() {
+        // A colour that fits is returned untouched: the mapping must not cost
+        // chroma it did not have to.
+        for &(l, c, h) in &[(0.6, 0.02, 30.0), (0.5, 0.05, 150.0), (0.7, 0.01, 250.0)] {
+            let direct = oklch_to_srgb(l, c, h).expect("chosen to be inside sRGB");
+            assert_eq!(
+                in_gamut(l, c, h),
+                direct,
+                "an in-gamut colour was moved anyway: L={} C={} h={}",
+                l,
+                c,
+                h
             );
         }
-        // The bisection has to have actually done something: at full chroma the
-        // dark end of this ramp is outside sRGB, so a build where `in_gamut`
-        // silently returned grey would pass the test above and fail this one.
+
+        // And a colour that does not fit is brought in without losing what it
+        // was: at full chroma the dark end of this ramp is outside sRGB, so a
+        // build whose `in_gamut` silently answered grey would pass every other
+        // assertion in this file and fail here.
         assert!(
             oklch_to_srgb(0.35, 0.16, 30.0).is_none(),
             "this test is only about anything if that colour is out of gamut"
@@ -235,6 +248,35 @@ mod tests {
             mapped[0] > mapped[2],
             "a warm hue has to stay warm through the gamut mapping: {:?}",
             mapped
+        );
+    }
+
+    /// The ramp has to be coloured.  Lightness carries the magnitude, but the
+    /// whole reason for a palette over a grey is the chroma beside it, and
+    /// nothing else here would notice if the gamut mapping took all of it.
+    #[test]
+    fn the_ramp_is_not_a_row_of_greys() {
+        let ramp = ramp();
+        let spread = |c: Rgb| {
+            let (hi, lo) = (
+                c.iter().copied().max().unwrap() as i32,
+                c.iter().copied().min().unwrap() as i32,
+            );
+            hi - lo
+        };
+        let coloured = ramp.iter().filter(|&&c| spread(c) > 24).count();
+        assert!(
+            coloured > RAMP_LEN / 2,
+            "only {} of {} entries carry real chroma",
+            coloured,
+            RAMP_LEN
+        );
+        // The paper end is deliberately neutral, so that is where the greys
+        // belong and nowhere else.
+        assert!(
+            spread(ramp[RAMP_LEN - 1]) <= 8,
+            "the paper end should be very nearly neutral: {:?}",
+            ramp[RAMP_LEN - 1]
         );
     }
 
