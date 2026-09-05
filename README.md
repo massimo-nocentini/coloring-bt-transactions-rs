@@ -93,6 +93,58 @@ Three representations of a colour, all driven by the one loop:
   its ancestor's colour, and every colour sums to 1.  Different output, on
   purpose, so it is a separate mode rather than a flag on the others.
 
+### The whole chain, in bands
+
+The exact polynomial cannot be produced for a chain this size, and that is not
+an implementation failure.  The driver holds a colour for every transaction with
+an unspent output — 92,735,490 of them at the end of the 2022 chain, measured —
+and 450 GB over that count is 4,852 bytes a colour, or 404 weighted terms, while
+the mean colour at 0.19% of the file is already 5,984 blocks and still growing.
+No per-transaction layout fits.  See [RUNNING-2022.md](RUNNING-2022.md).
+
+What does fit follows from the fold being linear.  A colour is a convex
+combination of its inputs' colours, so **any fixed set of `L` linear functionals
+of the colour folds exactly in `L` numbers a colour**, with no merge and no
+growth — the store stops depending on how many blocks a colour names and depends
+only on how many colours are live.  The exact polynomial is `L = 762,261`
+functionals, which is exactly why it does not fit.
+
+`--bands K` is `L = K` band indicators: how much of a transaction's value came
+from each of `K` equal slices of block history, the slices fixed against the
+whole chain so a band means the same thing in every run.  At 1,500,000 records
+of the real file, against the exact fold's 257.1 s and 32.06 GB:
+
+| | time | resident |
+|---|---|---|
+| exact `--weighted` | 257.1 s | 32.06 GB |
+| `--bands 256` | 2.38 s | 164 MB |
+| `--bands 1024` | 5.26 s | 566 MB |
+| `--bands 4096` | 16.25 s | 2.18 GB |
+
+and **flat with depth**, which is the whole point.  The combine is a `K`-lane
+axpy rather than a sorted merge, so it vectorises without having to find runs
+first.
+
+The first two moments are carried exactly beside the bands, in blocks: deriving
+them from band indices would put a colour's mean at the *centre of a band*, out
+by up to 372 blocks at `K=1024`.  Carried, the mean agrees with the exact fold
+to 1.1e-8 blocks at every `K`.  The effective block count is `mass² / Σ w²`,
+quadratic, and no bounded per-colour state folds a quadratic — under `--bands`
+that column counts bands rather than blocks.  That boundary is the precise
+statement of what a projection keeps.
+
+### Freeing a colour when nothing will read it
+
+`--release-oracle <file>` takes the file written by `cargo run --release
+--example lastspend`: one `u32` a transaction, the record that spends it last.
+The driver then frees a colour when nothing will read it again rather than when
+its last output happens to be spent — which is not the same question, since
+51,815,075 of the 136 million outputs unspent at the end of the chain are
+`OP_RETURN` and are never spent by any of the file's 2,044,897,328 inputs.
+
+Measured over 400,000 real records, `--weighted --sum`: **947 MB → 258 MB**
+(3.67x) and slightly faster, with output byte-identical under every backend.
+
 ### A colour ramp instead of grey
 
 `--palette` draws the weighted picture through a colour ramp.  The samples are
