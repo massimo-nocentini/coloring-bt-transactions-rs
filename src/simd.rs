@@ -17,6 +17,14 @@
 //!   anyway — the answer has to end up in a scalar register regardless, and no
 //!   field here is longer than 20 digits.
 //!
+//! ## The merge's kernels
+//!
+//! The rest of this file serves the weighted merge in [`crate::weighted`]:
+//! the elementwise scaling loops that the compiler vectorises on its own
+//! ([`scale_into_uninit`], [`scale_add_into_uninit`], and their initialised
+//! twins that the tests hold them against) and its two run finders
+//! ([`leading_below`], [`common_prefix`]).
+//!
 //! ## Why not the rest of the parser
 //!
 //! `skip_ws` is left scalar on purpose.  These records separate tokens with a
@@ -31,6 +39,8 @@
 //! lengths either side of the 16-byte stride, and on random bytes.  That is the
 //! only real defence against a hand-written vector kernel: the scalar version is
 //! obviously right, so make the fast one prove it matches.
+
+use std::mem::MaybeUninit;
 
 /// How many bytes at the front of `bytes` are ASCII digits.
 ///
@@ -171,6 +181,11 @@ pub fn eight_digits(chunk: u64) -> u64 {
 /// Hand-written intrinsics were tried for the *merge* itself and lost — see
 /// [`digit_run`] for the shape that does pay off, and the merge in
 /// [`crate::weighted`] for why the comparison loop does not.
+///
+/// Since the merge started writing into fresh allocations it goes through
+/// [`scale_into_uninit`], and this is the plain twin the tests hold that one
+/// against — hence the allowance below outside of test builds.
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub fn scale_into(dst: &mut [f64], src: &[f64], factor: f64) {
     for (out, &value) in dst.iter_mut().zip(src) {
@@ -183,11 +198,127 @@ pub fn scale_into(dst: &mut [f64], src: &[f64], factor: f64) {
 /// The blocks that both colors carry, once the merge has lined them up.  Same
 /// reasoning as [`scale_into`]: written plainly so the vectoriser can take it,
 /// and it fuses into a multiply-add on targets that have one.
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub fn scale_add_into(dst: &mut [f64], a: &[f64], fa: f64, b: &[f64], fb: f64) {
     for ((out, &x), &y) in dst.iter_mut().zip(a).zip(b) {
         *out = x * fa + y * fb;
     }
+}
+
+/// [`scale_into`] writing into memory that has not been initialised yet.
+///
+/// The merge in [`crate::weighted`] used to build into a zero-filled staging
+/// buffer and copy the result into its final allocation, which at depth in the
+/// 2022 chain was half its time: the zero fill, the copy, and a `malloc` per
+/// colour.  Writing straight into the fresh allocation needs a kernel that is
+/// allowed to see uninitialised destination memory, which is the whole
+/// difference between this and [`scale_into`] — the loop body is the same store
+/// of the same product and vectorises the same way.  Every element of `dst` that
+/// is covered by `src` is initialised on return.
+#[inline]
+pub fn scale_into_uninit(dst: &mut [MaybeUninit<f64>], src: &[f64], factor: f64) {
+    for (out, &value) in dst.iter_mut().zip(src) {
+        out.write(value * factor);
+    }
+}
+
+/// [`scale_add_into`] writing into uninitialised memory, as
+/// [`scale_into_uninit`] does for [`scale_into`].
+#[inline]
+pub fn scale_add_into_uninit(
+    dst: &mut [MaybeUninit<f64>],
+    a: &[f64],
+    fa: f64,
+    b: &[f64],
+    fb: f64,
+) {
+    for ((out, &x), &y) in dst.iter_mut().zip(a).zip(b) {
+        out.write(x * fa + y * fb);
+    }
+}
+
+/// How many leading elements `a` and `b` have in common, position for position.
+///
+/// The merge's other run finder.  Two colours that share an ancestor share whole
+/// stretches of its support, and once the merge has lined one up it has to find
+/// where it ends: a scalar loop does that a block at a time, one dependent
+/// compare per element, and at the depths where colours run to a hundred
+/// thousand blocks that loop was a fifth of the merge.  Four `u32` lanes at a
+/// time is the same compare four times wider, and finding the first lane that
+/// differs is one `movemask` and a `trailing_zeros`.
+#[inline]
+pub fn common_prefix(a: &[u32], b: &[u32]) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: SSE2 is baseline for every x86-64 target; the kernel reads
+        // only within both slices.
+        unsafe { common_prefix_sse2(a, b) }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        common_prefix_scalar(a, b)
+    }
+}
+
+/// The oracle for [`common_prefix`], and its tail.
+#[inline]
+pub fn common_prefix_scalar(a: &[u32], b: &[u32]) -> usize {
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i < n && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+/// `common_prefix` on SSE2: four lanes compared for equality, a mask of the
+/// lanes that matched, and the first zero bit of the mask is where the prefix
+/// ends.  Two 16-byte loads per step against the eight bytes a scalar step
+/// compares.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn common_prefix_sse2(a: &[u32], b: &[u32]) -> usize {
+    use core::arch::x86_64::*;
+
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i + 4 <= n {
+        let x = _mm_loadu_si128(a.as_ptr().add(i) as *const __m128i);
+        let y = _mm_loadu_si128(b.as_ptr().add(i) as *const __m128i);
+        // One bit per byte, set where the bytes agree; a lane agrees when all
+        // four of its bits do.
+        let same = _mm_movemask_epi8(_mm_cmpeq_epi32(x, y)) as u32;
+        if same != 0xFFFF {
+            return i + (same.trailing_ones() >> 2) as usize;
+        }
+        i += 4;
+    }
+    i + common_prefix_scalar(&a[i..], &b[i..])
+}
+
+/// How many leading elements of the ascending `xs` are below `key`.
+///
+/// The merge asks this of the side that is behind: everything up to the other
+/// side's next block is a run to copy whole.  A binary search over the rest of
+/// the array answers in `log(remaining)` probes, but those probes land far ahead
+/// of the position the merge is streaming through, so each is a cache miss on a
+/// colour that does not fit in L2 — and most runs are short.  Galloping probes
+/// at 1, 2, 4, ... from the current position instead, so the cost is
+/// `2 log(run)` touches of memory that is about to be read anyway; only the last
+/// doubling is bisected.  Same answer as `xs.partition_point(|&x| x < key)`,
+/// which the tests assert.
+#[inline]
+pub fn leading_below(xs: &[u32], key: u32) -> usize {
+    let n = xs.len();
+    // `xs[..low]` are known to be below `key`; `high` is the next probe.
+    let (mut low, mut high) = (0usize, 1usize);
+    while high < n && xs[high] < key {
+        low = high + 1;
+        high *= 2;
+    }
+    let high = high.min(n);
+    low + xs[low..high].partition_point(|&x| x < key)
 }
 
 #[cfg(test)]
@@ -293,6 +424,130 @@ mod tests {
             let text = format!("{:08}", value);
             let chunk = u64::from_le_bytes(text.as_bytes().try_into().unwrap());
             assert_eq!(eight_digits(chunk), value, "{}", text);
+        }
+    }
+
+    /// The uninitialised-destination kernels are the initialised ones with a
+    /// different signature, and this is what says so: same inputs, same bits
+    /// out, at lengths either side of the vector width.
+    #[test]
+    fn uninit_kernels_agree_with_the_plain_ones() {
+        for n in 0..40usize {
+            let a: Vec<f64> = (0..n).map(|k| 0.37 * k as f64 + 0.001).collect();
+            let b: Vec<f64> = (0..n).map(|k| 1.0 / (k as f64 + 3.0)).collect();
+            let mut plain = vec![0.0; n];
+            scale_into(&mut plain, &a, 0.731);
+            let mut fresh: Vec<f64> = Vec::with_capacity(n);
+            scale_into_uninit(fresh.spare_capacity_mut(), &a, 0.731);
+            // SAFETY: `scale_into_uninit` wrote every one of the `n` elements.
+            unsafe { fresh.set_len(n) };
+            assert_eq!(plain, fresh, "scale, n = {}", n);
+
+            let mut plain = vec![0.0; n];
+            scale_add_into(&mut plain, &a, 0.731, &b, 0.269);
+            let mut fresh: Vec<f64> = Vec::with_capacity(n);
+            scale_add_into_uninit(fresh.spare_capacity_mut(), &a, 0.731, &b, 0.269);
+            // SAFETY: as above.
+            unsafe { fresh.set_len(n) };
+            assert_eq!(plain, fresh, "scale_add, n = {}", n);
+        }
+    }
+
+    /// Every prefix length through every offset within and across the 4-lane
+    /// stride, with the mismatch placed at each, against the scalar oracle.
+    #[test]
+    fn common_prefix_matches_scalar_at_every_length_and_offset() {
+        for len in 0..40usize {
+            for extra in 0..12usize {
+                let a: Vec<u32> = (0..len + extra).map(|k| 3 * k as u32).collect();
+                let mut b = a.clone();
+                if extra > 0 {
+                    // Differ at exactly `len`, so the answer must be `len`.
+                    b[len] += 1;
+                }
+                for offset in 0..5usize.min(a.len() + 1) {
+                    let want = common_prefix_scalar(&a[offset..], &b[offset..]);
+                    assert_eq!(
+                        common_prefix(&a[offset..], &b[offset..]),
+                        want,
+                        "len {} extra {} offset {}",
+                        len,
+                        extra,
+                        offset
+                    );
+                }
+            }
+        }
+    }
+
+    /// Slices of different lengths stop at the shorter one, and equal slices
+    /// answer their whole length.
+    #[test]
+    fn common_prefix_stops_at_the_shorter_side() {
+        let a: Vec<u32> = (0..23).collect();
+        assert_eq!(common_prefix(&a, &a[..7]), 7);
+        assert_eq!(common_prefix(&a[..7], &a), 7);
+        assert_eq!(common_prefix(&a, &a), 23);
+        assert_eq!(common_prefix(&a, &[]), 0);
+        assert_eq!(common_prefix(&[], &[]), 0);
+    }
+
+    #[test]
+    fn common_prefix_matches_scalar_on_random_arrays() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..3000 {
+            let n = (next() % 70) as usize;
+            let a: Vec<u32> = (0..n).map(|_| (next() % 4) as u32).collect();
+            // Mostly equal, so the prefixes are long enough to cross lanes.
+            let b: Vec<u32> = a
+                .iter()
+                .map(|&x| if next() % 11 == 0 { x + 1 } else { x })
+                .collect();
+            assert_eq!(common_prefix(&a, &b), common_prefix_scalar(&a, &b));
+        }
+    }
+
+    /// The gallop is a different search with the same answer as
+    /// `partition_point`, on every key against every length of an ascending
+    /// array with gaps, so that keys fall both on and between elements.
+    #[test]
+    fn leading_below_matches_partition_point() {
+        for n in 0..70usize {
+            let xs: Vec<u32> = (0..n).map(|k| 2 * k as u32 + 1).collect();
+            for key in 0..(2 * n as u32 + 4) {
+                assert_eq!(
+                    leading_below(&xs, key),
+                    xs.partition_point(|&x| x < key),
+                    "n {} key {}",
+                    n,
+                    key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn leading_below_matches_partition_point_on_random_arrays() {
+        let mut state = 0x3C6E_F372_FE94_F82Bu64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..3000 {
+            let n = (next() % 300) as usize;
+            let mut xs: Vec<u32> = (0..n).map(|_| (next() % 1000) as u32).collect();
+            xs.sort_unstable();
+            xs.dedup();
+            let key = (next() % 1010) as u32;
+            assert_eq!(leading_below(&xs, key), xs.partition_point(|&x| x < key));
         }
     }
 }

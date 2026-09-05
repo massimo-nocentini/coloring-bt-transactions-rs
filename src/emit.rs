@@ -224,15 +224,20 @@ impl<'a> Body<'a> {
                 self.line.push(b':');
                 push_int(self.line, exponent);
             }
-            // Both collapsed forms want the same running sums, and `--sum`
-            // wants a strict subset of them.  Kept as one arm rather than two
-            // so there is one definition of what is accumulated; the three
-            // `--sum` does not read fold away to nothing next to the multiply
-            // it does.
-            Line::Sum | Line::Moments => {
+            // `--sum` reads one of the four running sums, so it gets its own
+            // arm: `form` is a value and not a type, so the compiler keeps
+            // every chain it can reach, and at depth in the 2022 chain summing
+            // the other three over a colour of tens of thousands of terms was a
+            // tenth of the fold.  The product is formed exactly as the arm below
+            // forms it -- same terms, same order -- so the two agree bit for bit
+            // on the mean.
+            Line::Sum => {
+                self.first += (exponent as f64 * self.scale + self.offset) * coefficient;
+            }
+            Line::Moments => {
                 // `squares` is quadratic and no store can carry it, so it is
                 // summed here whatever else was handed over; the three linear
-                // sums are skipped when they were.
+                // sums are skipped when a store handed them over exactly.
                 self.squares += coefficient * coefficient;
                 if !self.exact {
                     let block = exponent as f64 * self.scale + self.offset;

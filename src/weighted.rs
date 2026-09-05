@@ -50,8 +50,29 @@
 //!
 //! Both are flat loops over contiguous `f64`, which vectorise.  The merge finds
 //! the runs; the vector unit does them.
+//!
+//! That the runs are long is not an assumption: counted over records 1.4-1.5 M
+//! of the 2022 chain, 97% of the terms a merge writes arrive in runs, the
+//! one-sided ones averaging 1,900 blocks and the shared ones 140.  Colours at
+//! that depth are near-copies of a few common ancestors, not independent
+//! mixtures.  A block-at-a-time gear for the short runs was built and measured
+//! -- 12 to 9 ns a term on synthetic colours that *were* independent mixtures,
+//! and nothing on the real chain, where it could reach 3% of the terms -- and
+//! dropped.
+//!
+//! ## Where the memory goes, and how it is allocated
+//!
+//! A colour is two boxed slices, allocated exactly once at their final length
+//! -- or at an upper bound and shrunk in place, for a merge, whose length is
+//! not known until it has run.  Nothing is staged and copied.  That relies on
+//! the allocator shrinking without moving and without waste, which jemalloc
+//! does and glibc's malloc and mimalloc were measured not to (see the features
+//! in `Cargo.toml`): on the same 1.5 M records the resident set was 32.0 GB
+//! under jemalloc, 37.4 GB under glibc and 39.8 GB under mimalloc.  The store
+//! is what runs into this machine's memory, so the allocator is not a detail.
 
 use crate::simd;
+use std::mem::MaybeUninit;
 use crate::store::ColorStore;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -71,10 +92,6 @@ impl Terms {
 pub type Color = Rc<Terms>;
 
 pub struct WeightedSets {
-    /// The merge builds here and is frozen into an `Rc` once its length is
-    /// known, so no merge reallocates after the first few records.
-    blocks: Vec<u32>,
-    weights: Vec<f64>,
     live: usize,
     peak: usize,
     /// The largest `|sum of weights - 1|` seen in a finished color.  Every color
@@ -84,38 +101,68 @@ pub struct WeightedSets {
 }
 
 impl WeightedSets {
-    fn intern(&mut self) -> Color {
+    /// Freeze a finished pair of arrays into a colour.
+    ///
+    /// The vectors arrive with their length set to what was written and their
+    /// capacity at whatever upper bound the caller had, and `into_boxed_slice`
+    /// gives the difference back — a `realloc` downward, which jemalloc does in
+    /// place and to size (glibc and mimalloc do not; see the module docs).
+    /// Nothing is copied here, and that is the point: the merge used to build
+    /// into a staging buffer that was zeroed first and copied out after, and at
+    /// depth in the 2022 chain the zeroing, the copy and the `malloc` behind it
+    /// were half the fold.
+    fn intern(&mut self, blocks: Vec<u32>, weights: Vec<f64>) -> Color {
+        debug_assert_eq!(blocks.len(), weights.len());
         let color = Rc::new(Terms {
-            blocks: self.blocks.as_slice().into(),
-            weights: self.weights.as_slice().into(),
+            blocks: blocks.into_boxed_slice(),
+            weights: weights.into_boxed_slice(),
         });
         self.live += color.len();
         self.peak = self.peak.max(self.live);
         color
     }
-
-    /// Room for `n` blocks and `n` weights, with the lengths already set so the
-    /// merge can write through slices rather than pushing.
-    fn stage(&mut self, n: usize) {
-        self.blocks.clear();
-        self.weights.clear();
-        self.blocks.resize(n, 0);
-        self.weights.resize(n, 0.0);
-    }
-
 }
 
-/// `wa * a + wb * b` into the staging slices, answering how many terms it wrote.
+/// `dst[..src.len()] = src`, into memory that has not been initialised.
+///
+/// What `copy_from_slice` is for the block ids once the destination is a fresh
+/// allocation rather than a zeroed buffer.  The standard library has this as
+/// `MaybeUninit::copy_from_slice`, but not on stable yet.
+#[inline]
+fn put(dst: &mut [MaybeUninit<u32>], src: &[u32]) {
+    assert!(dst.len() >= src.len(), "run of {} into room for {}", src.len(), dst.len());
+    // SAFETY: `src` is a live slice of `src.len()` initialised `u32`s, `dst` has
+    // room for at least that many, and the two cannot overlap -- one borrows a
+    // finished colour, the other the allocation being built.
+    unsafe {
+        std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr() as *mut u32, src.len());
+    }
+}
+
+/// `wa * a + wb * b` into fresh, uninitialised output slices, answering how
+/// many terms it wrote.  Every element below that count is initialised on
+/// return; nothing above it is touched.
 ///
 /// One pass over both inputs.  A run that only one side has is copied and scaled
-/// through [`simd::scale_into`]; a run they share goes through
-/// [`simd::scale_add_into`].  Finding those runs is the scalar part, and it is
-/// the part that resists vectorising — which is why the loop below looks for
-/// *runs* rather than stepping one block at a time: the longer the runs, the
+/// through [`simd::scale_into_uninit`]; a run they share goes through
+/// [`simd::scale_add_into_uninit`].  Finding those runs is the scalar part, and
+/// it is the part that resists vectorising — which is why the loop below looks
+/// for *runs* rather than stepping one block at a time: the longer the runs, the
 /// more of the work lands in the vector helpers.
+///
+/// Two things about how the runs are found, both measured on the real chain
+/// where colours reach a hundred thousand blocks:
+///
+/// - the one-sided run is found by galloping ([`simd::leading_below`]) rather
+///   than bisecting the whole remainder, because bisection's probes land far
+///   ahead of where the merge is streaming and miss the cache, and most runs are
+///   short next to the colour;
+/// - the shared run is found four blocks at a time ([`simd::common_prefix`]),
+///   since a scalar walk of it was one dependent compare per block over stretches
+///   that are exactly as long as the colours are shared, which is most of them.
 fn combine_into(
-    out_blocks: &mut [u32],
-    out_weights: &mut [f64],
+    out_blocks: &mut [MaybeUninit<u32>],
+    out_weights: &mut [MaybeUninit<f64>],
     a: &Terms,
     wa: f64,
     b: &Terms,
@@ -128,9 +175,9 @@ fn combine_into(
 
         if ka < kb {
             // A run of A that B does not reach yet: scale and copy it whole.
-            let run = a.blocks[i..].partition_point(|&x| x < kb);
-            out_blocks[k..k + run].copy_from_slice(&a.blocks[i..i + run]);
-            simd::scale_into(
+            let run = simd::leading_below(&a.blocks[i..], kb);
+            put(&mut out_blocks[k..k + run], &a.blocks[i..i + run]);
+            simd::scale_into_uninit(
                 &mut out_weights[k..k + run],
                 &a.weights[i..i + run],
                 wa,
@@ -138,9 +185,9 @@ fn combine_into(
             i += run;
             k += run;
         } else if kb < ka {
-            let run = b.blocks[j..].partition_point(|&x| x < ka);
-            out_blocks[k..k + run].copy_from_slice(&b.blocks[j..j + run]);
-            simd::scale_into(
+            let run = simd::leading_below(&b.blocks[j..], ka);
+            put(&mut out_blocks[k..k + run], &b.blocks[j..j + run]);
+            simd::scale_into_uninit(
                 &mut out_weights[k..k + run],
                 &b.weights[j..j + run],
                 wb,
@@ -150,15 +197,9 @@ fn combine_into(
         } else {
             // A run both sides carry, block for block.  Common: colors that
             // share an ancestor share whole stretches of its support.
-            let mut run = 1;
-            while i + run < a.len()
-                && j + run < b.len()
-                && a.blocks[i + run] == b.blocks[j + run]
-            {
-                run += 1;
-            }
-            out_blocks[k..k + run].copy_from_slice(&a.blocks[i..i + run]);
-            simd::scale_add_into(
+            let run = simd::common_prefix(&a.blocks[i..], &b.blocks[j..]);
+            put(&mut out_blocks[k..k + run], &a.blocks[i..i + run]);
+            simd::scale_add_into_uninit(
                 &mut out_weights[k..k + run],
                 &a.weights[i..i + run],
                 wa,
@@ -173,13 +214,13 @@ fn combine_into(
 
     // Whatever is left of one side is a single scaled run.
     let rest_a = a.len() - i;
-    out_blocks[k..k + rest_a].copy_from_slice(&a.blocks[i..]);
-    simd::scale_into(&mut out_weights[k..k + rest_a], &a.weights[i..], wa);
+    put(&mut out_blocks[k..k + rest_a], &a.blocks[i..]);
+    simd::scale_into_uninit(&mut out_weights[k..k + rest_a], &a.weights[i..], wa);
     k += rest_a;
 
     let rest_b = b.len() - j;
-    out_blocks[k..k + rest_b].copy_from_slice(&b.blocks[j..]);
-    simd::scale_into(&mut out_weights[k..k + rest_b], &b.weights[j..], wb);
+    put(&mut out_blocks[k..k + rest_b], &b.blocks[j..]);
+    simd::scale_into_uninit(&mut out_weights[k..k + rest_b], &b.weights[j..], wb);
     k + rest_b
 }
 
@@ -190,8 +231,6 @@ impl ColorStore for WeightedSets {
 
     fn new() -> Self {
         WeightedSets {
-            blocks: Vec::new(),
-            weights: Vec::new(),
             live: 0,
             peak: 0,
             drift: 0.0,
@@ -201,10 +240,7 @@ impl ColorStore for WeightedSets {
     fn singleton(&mut self, block: usize) -> Color {
         let block = u32::try_from(block)
             .unwrap_or_else(|_| panic!("block id {} does not fit in a u32 — see weighted", block));
-        self.stage(1);
-        self.blocks[0] = block;
-        self.weights[0] = 1.0;
-        self.intern()
+        self.intern(vec![block], vec![1.0])
     }
 
     fn combine(&mut self, a: &Color, wa: f64, b: &Color, wb: f64) -> Color {
@@ -222,15 +258,28 @@ impl ColorStore for WeightedSets {
             return self.scale(a, wa + wb);
         }
 
-        self.stage(a.len() + b.len());
-        let mut blocks = std::mem::take(&mut self.blocks);
-        let mut weights = std::mem::take(&mut self.weights);
-        let written = combine_into(&mut blocks, &mut weights, a, wa, b, wb);
-        blocks.truncate(written);
-        weights.truncate(written);
-        self.blocks = blocks;
-        self.weights = weights;
-        self.intern()
+        // The result has at most as many terms as the two sides together, and
+        // exactly how many is not known until the merge has run.  So: allocate
+        // the bound, merge straight into it, and let `intern` hand the unused
+        // tail back.
+        let bound = a.len() + b.len();
+        let mut blocks: Vec<u32> = Vec::with_capacity(bound);
+        let mut weights: Vec<f64> = Vec::with_capacity(bound);
+        let written = combine_into(
+            blocks.spare_capacity_mut(),
+            weights.spare_capacity_mut(),
+            a,
+            wa,
+            b,
+            wb,
+        );
+        // SAFETY: `combine_into` initialised exactly the first `written`
+        // elements of both, and `written <= bound`.
+        unsafe {
+            blocks.set_len(written);
+            weights.set_len(written);
+        }
+        self.intern(blocks, weights)
     }
 
     fn scale(&mut self, color: &Color, w: f64) -> Color {
@@ -240,12 +289,15 @@ impl ColorStore for WeightedSets {
         if w == 1.0 {
             return self.share(color);
         }
-        self.stage(color.len());
-        self.blocks.copy_from_slice(&color.blocks);
-        let mut weights = std::mem::take(&mut self.weights);
-        simd::scale_into(&mut weights, &color.weights, w);
-        self.weights = weights;
-        self.intern()
+        // The length is known here, so both arrays are allocated exactly: the
+        // blocks are a straight copy and the weights are scaled into place.
+        let n = color.len();
+        let blocks = color.blocks.to_vec();
+        let mut weights: Vec<f64> = Vec::with_capacity(n);
+        simd::scale_into_uninit(weights.spare_capacity_mut(), &color.weights, w);
+        // SAFETY: `scale_into_uninit` wrote all `n` elements.
+        unsafe { weights.set_len(n) };
+        self.intern(blocks, weights)
     }
 
     fn share(&mut self, color: &Color) -> Color {
@@ -307,12 +359,8 @@ mod tests {
     use super::*;
 
     fn color(store: &mut WeightedSets, terms: &[(u32, f64)]) -> Color {
-        store.stage(terms.len());
-        for (k, &(block, weight)) in terms.iter().enumerate() {
-            store.blocks[k] = block;
-            store.weights[k] = weight;
-        }
-        store.intern()
+        let (blocks, weights): (Vec<u32>, Vec<f64>) = terms.iter().copied().unzip();
+        store.intern(blocks, weights)
     }
 
     fn dump(c: &Color) -> Vec<(u32, f64)> {
@@ -408,6 +456,38 @@ mod tests {
         }
     }
 
+    /// Long enough, and dense enough, that every run length the finders see
+    /// shows up: runs of one where the two sides interleave, long one-sided
+    /// stretches, long shared ones.  The oracle knows nothing about runs, which
+    /// is what makes it an oracle.
+    #[test]
+    fn combines_random_colors_of_every_run_length() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for round in 0..300 {
+            // A block is kept with probability `p`, and `p` sweeps from sparse
+            // to nearly full so every run length shows up.
+            let mut build = |universe: u64, p: u64| -> Vec<(u32, f64)> {
+                let blocks: Vec<u32> = (0..universe)
+                    .filter(|_| next() % 100 < p)
+                    .map(|b| b as u32)
+                    .collect();
+                let count = blocks.len().max(1) as f64;
+                blocks.into_iter().map(|b| (b, 1.0 / count)).collect()
+            };
+            let universe = 200 + (round % 7) * 61;
+            let a = build(universe, 5 + (round * 13) % 95);
+            let b = build(universe, 5 + (round * 29) % 95);
+            let wa = (next() % 1000) as f64 / 1000.0;
+            check(&a, wa, &b, 1.0 - wa);
+        }
+    }
+
     /// The property the whole representation rests on.
     #[test]
     fn a_convex_combination_of_distributions_is_a_distribution() {
@@ -444,5 +524,69 @@ mod tests {
         let mut seen = Vec::new();
         store.for_each_term(&a, |exp, coeff| seen.push((exp, coeff)));
         assert_eq!(seen, vec![(7, 0.75), (2, 0.25)]);
+    }
+
+    /// Not a test: a microbenchmark of `combine` on the shapes the run finders
+    /// see, so that a change to them can be timed without a four-minute run
+    /// over the real chain -- and on a machine other people are using, whose
+    /// wall clock is noisy where this is not.  `cargo test --release
+    /// merge_bench -- --ignored --nocapture`, before and after.  Prints the
+    /// best of several repeats in nanoseconds per output term.
+    #[test]
+    #[ignore]
+    fn merge_bench() {
+        use std::time::Instant;
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        // Every block of `0..universe` kept with probability `density`.
+        let mut dense = |universe: u32, density: f64| -> Vec<(u32, f64)> {
+            let kept: Vec<u32> = (0..universe)
+                .filter(|_| (next() % 1_000_000) as f64 / 1_000_000.0 < density)
+                .collect();
+            let w = 1.0 / kept.len() as f64;
+            kept.into_iter().map(|b| (b, w)).collect()
+        };
+        let shapes: Vec<(&str, Vec<(u32, f64)>, Vec<(u32, f64)>)> = vec![
+            ("two mixed colours, 77% of 130k blocks each (L3)", dense(130_000, 0.77), dense(130_000, 0.77)),
+            ("two mixed colours, 77% of 40k blocks each (L2)", dense(40_000, 0.77), dense(40_000, 0.77)),
+            ("two well-mixed colours, 92% of 130k blocks each (runs ~5)", dense(130_000, 0.92), dense(130_000, 0.92)),
+            ("mixed 77% of 130k against a half-dense 50% one", dense(130_000, 0.77), dense(130_000, 0.5)),
+            ("mixed 77% of 130k against a sparse 4% one", dense(130_000, 0.77), dense(130_000, 0.04)),
+            ("nearly identical 100k-block colours (long shared runs)", dense(130_000, 0.77), Vec::new()),
+            ("disjoint interleaved 50k each (runs of one)", (0..100_000).filter(|b| b % 2 == 0).map(|b| (b, 2e-5)).collect(), (0..100_000).filter(|b| b % 2 == 1).map(|b| (b, 2e-5)).collect()),
+        ];
+        for (name, a, b) in shapes {
+            let b = if b.is_empty() {
+                // Nearly identical: drop every 500th block of `a`.
+                a.iter().enumerate().filter(|(k, _)| k % 500 != 0).map(|(_, t)| *t).collect()
+            } else {
+                b
+            };
+            let mut store = WeightedSets::new();
+            let ca = color(&mut store, &a);
+            let cb = color(&mut store, &b);
+            let mut best = f64::INFINITY;
+            let mut out_len = 0;
+            for _ in 0..7 {
+                let started = Instant::now();
+                let reps = 20;
+                for _ in 0..reps {
+                    let c = store.combine(&ca, 0.6, &cb, 0.4);
+                    out_len = c.len();
+                    store.release(c);
+                }
+                let per_term = started.elapsed().as_secs_f64() * 1e9 / (reps * out_len) as f64;
+                best = best.min(per_term);
+            }
+            eprintln!(
+                "merge_bench: {:<58} a={:>7} b={:>7} out={:>7}  {:.3} ns/term",
+                name, a.len(), b.len(), out_len, best
+            );
+        }
     }
 }

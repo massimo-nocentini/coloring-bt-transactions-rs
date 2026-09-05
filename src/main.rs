@@ -274,6 +274,32 @@ mod window;
 
 use poly::Coeff;
 use std::collections::HashMap;
+
+/// The fold's heap is a few hundred thousand blocks of tens of kilobytes to a
+/// megabyte each, freed and reallocated at every merge, and glibc's malloc
+/// degrades on exactly that shape: measured at 1.5 M records of the 2022 chain
+/// a call had gone from 47 ns to 26 us and was a quarter of the fold.  Either of
+/// these allocators holds the cost flat; the features pick one.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+// jemalloc reads `_RJEM_MALLOC_CONF` from the environment (the `_RJEM_` is the
+// prefix this crate builds it with).  One setting was tried and is worth
+// recording rather than shipping: `thp:always`, transparent huge pages on every
+// extent.  The fold's heap is tens of gigabytes touched once and kept, one page
+// fault per 4 KiB -- 9-12 million faults at 1.5 M records of the 2022 chain --
+// and 2 MiB pages cut that by 92%.  But on this machine (`defrag=madvise`,
+// other work resident) the system time did not fall, because the kernel then
+// compacts memory synchronously to find the huge pages, and the resident set
+// grew 4%.  So it stays an environment variable for a quiet machine, not a
+// default:
+//
+//     _RJEM_MALLOC_CONF=thp:always ./target/release/coloring-bt-transactions ...
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::process::ExitCode;
