@@ -25,10 +25,13 @@
 //! This decides *when a colour is freed*, never what it contains, so a run with
 //! the oracle and one without have to agree exactly.  Two things protect that.
 //!
-//! The oracle is refused unless its record count matches the run's — a file
-//! written for different records would free a colour that is still wanted, and
-//! the driver would then either fail its lookup loudly or, worse, be handed a
-//! displaced entry quietly.  And [`Oracle::last_reads`] is deliberately
+//! The oracle is refused unless it covers at least the records the run will
+//! read.  Longer is safe -- an oracle for the whole file, used on a prefix,
+//! only says a colour is read later than the prefix reaches, so the fold holds
+//! it longer than it had to -- which is what lets one oracle serve every prefix
+//! of the same file.  Shorter is not: it answers `NEVER` where the truth is
+//! "later", and the driver would then either fail its lookup loudly or, worse,
+//! be handed a displaced entry quietly.  And [`Oracle::last_reads`] is deliberately
 //! conservative in the one place it could be wrong: it frees on the *lowest*
 //! input index that names a transaction, because the fold walks its inputs from
 //! the last to the first, so the lowest index is the one it reaches last.
@@ -63,13 +66,21 @@ impl Oracle {
         let records = u64::from_le_bytes(head[8..16].try_into().unwrap());
         let count = u64::from_le_bytes(head[16..24].try_into().unwrap()) as usize;
 
+        // Longer than the run is safe and shorter is not, so this is an
+        // inequality rather than a match.  An oracle written for the whole file
+        // says a colour's last read is at some record the run may never reach,
+        // which only makes the fold hold it longer than it needed to -- the
+        // conservative direction, and exactly what makes one oracle usable for
+        // every prefix of the same file.  One written for fewer records answers
+        // `NEVER` where the truth is "later", and frees colours the run still
+        // wants.
         if let Some(expected) = records_expected {
-            if records != expected {
+            if records < expected {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "written for {} records and this run has {}; \
-                         a stale oracle frees colours that are still wanted",
+                        "written for {} records and this run reads {}; \
+                         it would free colours that are still wanted",
                         records, expected
                     ),
                 ));
