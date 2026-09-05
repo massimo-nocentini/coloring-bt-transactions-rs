@@ -254,6 +254,9 @@ mod emit;
 mod image;
 // The perceptual space the palette ink is built in, and the ramp itself.
 mod oklch;
+// Reading the records once to learn when a colour is dead, rather than holding
+// it for every output that merely could be spent.
+mod oracle;
 // The canvas `--pdf` and `--fold` fold the picture onto.  The fold itself is
 // plain arithmetic and builds everywhere; only the Cairo surface `--pdf`
 // paints it onto sits behind the feature, inside the module.  Declared here
@@ -602,7 +605,8 @@ const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
                      [--rings|--sets|--weighted|--bands <K>|--bands64 <K>] [--sum|--moments] \
                      [--threads <n>|auto] \
                      [--png <file>|--pdf <file>|--fold <file>|--view] \
-                     [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] [--palette] < records";
+                     [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] [--palette] \
+                     [--release-oracle <file>] < records";
 
 /// Which of the three pictures was asked for.
 ///
@@ -994,6 +998,9 @@ fn main() -> ExitCode {
     // Whether a weighted picture is drawn through the colour ramp rather than
     // as a grey.
     let mut palette = false;
+    // A file saying, per transaction, which record spends it last -- so a
+    // colour can be freed when nothing will read it again.  See `oracle`.
+    let mut release_oracle: Option<String> = None;
     // 0 is the serial path, which is what runs unless a count is asked for.
     let mut threads: usize = 0;
     // How many bands a `--bands` colour has, once one is asked for.
@@ -1146,6 +1153,11 @@ fn main() -> ExitCode {
                 }
                 if chose_bands {
                     i += taken;
+                    continue;
+                }
+                if let Some((path, used)) = option(&args, i, "--release-oracle") {
+                    release_oracle = Some(path.to_string());
+                    i += used;
                     continue;
                 }
                 if let Some((n, used)) = option(&args, i, "--threads") {
@@ -1356,19 +1368,46 @@ fn main() -> ExitCode {
         prefetch::Records::here(input)
     };
 
+    // The oracle is checked against the run before a record is read, since a
+    // stale one frees colours that are still wanted and the failure that
+    // follows is a wrong answer rather than a crash.
+    let oracle = match &release_oracle {
+        None => None,
+        Some(path) => {
+            let expected = if limit == usize::MAX { None } else { Some(limit as u64) };
+            match oracle::Oracle::load(path, expected) {
+                Ok(o) => {
+                    if stats {
+                        eprintln!(
+                            "circular-polynomial: release oracle over {} records",
+                            o.records()
+                        );
+                    }
+                    Some(o)
+                }
+                Err(e) => {
+                    eprintln!("circular-polynomial: {}: {}", path, e);
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
+
     // One instantiation of the loop per backend, so none of them pays for the
     // others existing.
     let outcome = match backend {
-        Backend::Rings => run::<RingStore>(limit, skip, stats, output, source),
-        Backend::Sets => run::<colorset::SetStore>(limit, skip, stats, output, source),
-        Backend::Weighted => run::<weighted::WeightedSets>(limit, skip, stats, output, source),
+        Backend::Rings => run::<RingStore>(limit, skip, stats, output, source, oracle),
+        Backend::Sets => run::<colorset::SetStore>(limit, skip, stats, output, source, oracle),
+        Backend::Weighted => {
+            run::<weighted::WeightedSets>(limit, skip, stats, output, source, oracle)
+        }
         Backend::Bands | Backend::Bands64 => {
             let k = bands.expect("the backend was chosen by --bands");
             bands::configure(bands::Layout::new(k, band_blocks));
             if backend == Backend::Bands {
-                run::<bands::BandStore<f32>>(limit, skip, stats, output, source)
+                run::<bands::BandStore<f32>>(limit, skip, stats, output, source, oracle)
             } else {
-                run::<bands::BandStore<f64>>(limit, skip, stats, output, source)
+                run::<bands::BandStore<f64>>(limit, skip, stats, output, source, oracle)
             }
         }
     };
@@ -1390,8 +1429,13 @@ fn run<S: ColorStore>(
     stats: bool,
     mut out: Output,
     mut source: prefetch::Records,
+    oracle: Option<oracle::Oracle>,
 ) -> io::Result<()> {
     let mut store = S::new();
+    // Which of the record's inputs may take the colour it spends, when an
+    // oracle says.  A field rather than a local so it is not reallocated per
+    // record.
+    let mut last_reads: Vec<bool> = Vec::new();
     let mut colors: HashMap<usize, (S::Color, usize)> = HashMap::new();
 
     // Only read when `--stats` is on, but started unconditionally: the clock has
@@ -1411,6 +1455,24 @@ fn run<S: ColorStore>(
             None => break,
         };
 
+        // An oracle covers a fixed number of records, and a record past its end
+        // would look up `NEVER` and free colours the rest of the run still
+        // wants.  Checked here rather than against the record limit, because
+        // `all` has no count to compare against before the run starts.
+        if let Some(o) = &oracle {
+            if records as u64 >= o.records() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "the release oracle covers {} records and this run reached {}; \
+                         it was written for different input",
+                        o.records(),
+                        records + 1
+                    ),
+                ));
+            }
+        }
+
         let color = if inputs.is_empty() {
             // Coinbase: the block that minted it is the whole color.
             store.singleton(record.block_id)
@@ -1426,6 +1488,15 @@ fn run<S: ColorStore>(
             // whole first step of the fold is then a copy of one input for no
             // reason.  Not having a seed says the same thing and does no work.
             let mut accumulator: Option<S::Color> = None;
+
+            // With an oracle the driver knows which inputs are the final read
+            // of what they spend, so a colour is freed when nothing will read
+            // it again rather than when its last output happens to be spent.
+            // Without one, the unspent count answers the question as well as a
+            // stream can.
+            if let Some(o) = &oracle {
+                o.last_reads(records as u64, inputs, &mut last_reads);
+            }
 
             // Each input contributes its ancestor's color in proportion to the
             // amount it spends, so the shares are `amount / total`.  Computed
@@ -1466,13 +1537,20 @@ fn run<S: ColorStore>(
                         ))
                     }
                 };
+                // The oracle's answer is exact and the count is a bound: a
+                // colour with unspent outputs that nothing ever spends is dead
+                // either way, and only the oracle knows it.
+                let taken = match &oracle {
+                    Some(_) => last_reads[i],
+                    None => entry.1 <= 1,
+                };
                 let unspent = entry.1;
 
-                if unspent > 1 {
+                if !taken {
                     // Others can still reach this color, so it has to survive
                     // the fold: merge from a borrow, and on the first step take
                     // a second handle rather than the color itself.
-                    entry.1 = unspent - 1;
+                    entry.1 = unspent.saturating_sub(1);
                     let held = &entry.0;
                     accumulator = Some(match accumulator.take() {
                         // First step: the accumulator *is* this input's share of
@@ -1534,7 +1612,15 @@ fn run<S: ColorStore>(
             out.emit::<S>(&store, &color, record.tx_id)?;
         }
 
-        if record.outputs > 0 {
+        // Worth keeping only if something will read it.  The unspent count is
+        // the stream's answer; the oracle's is exact, and it is the difference
+        // between holding 92.7 million colours over the 2022 chain and holding
+        // 19.4 million.
+        let keep = match &oracle {
+            Some(o) => o.ever_read(record.tx_id),
+            None => record.outputs > 0,
+        };
+        if keep {
             if let Some((displaced, _)) = colors.insert(record.tx_id, (color, record.outputs)) {
                 // The Scheme leaks the displaced color; we can afford not to.
                 store.release(displaced);
@@ -1743,7 +1829,7 @@ mod tests {
             threads,
             S::NARROW,
         ));
-        run::<S>(limit, 0, false, out, source(records)).expect("the records are well formed");
+        run::<S>(limit, 0, false, out, source(records), None).expect("the records are well formed");
         let written = sink.0.lock().unwrap().clone();
         String::from_utf8(written)
             .expect("the output is digits and punctuation")
@@ -1766,7 +1852,7 @@ mod tests {
         let read = |source| {
             let sink = Shared::default();
             let out = Output::text(Box::new(sink.clone()), form);
-            run::<S>(limit, 0, false, out, source).expect("the records are well formed");
+            run::<S>(limit, 0, false, out, source, None).expect("the records are well formed");
             let written = sink.0.borrow().clone();
             String::from_utf8(written)
                 .expect("the output is digits and punctuation")
@@ -2213,7 +2299,7 @@ mod tests {
     fn spending_an_unknown_transaction_is_an_error() {
         let records = record(0, 9, &[(42, 5)], 1);
         let out = Output::text(Box::new(Shared::default()), Line::Terms);
-        let error = run::<RingStore>(usize::MAX, 0, false, out, source(&records))
+        let error = run::<RingStore>(usize::MAX, 0, false, out, source(&records), None)
             .expect_err("transaction 42 was never read");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(
