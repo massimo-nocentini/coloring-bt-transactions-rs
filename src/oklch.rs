@@ -155,6 +155,57 @@ pub fn ramp() -> [Rgb; RAMP_LEN] {
     out
 }
 
+/// The colour of a transaction, from the three numbers `--moments` prints.
+///
+/// Used by `examples/tint.rs` rather than by the driver, which draws pictures
+/// pixel-per-block through [`ramp`] instead; a binary crate cannot see an
+/// example's use of its modules, hence the allow.
+///
+/// A colour in this crate has always been a distribution over block ids, and
+/// this is the obvious picture of one: *when* the coins came from, and *how
+/// concentrated* that was.
+///
+/// - **hue** carries the mean block over a 250 degree arc — early chain cold,
+///   late chain warm.  An arc rather than the circle so that block 0 and the
+///   chain tip do not land on the same hue, which is the one confusion a
+///   cyclic channel invites.
+/// - **chroma** carries the concentration, as `1 / (1 + spread / SPREAD_HALF)`.
+///   A coinbase has a spread of zero and comes out fully saturated; a colour
+///   smeared across a third of chain history comes out nearly grey.  Mixing
+///   literally desaturates, which is the property worth having: a washed-out
+///   pixel is a transaction whose coins have been through everything.
+/// - **lightness** is held constant, so neither of the two things being shown
+///   is confounded with it and the picture is readable at any size.
+///
+/// Gamut-mapped by [`in_gamut`], so a saturated hue keeps its hue.
+#[allow(dead_code)]
+pub fn tint(mean_block: f64, spread_blocks: f64, chain_blocks: f64) -> Rgb {
+    /// The spread, in blocks, at which half the chroma is gone.  About 6% of
+    /// the 2022 chain: measured colours run from 0 for a coinbase to some
+    /// 260,000 at the tip, so this puts the interesting range across the whole
+    /// saturation axis rather than crushing it at one end.
+    const SPREAD_HALF: f64 = 45_000.0;
+    const LIGHTNESS: f64 = 0.72;
+    const CHROMA: f64 = 0.15;
+    /// Cold to warm, stopping short of a full turn so the ends stay apart.
+    const HUE_FROM: f64 = 250.0;
+    const HUE_ARC: f64 = 250.0;
+
+    let where_ = if chain_blocks > 0.0 {
+        (mean_block / chain_blocks).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let concentration = 1.0 / (1.0 + spread_blocks.max(0.0) / SPREAD_HALF);
+    in_gamut(LIGHTNESS, CHROMA * concentration, HUE_FROM - HUE_ARC * where_)
+}
+
+/// `#rrggbb`, which is what a colour is usually wanted as.
+#[allow(dead_code)]
+pub fn hex(rgb: Rgb) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +337,64 @@ mod tests {
     fn the_ends_of_the_lightness_axis_are_black_and_white() {
         assert_eq!(oklch_to_srgb(0.0, 0.0, 0.0), Some([0, 0, 0]));
         assert_eq!(oklch_to_srgb(1.0, 0.0, 0.0), Some([255, 255, 255]));
+    }
+
+    /// The two things a tint is meant to show, shown separately.
+    #[test]
+    fn a_tint_reads_when_as_hue_and_how_mixed_as_chroma() {
+        let chain = 762_261.0;
+        let spread_of = |c: Rgb| {
+            let (hi, lo) = (
+                c.iter().copied().max().unwrap() as i32,
+                c.iter().copied().min().unwrap() as i32,
+            );
+            hi - lo
+        };
+
+        // Early and late, both perfectly concentrated: different hues, cold and
+        // warm, and both vivid.
+        let early = tint(1_000.0, 0.0, chain);
+        let late = tint(750_000.0, 0.0, chain);
+        assert!(early[2] > early[0], "the early chain is cold: {:?}", early);
+        assert!(late[0] > late[2], "the late chain is warm: {:?}", late);
+        assert!(spread_of(early) > 24 && spread_of(late) > 24, "both are vivid");
+
+        // The same instant in history, thoroughly mixed: the hue survives but
+        // the colour washes out.
+        let mixed = tint(750_000.0, 300_000.0, chain);
+        assert!(
+            spread_of(mixed) < spread_of(late),
+            "mixing has to desaturate: {:?} against {:?}",
+            mixed,
+            late
+        );
+        assert!(mixed[0] >= mixed[2], "and it must not change which way it leans");
+    }
+
+    /// A coinbase is the extreme case and the one a reader will check by eye:
+    /// one block, no spread, so as vivid as the ramp goes.
+    #[test]
+    fn a_coinbase_is_the_most_saturated_thing_in_the_picture() {
+        let chain = 762_261.0;
+        let pure = tint(400_000.0, 0.0, chain);
+        for spread in [1_000.0, 10_000.0, 100_000.0] {
+            let washed = tint(400_000.0, spread, chain);
+            let vivid = |c: Rgb| {
+                c.iter().copied().max().unwrap() as i32 - c.iter().copied().min().unwrap() as i32
+            };
+            assert!(
+                vivid(pure) >= vivid(washed),
+                "spread {} should not be more saturated than none",
+                spread
+            );
+        }
+    }
+
+    #[test]
+    fn hex_is_six_digits() {
+        assert_eq!(hex([0, 0, 0]), "#000000");
+        assert_eq!(hex([255, 255, 255]), "#ffffff");
+        assert_eq!(hex([1, 171, 205]), "#01abcd");
     }
 
     /// A hue is a direction and the colour has to point that way: a hue of 30°
