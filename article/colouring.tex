@@ -1,0 +1,768 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=3cm]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=leftline,
+  framesep=6pt,
+  xleftmargin=8pt,
+  rulecolor=\color{gray!50},
+  showstringspaces=false,
+}
+
+\newcommand{\bin}[1]{\texttt{#1}}
+\newcommand{\flag}[1]{\texttt{-{}-#1}}
+
+\title{Colouring Bitcoin transactions\\
+       \large Representations, vector kernels, threading, and the wall}
+\author{Notes on \texttt{coloring-bt-transactions}}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Every Bitcoin transaction inherits its coins from earlier ones, and so from the
+blocks that minted them. The \emph{colour} of a transaction is the distribution
+over block ids that its value descends from. This article describes a program
+that computes it: what the colouring rule is, why it is a triangular solve, the
+representations a colour can take, the vector kernels and threading that make it
+fast, and --- the part that decides everything else --- why the exact colour of
+every transaction in a 778-million-record chain cannot be materialised on any
+machine we have, and what can be produced instead.
+
+All figures are measurements on the 2022 chain
+(\texttt{finalBCUTXO\_2022.scm}, $149\,968\,404\,213$ bytes, $778\,613\,438$
+transactions) on a 112-thread Xeon Gold 6238R with 503\,GB of memory. Anything
+extrapolated is labelled as such.
+\end{abstract}
+
+\tableofcontents
+
+\section{The rule}
+
+Transaction records arrive in chain order. Each names its block, its own id, the
+transactions its inputs spend and for how much, and its outputs. The colouring
+rule is two lines:
+
+\begin{itemize}
+  \item a \emph{coinbase} transaction --- one with no inputs --- is coloured by
+        the block that minted it, $x^{b}$;
+  \item any other transaction is the weighted sum of the colours of the
+        transactions its inputs spend, each weighted by the fraction of this
+        transaction's value that came through it.
+\end{itemize}
+
+Writing $a_i$ for the amount of input $i$ and $C_i$ for the colour of the
+transaction it spends,
+\begin{equation}
+  C \;=\; \sum_i \frac{a_i}{\sum_j a_j}\, C_i .
+  \label{eq:rule}
+\end{equation}
+
+Two facts follow immediately and are worth stating because they are what make
+the implementation checkable. First, every colour is a probability distribution
+over block ids: the weights of \eqref{eq:rule} sum to one by construction and
+each $C_i$ sums to one by induction. The program tracks the worst drift from
+that invariant and reports it under \flag{stats}; over the whole 2022 chain it
+is $1.02\times10^{-13}$. Second, the \emph{support} --- which blocks appear ---
+does not depend on the weights at all, so the unweighted and weighted backends
+compute the same set of blocks and differ only in the coefficients.
+
+The unweighted reading is older and simpler: give every input weight one, and a
+colour becomes a \emph{set} of block ids, with $\vee$ for combination. That is
+the form the original Scheme program computed, and the program keeps it
+(\flag{rings}, \flag{sets}) because two implementations that share no code and
+produce byte-identical output are a much stronger statement about the fast one
+than any test it could be given alone.
+
+\section{It is a triangular solve}
+
+Index the transactions in chain order and let $A$ be the matrix with
+$A_{ji}$ equal to the fraction of transaction $j$'s value spent from
+transaction~$i$. Every spend refers to an earlier record, so
+
+\begin{quote}
+  \textbf{$A$ is strictly lower triangular.}
+\end{quote}
+
+Let $C$ be the coinbase matrix, with $C_{ib}=1$ when transaction $i$ is the
+coinbase of block $b$, and let $B$ be the colour matrix we want, one row per
+transaction and one column per block. Rule~\eqref{eq:rule} says
+\begin{equation}
+  B \;=\; AB + C
+  \qquad\Longleftrightarrow\qquad
+  (I-A)\,B \;=\; C
+  \qquad\Longleftrightarrow\qquad
+  B \;=\; (I-A)^{-1} C .
+  \label{eq:solve}
+\end{equation}
+
+$I-A$ is unit lower triangular. The program's single streaming pass in chain
+order \emph{is} forward substitution on it --- not an analogy, the same
+arithmetic, row by row. This framing pays for itself three times over.
+
+\paragraph{It explains the cost.} $(I-A)^{-1} = I + A + A^2 + \cdots$ is the
+weighted transitive closure, and the classical fact about triangular matrices is
+that the inverse of a sparse one is dense: it fills in along reachability. That
+fill-in \emph{is} the memory and output problem of
+Section~\ref{sec:wall}. No reordering helps, because the row order is fixed by
+the chain and we are solving, not factoring.
+
+\paragraph{It names the working set.} The rows a forward substitution must keep
+are those still referenced by later rows --- exactly the transactions with an
+output that will be spent again.
+
+\paragraph{It says what \emph{can} be computed.} The solve is linear, so any
+linear functional of the colour commutes with it. For any $n_{\text{blocks}}
+\times L$ matrix $P$,
+\begin{equation}
+  BP \;=\; (I-A)^{-1}(CP).
+  \label{eq:project}
+\end{equation}
+The projected colours come from running the \emph{same} forward substitution
+against an $L$-column right-hand side instead of a $762\,261$-column one. Memory
+per transaction becomes $L$ numbers, flat in colour size, and the result is
+exact for whatever $P$ projects onto. Section~\ref{sec:projections} is the
+catalogue of useful $P$.
+
+Storing $A$ itself is cheap and worth mentioning: at $2\,044\,897\,328$
+nonzeros, a CSR of $A$ is about 19.5\,GB (row pointers 3.1, column indices 8.2,
+values 8.2), against a 150\,GB text file that parses at roughly 200\,MB/s. Since
+column indices satisfy $j<i$, storing the back-distance $i-j$ makes them small
+--- 53--56\% of spends reach back under $10^5$ records --- and a varint encoding
+takes that 8.2\,GB to 2--3\,GB. Parse once, solve many.
+
+\section{Representations of a colour}
+\label{sec:representations}
+
+The program carries four, selected on the command line and driven through one
+generic loop (\texttt{ColorStore} in \texttt{src/store.rs}).
+
+\begin{table}[t]
+\centering
+\begin{tabular}{llll}
+\toprule
+Flag & Representation & Bytes/term & Answers \\
+\midrule
+\flag{rings}    & circular linked lists   & 24 & which blocks \\
+\flag{sets}     & \texttt{Rc<[u32]>} sorted & 4 & which blocks \\
+\flag{weighted} & \texttt{u32} keys, \texttt{f64} weights & 12 & how much from each \\
+\flag{bands} $K$ & $K$ \texttt{f32} lanes + 3 \texttt{f64} & $4K$/colour & how much, at band resolution \\
+\bottomrule
+\end{tabular}
+\caption{The four backends. The first three are exact and grow with the colour;
+the fourth is a projection and does not.}
+\label{tab:backends}
+\end{table}
+
+\paragraph{Rings.} A port of a Knuth exercise: a colour is a circular list of
+nodes, and combination walks two chains. It is kept as the reference. Its merge
+loads \texttt{next} to find out where to load next, so it is latency-bound and
+no vector instruction shortens a dependent load.
+
+\paragraph{Sorted sets.} A colour is \texttt{Rc<[u32]>}, block ids ascending. A
+union is two sequential reads and one sequential write, which the prefetcher
+handles. Three shortcuts precede the merge: two handles on one allocation, an
+empty side, and --- common in this workload --- two ranges that do not overlap,
+which makes the union a concatenation.
+
+\paragraph{Weighted.} Blocks and weights in \emph{two} arrays rather than one
+array of pairs. Interleaving would be one allocation instead of three, but it
+would put a block id between every two weights, and the arithmetic runs over
+weights alone. Keeping them contiguous is what lets the vector kernels of
+Section~\ref{sec:simd} work.
+
+\paragraph{Bands.} Section~\ref{sec:projections}.
+
+\section{Vector kernels}
+\label{sec:simd}
+
+Four pieces of the program are shaped like vector work, and they are the only
+four. Everything else was measured and left scalar.
+
+\subsection{Finding the end of a run of digits}
+
+The record reader walks 150\,GB one byte at a time, and the thing it does to
+nearly every byte is ask how long the run of digits starting here is. A byte is
+a digit exactly when $b - \texttt{'0'}$ is at most 9 as an \emph{unsigned} byte
+--- one subtract, one compare, no range pair.
+
+On \textsc{aarch64} the compare gives 16 lanes of \texttt{0x00}/\texttt{0xFF};
+there is no \texttt{movemask}, so the standard stand-in is \texttt{vshrn} by 4,
+narrowing the 16 lanes into 16 nibbles of one \texttt{u64}. The first non-digit
+is at nibble $\texttt{trailing\_zeros}/4$. On \textsc{x86-64}, SSE2 compares are
+signed only, so the subtracted byte is biased by \texttt{0x80} first
+($x \oplus \texttt{0x80} < 10 \oplus \texttt{0x80}$ signed is $x<10$ unsigned),
+and \texttt{movemask} hands back the lane results directly.
+
+Both are baseline for their target, so there is no runtime feature detection and
+no dispatch. Every vector path has a scalar twin and the tests assert they agree
+across alignments, across lengths either side of the 16-byte stride, and on
+random bytes.
+
+\subsection{Eight digits at a time}
+
+Turning eight ASCII digits into a number is done with \textsc{swar} --- ``SIMD
+within a register'' --- rather than a vector unit, because the answer has to end
+up in a scalar register anyway. Three rounds of divide-and-conquer, each folding
+neighbouring lanes into lanes twice as wide:
+
+\begin{center}
+\begin{tabular}{llr}
+\toprule
+lanes & multiplier & meaning \\
+\midrule
+$8\times$\,u8  & $2561$            & $10 \ll 8 \mid 1$ \\
+$4\times$\,u16 & $6\,553\,601$     & $100 \ll 16 \mid 1$ \\
+$2\times$\,u32 & $42\,949\,672\,960\,001$ & $10^4 \ll 32 \mid 1$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+One multiply does the whole $\text{hi}\cdot10^k+\text{lo}$ for every pair at
+once. No lane can carry into its neighbour: the largest intermediate any round
+produces is $99$, $9999$, $99\,999\,999$, each inside its lane. Overflow is then
+checked once per eight digits rather than once per digit.
+
+\subsection{Scaling weights}
+
+The weighted merge finds \emph{runs} rather than stepping block by block,
+because the longer the runs the more of the work lands in two flat loops:
+\begin{align*}
+  \texttt{scale\_into}    &: \quad d_k = s_k \cdot f \\
+  \texttt{scale\_add\_into} &: \quad d_k = a_k f_a + b_k f_b
+\end{align*}
+These are left to the compiler rather than written by hand. A flat elementwise
+multiply over two non-overlapping slices is exactly the shape LLVM's loop
+vectoriser is built for: \texttt{zip} gives it the trip count up front and rules
+out aliasing. That the runs are long is not an assumption --- counted over
+records 1.4--1.5\,M of the 2022 chain, 97\% of the terms a merge writes arrive in
+runs, the one-sided ones averaging 1900 blocks and the shared ones 140.
+
+A hand-written vector \emph{merge} was tried and lost. Deciding which of two
+sorted key arrays advances is a data-dependent branch per element, and the
+branchless scalar version was faster.
+
+\subsection{The band combine}
+
+Under \flag{bands} there is no merge at all: two colours are the same length, so
+combination is a $K$-lane \texttt{axpy}, $d_k = a_k w_a + b_k w_b$, which
+vectorises without having to find runs first. This is the one kernel that got
+\emph{better} by changing the representation rather than by tuning the code.
+
+\subsection{Guarding it}
+
+Nothing in the source says the compiler must vectorise, so nothing but the
+disassembly can confirm it did. \texttt{make asm-check} disassembles the release
+binary and counts vector multiplies, but only \emph{inside the symbols the scale
+loops inline into}. Counting binary-wide fails open: on one build only 10 of 17
+vector multiplies were the scale loops --- 6 were in \texttt{main} and 1 in an
+unrelated closure --- so de-vectorising both loops entirely still left seven and
+the check passed. Wrapping the loop bodies in \texttt{black\_box} took the count
+inside \texttt{combine} from 10 to 0 and the old check still exited~0. The
+per-symbol version fails, as it should.
+
+\section{Threading}
+\label{sec:threading}
+
+\subsection{What is parallel and what is not}
+
+The fold is a data-dependent walk of a DAG: transaction $N$ may spend
+transaction $N-1$, so records cannot in general be coloured out of order. That
+is the serial core. What \emph{is} parallel is everything around it.
+
+Formatting turned out to be most of a text run. Holding the fold and the parse
+constant by comparing against \flag{sum}, which walks exactly the same terms and
+prints one number instead of all of them, over 150\,000 records:
+
+\begin{center}
+\begin{tabular}{lrl}
+\toprule
+run & time & \\
+\midrule
+\flag{sets} \flag{fold} \texttt{/dev/null} & 2.43\,s & parse and fold, no lines \\
+\flag{sets}                                & 4.70\,s & $+$ 2.3\,GB of terms \\
+\flag{weighted} \flag{sum}                 & 3.37\,s & parse and weighted fold \\
+\flag{weighted}                            & 50.18\,s & $+$ 9.9\,GB of terms \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+So formatting is 47\% of an unweighted text run and 94\% of a weighted one. The
+gap is the shortest round-tripping decimal a weighted coefficient prints as:
+about 133\,ns a term against 15\,ns for the integer path.
+
+\subsection{The formatter pool}
+
+\flag{threads} $n$ spends $n$ threads formatting and one more reading records,
+leaving the main thread the fold.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+& serial & threaded & the fold alone \\
+\midrule
+\flag{weighted} & 50.44\,s & \textbf{5.22\,s} (16 threads) & 3.37\,s \\
+\flag{sets}     & 4.67\,s  & \textbf{1.67\,s} (8 threads)  & \\
+\flag{rings}    & 11.16\,s & \textbf{6.48\,s} (8 threads)  & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two design points carry this.
+
+\paragraph{A copy crosses the boundary, not a handle.} Sharing the colour would
+mean \texttt{Rc} becoming \texttt{Arc}, atomics on a refcount the fold thread
+touches several times a record, and --- the real cost --- an ownership question
+that has no race-free answer once two threads can hold a handle: the stores
+decide whether an allocation is gone by asking whether they hold the last one.
+Copying sidesteps all of it. A term is 12 bytes and a formatted term about 22,
+so the copy is a memcpy against a decimal conversion: roughly 1\,ns a term
+against 133. The backends keep their \texttt{Rc} and their layouts, and the ring
+arena --- which could not have been shared at all --- gets the same speedup.
+
+\paragraph{Ordering is free.} Record $i$ goes to worker $i \bmod n$ and the
+writer collects from worker $i \bmod n$. No sequence numbers, no reorder buffer,
+and the output is byte-identical to serial at every width --- which matters
+beyond tidiness, since diffing \flag{rings} against \flag{sets} is how the fast
+backend is checked.
+
+Dispatch is \emph{batched}, 256 records or 8192 terms whichever comes first.
+Per-record dispatch made a threaded run \emph{slower than serial} on records
+whose colours stay small: a microsecond of channel to hand over a line worth a
+hundred nanoseconds of work. Measured over a million single-block colours, where
+serial is 0.58\,s: per-record dispatch gives 1.59/0.89/1.19/1.36\,s at
+1/2/4/8~threads; batched gives 0.43\,s at all of them.
+
+\subsection{Closing the pipeline is not optional}
+
+\texttt{Pool::finish} drains and reports, and the driver calls it --- but only on
+the path that reaches the end of the records. Every early return skipped it, and
+dropping a \texttt{JoinHandle} \emph{detaches} the thread rather than waiting, so
+the process could exit with up to a megabyte still in the writer's buffer.
+Measured on 200\,000 records with one bad record at the end: serial wrote
+$2\,088\,890$ bytes and \flag{threads}~4 wrote about $1\,250\,000$ of them, a
+byte-exact prefix ending mid-line, varying run to run, with the same exit code
+and the same message on stderr. On a short enough file it wrote nothing at all.
+The closing now lives in \texttt{Drop}, where the language runs it, and
+\texttt{finish} is the way to get at the \emph{error} rather than the way to make
+the output happen.
+
+\subsection{Where threading does not help}
+
+\flag{sum} and \flag{moments} refuse \flag{threads}, measured rather than
+assumed: a collapsed line is a few numbers, and copying the terms to a worker
+costs more than collapsing them in place. Over 150\,000 records \flag{sum} goes
+from 3.34\,s serial to 5.20/4.54/4.51\,s at 2/4/8 threads, and \flag{moments}
+from 3.58\,s to 3.95/4.18/4.22\,s.
+
+Level-parallel folding is worse than useless for the exact fold. The set of live
+colours at any chain prefix is a property of the DAG and not of evaluation
+order, so a level-parallel fold that computes each colour once has peak memory
+at least the serial peak; measured, the ratio is $1.497$ on an early window.
+Against a binding memory wall that is a net loss. It is the right tool for the
+\emph{binned} fold, where memory is bounded --- the real chain's mean level width
+in a $10^5$-record window is 44.2 early and 458.2 deep, so 16--64 threads stay
+busy on 97\% of the chain.
+
+\section{The allocator is not a detail}
+\label{sec:allocator}
+
+At depth the fold is not merge-bound, it is \texttt{malloc}-bound. The
+allocation pattern --- hundreds of thousands of live blocks between 50\,KB and
+1\,MB, freed and reallocated at every merge --- is the one glibc's allocator
+handles worst: measured over records 1.4--1.5\,M, a \texttt{malloc} costs
+26\,\textmu s against 47\,ns at the head of the chain, a quarter of the fold's
+time.
+
+Two changes that only work together: jemalloc as the global allocator (behind a
+default feature, with \texttt{-{}-no-default-features} giving glibc back), and a
+merge that writes into a fresh uninitialised allocation at the upper bound and
+shrinks it to the length the merge turned out to have, instead of zero-filling a
+staging buffer and copying out. The shrink is a downward \texttt{realloc}, which
+jemalloc does in place and to size and glibc does not.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+1\,500\,000 records, \flag{weighted} \flag{sum} & time & resident \\
+\midrule
+glibc $+$ staged merge      & 257.71\,s & 30.61\,GiB \\
+jemalloc $+$ in-place merge & \textbf{148.47\,s} & \textbf{30.48\,GiB} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$1.74\times$ faster with memory 0.4\% lower, output md5-identical. At 800\,000
+records the same pair is 60.28\,s/9.15\,GiB against 38.39\,s/9.59\,GiB --- faster
+but 4.8\% \emph{more} resident, so the memory saving is a property of depth
+rather than of the change. Depth is where the wall is.
+
+\section{The wall}
+\label{sec:wall}
+
+\subsection{It is a census, not an extrapolation}
+
+The driver holds a colour for every transaction with an unspent output. A
+colour-free pass over the whole file counts them: $92\,735\,490$ at the end of
+the 2022 chain and $92\,753\,575$ at peak. A 450\,GB budget over that count is
+\begin{equation*}
+  \frac{450 \times 10^9}{92\,735\,490} \;=\; 4852 \text{ bytes a colour}
+\end{equation*}
+--- 404 weighted terms at 12 bytes, or 1213 set terms at 4. The mean colour at
+$1\,500\,000$ records, which is 0.19\% of the file, is already 5984 blocks and
+growing as $\text{records}^{1.37}$.
+
+\begin{center}
+\begin{tabular}{rrrr}
+\toprule
+records & mean colour (blocks) & distinct terms & resident \\
+\midrule
+$500\,000$   & 1\,087  & 1.8\,GB & \\
+$1\,000\,000$ & 4\,723  & 15.2\,GB & \\
+$1\,500\,000$ & 5\,984  & 27.7\,GB & 32\,GB \\
+$3\,000\,000$ & 12\,754 & 102.6\,GB & 107.75\,GiB \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The store is made of terms and not overhead: at 3\,M records, \texttt{mallinfo2}
+reports 102.59\,GB in use against $\text{terms}\times12 = 102.57$\,GB, leaving
+\texttt{Rc} headers and the hash map at 25\,MB, or 0.02\%. Throughput over that
+span fell from 958\,k records/s to 760.
+
+Live terms grow as roughly $\text{records}^{2}$ in the last window and the local
+exponent is \emph{rising} (1.48, 1.45, 1.82, 2.28 over successive half-million
+windows), so a single power law understates it. Fits that honour the rise put
+the 450\,GiB wall between 4.8\,M and 8\,M records for the current code and
+8--11\,M with every exact lever pulled --- in all cases under 1.5\% of the file.
+
+\subsection{The conclusion}
+
+\begin{quote}
+  \textbf{The exact colour polynomial of every transaction in the 2022 chain
+  cannot be materialised on this machine, under any per-transaction
+  representation, and it is not close.}
+\end{quote}
+
+This is not an implementation failure. It is the fill-in of $(I-A)^{-1}$ in
+\eqref{eq:solve}: the answer is a dense $778{,}613{,}438 \times 762{,}261$
+object. Even freezing the colour size at the 12\,754 blocks measured at 0.4\% of
+the chain, a materialised store is 12.9\,TiB weighted, 4.3\,TiB as sets, or
+8.0\,TiB as one bit per block. Output is the same story: at about 22 bytes a
+term the full text is over 100\,TB.
+
+\section{Freeing colours earlier}
+\label{sec:oracle}
+
+``Has an unspent output'' is the only question a \emph{stream} can ask, and it is
+the wrong one. What the fold needs is whether anything \emph{later in this file}
+will read the colour again --- and $51\,815\,075$ of the 136 million outputs
+unspent at the end of the chain are \texttt{OP\_RETURN}, provably unspendable and
+untouched by any of the file's $2\,044\,897\,328$ inputs. (Subtracting them
+leaves $84\,309\,568$, matching the publicly reported UTXO count at that height
+to 0.34\% --- a pleasant confirmation that the census is measuring the right
+thing.)
+
+A file has a future, so the right question can be answered by reading the records
+once first. \bin{examples/lastspend.rs} does that in one pass and writes one
+\texttt{u32} per transaction: the record that spends it last, or \texttt{NEVER}.
+Over the whole chain that is 5:27 wall, 2.9\,GB resident, and a 3.11\,GB file.
+\flag{release-oracle} hands it to the fold.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+400\,000 records, \flag{weighted} \flag{sum} & time & resident & live terms at end \\
+\midrule
+plain  & 5.67\,s & 947\,MB & $67\,426\,186$ \\
+oracle & \textbf{5.26\,s} & \textbf{258\,MB} & \textbf{0} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$3.67\times$ less memory and slightly faster, with byte-identical output under
+every backend. The peak over the whole chain drops from $92\,753\,575$ colours
+to $19\,361\,261$, a factor of $4.79$.
+
+Three things guard correctness, because a stale oracle would free a colour that
+is still wanted and produce a quietly wrong answer: a magic string; a record
+count checked before any record is read; and a per-record bound, checked
+\emph{after} end-of-file is detected so that a run exactly matching its oracle
+is not rejected on the iteration that finds EOF. The count check is an
+inequality, not a match --- an oracle written for the whole file is safe on any
+prefix of it, since it only claims a colour is read \emph{later} than the prefix
+reaches, which makes the fold conservative.
+
+One subtlety is worth recording. A record that spends the same transaction more
+than once must free it on the \emph{lowest} input index that names it, because
+the fold walks its inputs from the last to the first and the lowest index is the
+one it reaches last. Freeing on the highest would drop the colour while inputs
+below still wanted it.
+
+\section{Projections: what can be computed}
+\label{sec:projections}
+
+Equation~\eqref{eq:project} is the whole story. Any fixed set of $L$ linear
+functionals of the colour folds exactly in $L$ numbers per live transaction,
+with no merge and no growth: the store stops depending on how many blocks a
+colour names and depends only on how many colours are live. The exact polynomial
+is $L = 762\,261$ functionals, which is exactly why it does not fit.
+
+\subsection{Moments: $L=3$}
+
+$P = [\,1,\; b,\; b^2\,]$ gives $\sum w$, $\sum wb$, $\sum wb^2$, from which the
+mean block and the spread about it follow. \flag{moments} prints them.
+
+The effective block count, $\big(\sum w\big)^2/\sum w^2$, is \emph{quadratic} and
+therefore outside the family: no bounded per-colour state folds it. That is the
+precise boundary of what a projection can keep, and it is worth stating rather
+than discovering.
+
+\subsection{Bands: $L=K$}
+
+$P$ = indicators of $K$ equal slices of block history. \flag{bands} $K$ answers
+how much of a transaction's value came from each slice, the slices fixed against
+the whole chain so a band means the same thing in every run.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+1\,500\,000 records & time & resident \\
+\midrule
+exact \flag{weighted} & 257.1\,s & 32.06\,GB \\
+\flag{bands} 256      & 2.38\,s  & 164\,MB \\
+\flag{bands} 1024     & 5.26\,s  & 566\,MB \\
+\flag{bands} 4096     & 16.25\,s & 2.18\,GB \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+and, crucially, \emph{flat with depth}. Projected over the census, \flag{bands}
+256 holds 109\,GB and \flag{bands} 1024 holds 394\,GB unpruned; with the oracle
+of Section~\ref{sec:oracle} the latter is 82\,GB.
+
+\subsection{Carrying the moments alongside}
+
+Deriving the moments from band indices would put a colour's mean at the
+\emph{centre of a band} --- out by up to 372 blocks at $K=1024$ and 1488 at
+$K=256$. For a number meant to read on the block axis that is not a rounding but
+a wrong answer. So a colour carries $\sum w$, $\sum wb$, $\sum wb^2$ beside its
+lanes, in \texttt{f64} whatever the lanes are. They are linear, so they ride the
+same convex combination the lanes do. The cost is 5.6\% of time and 0.5\% of
+memory; the mean then agrees with the exact fold to $1.1\times10^{-8}$ blocks at
+every~$K$.
+
+\section{Output}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+form & bytes/record & whole chain \\
+\midrule
+weighted terms                & $\sim$131\,648 & 102.5\,TB \\
+\flag{bands} 1024 terms       & $\sim$1\,211   & 0.94\,TB \\
+\flag{moments}                & 47.6           & 37.1\,GB \\
+\flag{moments}, \texttt{zstd -12} & 12.3       & 9.5\,GB \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Compression.} The level is set by the byte rate, not by taste. The
+fold produces \flag{moments} output at about 48\,MB/s. Measured on a
+2-million-line tail with \texttt{-T16}: \texttt{-3} gives 14.64\,B/record at
+627\,MB/s, \texttt{-9} 12.42 at 151, \textbf{\texttt{-12} 12.28 at 66},
+\texttt{-15} 12.19 at 22, \texttt{-19} 9.98 at 4.4. Level 12 is the knee --- the
+strongest that still consumes faster than the fold produces, so it is free.
+\texttt{-19} would turn a twelve-minute run into two and a half hours for a
+further 19\%. \texttt{-{}-long} earns nothing on this stream (503 bytes on a
+4.7\,MB sample) because four short numbers repeat locally; it \emph{is} worth it
+on the terms output, where fifty-kilobyte lines repeat across a window.
+
+\section{Pictures}
+
+\subsection{One pixel per (transaction, block)}
+
+\flag{png} draws a row per record and a column per block id, a pixel saying what
+the colour says about that block: one bit under the unweighted backends, eight
+under \flag{weighted}. \flag{pdf} and \flag{fold} fold that onto a bounded
+canvas, shading each cell by how much of its rectangle is inked.
+
+\flag{palette} reads the weighted samples through a colour ramp instead of as
+greys. The image data is byte for byte what the greyscale run writes; the file
+grows by 780 bytes, which is a \texttt{PLTE} chunk and its header. What it buys
+is levels: grey has 254 and an eye reads perhaps thirty, and these weights live
+in a fraction of a percent.
+
+\subsection{Building a ramp that reads}
+
+The ramp is built in Oklab, not HSL. HSL's ``lightness'' is not luminance and
+its hue circle is wildly non-uniform --- yellow at $60^\circ$ and blue at
+$240^\circ$ are nominally the same lightness and are nothing of the sort --- so a
+ramp built in it has bands where the eye sees a step that is not there. For a
+picture whose purpose is comparing magnitudes that is not cosmetic.
+
+Lightness carries the magnitude, monotonically, which is what keeps the picture
+readable photocopied, readable to a colour-deficient eye, and readable where it
+is folded small enough that a cell is a sample rather than a shape. Hue and
+chroma only separate levels that lightness leaves adjacent.
+
+Most of the chroma one would like at the dark end is outside sRGB. Clamping the
+channels there shifts the hue and flattens the sweep, so the gamut mapping holds
+lightness and hue fixed and bisects the chroma down until the colour fits ---
+256 colours computed once.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth,height=1.2cm]{figures/ramp.png}
+\caption{The palette ramp, paper on the left to heaviest ink on the right.
+Lightness falls monotonically; hue sweeps $250^\circ$, an arc rather than the
+circle so the ends stay apart.}
+\end{figure}
+
+\subsection{One pixel per transaction}
+
+A colour is a distribution over block ids, so the obvious picture of one is
+\emph{when} the coins came from and \emph{how concentrated} that was.
+\texttt{oklch::tint} maps the mean block to hue over a $250^\circ$ arc and the
+concentration, $1/(1+\text{spread}/45000)$, to chroma. A coinbase has zero
+spread and comes out fully saturated; coins that have been through everything
+come out grey. Mixing literally desaturates.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.47\textwidth]{figures/chain-sampled.png}
+\hfill
+\includegraphics[width=0.47\textwidth]{figures/chain-slice.png}
+\caption{Left: the whole 2022 chain, $1024^2$ cells, one sampled transaction
+each. Right: one million consecutive transactions at one pixel each, no binning.
+Warm specks are young, concentrated coins; the grey field is thoroughly mixed
+money. The horizontal streaks on the right are runs of consecutive transactions
+sharing fresh ancestry.}
+\end{figure}
+
+The first attempt \emph{averaged} the transactions falling in a cell and
+produced a smooth cyan-to-grey gradient that says nothing. The reason is
+structural: the mean block climbs with the record index, so an averaged cell is
+nearly a function of its own position. Sampling one real transaction per cell
+keeps the variance. Both renders are honest; only one is informative.
+
+\section{Usage}
+
+\subsection{Building}
+
+\begin{lstlisting}
+cargo build --release                 # jemalloc by default
+cargo build --release --no-default-features   # glibc malloc
+make asm-check                        # confirm the scale loops vectorised
+make test                             # the suite
+make corpus                           # the corpora the measurements use
+\end{lstlisting}
+
+\subsection{The command line}
+
+\begin{lstlisting}
+coloring-bt-transactions [<record-limit>|all] [--stats]
+    [--rings|--sets|--weighted|--bands <K>|--bands64 <K>]
+    [--sum|--moments] [--threads <n>|auto]
+    [--png <file>|--pdf <file>|--fold <file>|--view] [--palette]
+    [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>]
+    [--release-oracle <file>]  < records
+\end{lstlisting}
+
+Flags that would quietly do nothing are refused rather than ignored:
+\flag{palette} needs \flag{weighted} and \flag{png}; \flag{sum} and
+\flag{moments} contradict each other and both refuse \flag{threads}; the three
+picture destinations contradict each other.
+
+\subsection{Worked examples}
+
+\paragraph{The whole chain, summarised.} Two passes, the first reusable for any
+later run over the same file:
+
+\begin{lstlisting}
+cargo run --release --example lastspend -- lastspend.u32 < finalBCUTXO_2022.scm
+
+coloring-bt-transactions all --bands 1024 --moments --stats \
+    --release-oracle lastspend.u32 < finalBCUTXO_2022.scm \
+  | zstd -12 -T16 -o colors.moments.zst
+\end{lstlisting}
+
+Measured: $778\,613\,440$ records in 1:30:48 at 143\,k records/s, 35.1\,GiB
+resident, 12.28\,GB out. The audit line reports zero live colours at the end ---
+every one freed the moment nothing could read it again.
+
+\paragraph{Colours from that.}
+
+\begin{lstlisting}
+zstd -dc colors.moments.zst | tint --hex > colors.hex
+zstd -dc colors.moments.zst | tint --png chain.png --side 1024 \
+    --records 778613440 --sample
+\end{lstlisting}
+
+\paragraph{An exact prefix.} The largest exact weighted run that completes on a
+503\,GB machine is around 5\,M records:
+
+\begin{lstlisting}
+coloring-bt-transactions 5000000 --weighted --threads 16 \
+    --release-oracle lastspend.u32 < finalBCUTXO_2022.scm \
+  | zstd -6 --long=27 -T32 -o colors-5M.zst
+\end{lstlisting}
+
+\section{Verification}
+
+Three habits do most of the work.
+
+\paragraph{Two implementations, one diff.} \flag{rings} and \flag{sets} share no
+code and must produce byte-identical output. So must a threaded run and a serial
+one, an oracle run and a plain one, and a \flag{palette} picture's samples and a
+greyscale one's. Each of those is an equivalence between things that could have
+disagreed.
+
+The strongest instance: the whole-chain \flag{moments} output was compared, all
+$778\,613\,440$ lines, against a 79-line standalone tool carrying three
+\texttt{f64} accumulators and sharing only the record reader. The first three
+columns are byte-identical.
+
+\paragraph{Mutation.} A test that cannot fail is worse than no test. Several
+here were caught by deliberately breaking the code they cover: an oracle test
+corpus in which \emph{every} colour was one block, so a mutation returning a
+spread of zero for everything passed; a palette test asserting every channel was
+$\le 255$ of a \texttt{u8}; a gamut test that a mapping returning grey would have
+survived.
+
+\paragraph{Say what was measured.} Every number in this article names the run
+that produced it. Two claims that survived an adversarial review only in outline
+--- an attribution of resident memory to allocator fragmentation, and a
+phase-by-phase breakdown of the fold that was internally inconsistent by 110\%
+of the quantity it decomposed --- are deliberately absent.
+
+\section{What is left}
+
+\begin{itemize}
+  \item \textbf{aarch64 is unexercised.} The NEON path and the aarch64 arm of
+        \texttt{asm-check} are written and untested on hardware.
+  \item \textbf{The band vectors themselves} have not been written for the whole
+        chain: about 0.94\,TB, the same fold with the terms writer.
+  \item \textbf{A per-transaction palette index}, one byte, would be 778\,MB for
+        the chain. It is a third output rather than a flag, because it has no
+        block axis.
+  \item \textbf{A binary CSR of $A$}, about 19.5\,GB, would make every future
+        solve a sweep over it rather than a re-parse of 150\,GB.
+\end{itemize}
+
+\end{document}
