@@ -3,3 +3,4 @@ target/
 # Scratch worktrees the workflow tool creates for isolated agents, and any
 # stray output a tool leaves in the root.  Neither belongs in history.
 .claude/worktrees/
+.DS_Store
