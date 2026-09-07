@@ -7,7 +7,7 @@
 # (amsmath, booktabs, listings, xcolor, graphicx, microtype, hyperref,
 # geometry), no custom classes, no bibliography, no shell-escape.
 
-TEX  := colouring.tex
+TEX  := main.tex
 PDF  := $(TEX:.tex=.pdf)
 AUX  := $(TEX:.tex=.aux) $(TEX:.tex=.log) $(TEX:.tex=.out) $(TEX:.tex=.toc)
 

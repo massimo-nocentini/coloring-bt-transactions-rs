@@ -1,6 +1,6 @@
 # The article
 
-`colouring.tex` — a detailed write-up of what the main binary computes, the
+`main.tex` — a detailed write-up of what the main binary computes, the
 techniques it uses, and how to run it.
 
 ```sh

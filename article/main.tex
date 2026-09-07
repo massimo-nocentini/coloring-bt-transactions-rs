@@ -528,6 +528,22 @@ is $L = 762\,261$ functionals, which is exactly why it does not fit.
 $P = [\,1,\; b,\; b^2\,]$ gives $\sum w$, $\sum wb$, $\sum wb^2$, from which the
 mean block and the spread about it follow. \flag{moments} prints them.
 
+\paragraph{Why three.} A projection is chosen rather than derived, so the choice
+wants an argument. $L=1$ keeps only $\sum w$, which is $1$ by construction and so
+says nothing about the colour --- though for exactly that reason its drift,
+$1.02\times10^{-13}$ over the chain, audits the whole fold for free. $L=3$ is the
+first size that answers the two questions one actually has of a distribution over
+block ids: \emph{when} the coins came from, and \emph{how mixed} they are.
+Nothing smaller reaches the second. Nothing larger is needed until the question
+changes shape, which is what \flag{bands} is for. And because the functionals are
+linear they ride the convex combination of \eqref{eq:rule} unchanged: the three
+numbers the fold carries are the same three a materialised $762\,261$-term colour
+would have been summarised into, not an estimate of them. A lossy view computed
+exactly. That is what buys 47.6 bytes a record against $\sim$131\,648, and it is
+the whole of what the pictures of Section~\ref{sec:pictures} consume --- mean to
+hue, spread to chroma --- which is also why the mean has to be right on the block
+axis and not merely nearby (Section~\ref{sec:carry}).
+
 The effective block count, $\big(\sum w\big)^2/\sum w^2$, is \emph{quadratic} and
 therefore outside the family: no bounded per-colour state folds it. That is the
 precise boundary of what a projection can keep, and it is worth stating rather
@@ -557,6 +573,7 @@ and, crucially, \emph{flat with depth}. Projected over the census, \flag{bands}
 of Section~\ref{sec:oracle} the latter is 82\,GB.
 
 \subsection{Carrying the moments alongside}
+\label{sec:carry}
 
 Deriving the moments from band indices would put a colour's mean at the
 \emph{centre of a band} --- out by up to 372 blocks at $K=1024$ and 1488 at
@@ -594,6 +611,7 @@ further 19\%. \texttt{-{}-long} earns nothing on this stream (503 bytes on a
 on the terms output, where fifty-kilobyte lines repeat across a window.
 
 \section{Pictures}
+\label{sec:pictures}
 
 \subsection{One pixel per (transaction, block)}
 
