@@ -42,7 +42,9 @@ that computes it: what the colouring rule is, why it is a triangular solve, the
 representations a colour can take, the vector kernels and threading that make it
 fast, and --- the part that decides everything else --- why the exact colour of
 every transaction in a 778-million-record chain cannot be materialised on any
-machine we have, and what can be produced instead.
+machine we have, and what can be produced instead. Along the way $A$ itself is
+written down: 150\,GB of records hold 10.6\,GB of matrix, and writing it once
+means no later run parses the chain again.
 
 All figures are measurements on the 2022 chain
 (\texttt{finalBCUTXO\_2022.scm}, $149\,968\,404\,213$ bytes, $778\,613\,438$
@@ -53,6 +55,7 @@ extrapolated is labelled as such.
 \tableofcontents
 
 \section{The rule}
+\label{sec:rule}
 
 Transaction records arrive in chain order. Each names its block, its own id, the
 transactions its inputs spend and for how much, and its outputs. The colouring
@@ -514,6 +517,123 @@ the fold walks its inputs from the last to the first and the lowest index is the
 one it reaches last. Freeing on the highest would drop the colour while inputs
 below still wanted it.
 
+\section{Writing $A$ down}
+\label{sec:matrix}
+
+Section~\ref{sec:oracle} spent one pass over the file to make every later run
+cheaper. This is that trade taken as far as it goes.
+
+The fold reads five numbers out of a record that averages 193 bytes: the block,
+the transaction id, each input's amount and the transaction it spends, and how
+many outputs there are. The reader skips the rest without converting its digits
+--- and skips it again on every run. Every projection, every $K$, every change to
+what is emitted rather than to what is folded, pays a re-parse of 150\,GB first.
+
+$A$ is what those five numbers are. \bin{examples/matrix.rs} writes it in one
+pass and \flag{matrix} reads it back.
+
+\begin{center}
+\begin{tabular}{lrrc}
+\toprule
+the 2022 chain as & bytes & vs.\ text & exact \\
+\midrule
+records, \texttt{finalBCUTXO\_2022.scm}   & 149\,968\,404\,213 & 1.0 & yes \\
+\flag{csr}, \texttt{u32/u32/f32}          & 19\,473\,632\,380  & 7.7 & \textbf{no} \\
+\flag{compact}                            & \textbf{10\,601\,433\,514} & \textbf{14.1} & yes \\
+\flag{structure}, no amounts              & 6\,126\,089\,724 & 24.5 & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The compact file is written in 401.2\,s and read back against the records field
+for field in 461.6\,s: 778\,613\,440 records, 2\,044\,897\,328 nonzeros, every
+block id reconstructed from the coinbase rows alone, content hashes agreeing, in
+8\,MB resident. That is \flag{check}, and it is the reason the rest of this
+section is measurement rather than assertion.
+
+\flag{verify} is the same question asked without the 150\,GB: a sweep of the
+matrix alone, recomputing the header's content hash and every count, 108.6\,s
+over the whole chain at 5\,MB resident. It exists because a fold does not check
+one. Of 347\,416 single-bit flips inside the rows of a 20\,000-record matrix,
+102\,220 are accepted by the reader's per-row invariants --- and a flip at byte
+700\,007 of a 500\,000-record matrix folds to exit 0, an empty stderr and a
+different answer. The row checks catch a damaged \emph{shape}; only the hash
+catches a damaged \emph{number}. The fold does not pay the 72\% the hash adds to
+a sweep, and could not use it if it did: a hash does not settle until the last
+row, where the fold's output has been streaming since the first.
+
+\paragraph{The 19.5\,GB was the lossy one.} That figure is exactly
+\texttt{u32 row\_ptr[n+1] + u32 col + f32 val}, and \flag{csr} still writes it,
+because an argument about lossiness that is never run is only an argument. What
+the run says: an \texttt{f32} weight has a worst relative error of
+$5.96\times10^{-8}$ and only 28.10\% of the chain's weights round-trip at all;
+the invariant of Section~\ref{sec:rule} degrades from $1.02\times10^{-13}$ to
+$5.96\times10^{-8}$ before the fold composes anything; and replaying the fold on
+those weights changes 44.71\% of \flag{sum} lines and 98.92\% of the coefficients
+in the terms output. A colour is a distribution, and half the answers moving is
+not a rounding difference.
+
+The fix is not a wider float. A weight is $a_i / \sum_j a_j$ and both are
+integers, so storing the raw \texttt{u64} satoshi amounts is exact --- and
+smaller, 4.48 against 8.18\,GB, because amounts within a row are nothing like
+uniformly distributed and a float is 32 bits of entropy by construction. The
+exact file is $1.84\times$ \emph{smaller} than the lossy one. Nothing was bought
+by the \texttt{f32}.
+
+\paragraph{Where the bytes go.} One self-contained row per record, in record
+order, one \texttt{u64} varint primitive throughout:
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+section & bytes & share & what it is \\
+\midrule
+columns & 5\,317\,886\,057 & 50.2\% & 2\,044\,897\,328 parents, zigzag chain deltas \\
+amounts & 4\,475\,343\,790 & 42.2\% & 1\,475\,397\,681 satoshi values, zigzag deltas \\
+heads   &   804\,399\,854 &  7.6\% & one byte a row: two counts, a nibble each \\
+blocks  &       762\,261 &  0.0\% & one varint per coinbase row, none elsewhere \\
+index   &     3\,041\,472 &  0.0\% & 16 bytes per 4\,096 rows \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three of those rows are the whole argument against a CSR's fixed widths. A
+\texttt{u32} row pointer costs 3.11\,GB to hold a number whose median is 1, where
+a nibble and an escape cost 0.80; a \texttt{u32} column costs 8.18 where a delta
+costs 5.32; and 73.14\% of rows have a single input, whose weight is exactly 1.0
+on both branches of the share, so 569\,499\,647 amounts need not exist.
+
+\paragraph{Two transforms measured and refused.} Sorting each row's parents would
+shorten the delta chain by 0.89\,GB. It also changes the answer: the fold walks a
+row's inputs from the last to the first, and reassociating an \texttt{f64} sum
+moves 4.06\% of lines. Deduplicating a row that spends the same transaction twice
+would save 0.13\,GB and free that colour at the wrong instant, for the reason
+Section~\ref{sec:oracle} ends on. Both are reserved as flag bits a reader
+refuses, so that neither is re-derived later and quietly believed.
+
+\paragraph{One equivalence, again.} A run off the records and the same run off a
+matrix are byte-identical, which is the only claim that matters and the crate's
+usual way of making it. Checked at 50\,000 records for the three
+pictures, a \flag{rows} window and a run under the release oracle; at 200\,000
+for \flag{rings}, \flag{sets} \flag{threads}~8 and \flag{weighted}'s terms; at
+500\,000 for \flag{rings}, \flag{sets} \flag{threads}~4, \flag{bands64}~128
+\flag{moments}, \flag{weighted} \flag{moments} and \flag{bands}~4096
+\flag{sum}; at 2\,000\,000 for both banded backends, \flag{weighted} \flag{sum}
+and \flag{weighted} \flag{moments}; and at 20\,000\,000 for \flag{bands}~1024
+\flag{moments}, 1\,149\,593\,609 bytes a side. The largest is a \flag{sets} pair
+of 294.6\,GB at 2\,000\,000 records, byte for byte the same. \flag{rings} and
+\flag{sets} still hash alike off a matrix, so the crate's oldest cross-check
+survives the change of reader.
+
+\paragraph{What it saves.} Less than the size ratio, and the honest number is the
+smaller one. Over 20\,000\,000 records with the fold as cheap as it goes
+(\flag{bands}~1 \flag{sum}) the run takes 17.8\,s off the text and 11.7\,s off the
+matrix; at \flag{bands}~1024 \flag{moments}, where the fold is most of the work,
+70.5\,s against 63.9\,s. Both are with the 150\,GB warm in a 503\,GB page cache,
+which is the case that favours the text --- cold, the two artefacts are 12.5
+minutes of reading against 50 seconds at the 205--270\,MB/s this array gives.
+What the matrix buys is not a faster fold. It is that the parse is paid once.
+
 \section{Projections: what can be computed}
 \label{sec:projections}
 
@@ -583,6 +703,17 @@ lanes, in \texttt{f64} whatever the lanes are. They are linear, so they ride the
 same convex combination the lanes do. The cost is 5.6\% of time and 0.5\% of
 memory; the mean then agrees with the exact fold to $1.1\times10^{-8}$ blocks at
 every~$K$.
+
+The hand-over was gated on \flag{moments} and should have been gated on the line
+having a first moment to take. \flag{sum} is the same first moment and was not
+given it, so \flag{bands}~$K$ \flag{sum} summed \emph{band centres} and nothing
+refused it: a block-0 coinbase printed 372 at $K = 1024$ and 1\,488.5 at
+$K = 256$, half a band each, and 372 blocks is the same error this subsection
+exists to avoid. Both forms take the carried moments now, and a binned
+\flag{sum} agrees with an exact \flag{weighted} \flag{sum} to
+$6.1\times10^{-9}$ blocks over the first 200\,000 records at both $K$. It also
+became faster --- 2.70\,s against 5.40\,s over 2\,000\,000 records --- because a
+handed-over first moment does not walk the terms at all.
 
 \section{Output}
 
@@ -679,6 +810,37 @@ structural: the mean block climbs with the record index, so an averaged cell is
 nearly a function of its own position. Sampling one real transaction per cell
 keeps the variance. Both renders are honest; only one is informative.
 
+\subsection{One byte per transaction}
+\label{sec:byte}
+
+The picture above is a function of two numbers, so it can be written as one.
+\bin{tint} \flag{index} quantises the colour onto a 256-entry table --- 32 hues
+by 8 concentrations --- and writes one byte a transaction. Over the chain that is
+778\,614\,320 bytes against \flag{rgb}'s 2.3\,GB and \flag{hex}'s 14\,GB:
+1.0000011 bytes a record, the header and the palette and the table of breaks in
+the transaction-id run being 0.00011\% of it.
+
+The split was measured rather than chosen. Hue error falls as $0.327/H$ and
+concentration error as $0.075/M$ under $HM \le 256$; they are equal at
+$H = 33.4$, which predicts a worst case of 0.0139 in quadrature. Over
+60\,000\,000 records the $32\times8$ table measures 0.005328 mean and 0.014707
+worst $\Delta E$ in Oklab against the continuous tint --- the smallest worst case
+of the sixteen candidates, and a just-noticeable difference is about 0.02, so
+nothing in the picture moves visibly. Quantising the spread rather than the
+concentration, or one bin per doubling the way \bin{tx-view} does, is worse on
+both statistics (0.007344 and 0.015578). $85\times3$ wins the mean and loses the
+worst at 0.027193, which is past a JND; the worst is what was minimised, because
+a mean hides exactly the transactions a picture of concentration is about.
+
+A raw byte stream is not self-describing, and three things would have been lost
+within the year: what the byte indexes, the axis constants it was quantised
+against, and which record each byte is --- the moments file's first column is a
+transaction id, and Section~\ref{sec:matrix} says why that is not the record
+ordinal. So the file carries an 80-byte header with the axis constants, the
+768-byte palette, and a table naming every place the id run breaks; over the
+whole chain that table is four entries. The byte is derived from the moments
+file and reproducible from it. It does not replace it.
+
 \section{Usage}
 
 \subsection{Building}
@@ -699,13 +861,15 @@ coloring-bt-transactions [<record-limit>|all] [--stats]
     [--sum|--moments] [--threads <n>|auto]
     [--png <file>|--pdf <file>|--fold <file>|--view] [--palette]
     [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>]
-    [--release-oracle <file>]  < records
+    [--release-oracle <file>] [--matrix <file>]  < records
 \end{lstlisting}
 
 Flags that would quietly do nothing are refused rather than ignored:
 \flag{palette} needs \flag{weighted} and \flag{png}; \flag{sum} and
 \flag{moments} contradict each other and both refuse \flag{threads}; the three
-picture destinations contradict each other.
+picture destinations contradict each other; a matrix written \flag{structure}
+is refused by name under a weighted backend, and one shorter than the run is
+refused before the fold starts.
 
 \subsection{Worked examples}
 
@@ -730,6 +894,7 @@ every one freed the moment nothing could read it again.
 zstd -dc colors.moments.zst | tint --hex > colors.hex
 zstd -dc colors.moments.zst | tint --png chain.png --side 1024 \
     --records 778613440 --sample
+zstd -dc colors.moments.zst | tint --index chain.tint --palette chain.plte
 \end{lstlisting}
 
 \paragraph{An exact prefix.} The largest exact weighted run that completes on a
@@ -741,20 +906,52 @@ coloring-bt-transactions 5000000 --weighted --threads 16 \
   | zstd -6 --long=27 -T32 -o colors-5M.zst
 \end{lstlisting}
 
+\paragraph{The chain as a matrix.} One pass writes it, a second proves it, and
+every run after that reads 10.6\,GB instead of 150:
+
+\begin{lstlisting}
+cargo run --release --example matrix -- chain.foldmat \
+    < finalBCUTXO_2022.scm
+cargo run --release --example matrix -- --check chain.foldmat \
+    < finalBCUTXO_2022.scm
+
+coloring-bt-transactions all --bands 1024 --moments --stats \
+    --release-oracle lastspend.u32 --matrix chain.foldmat < /dev/null \
+  | zstd -12 -T16 -o colors.moments.zst
+\end{lstlisting}
+
+The two artefacts compose and answer different questions: the oracle says when a
+colour may be dropped, the matrix says what the fold reads at all.
+
 \section{Verification}
+\label{sec:verification}
 
 Three habits do most of the work.
 
 \paragraph{Two implementations, one diff.} \flag{rings} and \flag{sets} share no
 code and must produce byte-identical output. So must a threaded run and a serial
-one, an oracle run and a plain one, and a \flag{palette} picture's samples and a
-greyscale one's. Each of those is an equivalence between things that could have
-disagreed.
+one, an oracle run and a plain one, a \flag{palette} picture's samples and a
+greyscale one's, a run off the records and the same run off a matrix
+(Section~\ref{sec:matrix}), and an x86-64 run and an aarch64 one. Each of those
+is an equivalence between things that could have disagreed.
 
 The strongest instance: the whole-chain \flag{moments} output was compared, all
 $778\,613\,440$ lines, against a 79-line standalone tool carrying three
 \texttt{f64} accumulators and sharing only the record reader. The first three
 columns are byte-identical.
+
+\paragraph{Two architectures, one diff.} The aarch64 kernels used to be written
+and unexercised. They are now cross-built here and run under \texttt{qemu-aarch64}
+--- \texttt{make cross-aarch64} does both --- and the crate's 305 tests pass on
+that target, including the twelve that hold \bin{digit\_run} and
+\bin{common\_prefix} against their scalar twins over every length, offset and
+2\,000 random buffers. The end-to-end statement is stronger: 300\,000 real 2022
+records through \flag{sets} give 5\,179\,435\,527 bytes that are byte-for-byte
+the same on the two architectures, and \flag{weighted}, \flag{bands} and
+\flag{moments} agree too. What that does \emph{not} say is anything about speed:
+\texttt{qemu-user} models no cache and no issue width, so the 9.6$\times$ it costs
+is a property of the emulator. The NEON path is correct here and untimed
+anywhere.
 
 \paragraph{Mutation.} A test that cannot fail is worse than no test. Several
 here were caught by deliberately breaking the code they cover: an oracle test
@@ -771,16 +968,34 @@ of the quantity it decomposed --- are deliberately absent.
 
 \section{What is left}
 
+Four items stood here. Three are closed --- the aarch64 kernels are exercised
+(Section~\ref{sec:verification}), the per-transaction byte is written
+(Section~\ref{sec:byte}), and $A$ is on disk (Section~\ref{sec:matrix}) at 10.6\,GB
+rather than the 19.5 this section predicted, and exact where that number was not.
+What the fourth still wants, and what the three left behind:
+
 \begin{itemize}
-  \item \textbf{aarch64 is unexercised.} The NEON path and the aarch64 arm of
-        \texttt{asm-check} are written and untested on hardware.
   \item \textbf{The band vectors themselves} have not been written for the whole
-        chain: about 0.94\,TB, the same fold with the terms writer.
-  \item \textbf{A per-transaction palette index}, one byte, would be 778\,MB for
-        the chain. It is a third output rather than a flag, because it has no
-        block axis.
-  \item \textbf{A binary CSR of $A$}, about 19.5\,GB, would make every future
-        solve a sweep over it rather than a re-parse of 150\,GB.
+        chain: about 0.94\,TB, the same fold with the terms writer. It is the one
+        item here that is a run and not a program, and the matrix makes it a
+        cheaper run than it was.
+  \item \textbf{No whole-chain solve has been made off the matrix.} Every
+        equivalence in Section~\ref{sec:matrix} is a prefix, the largest a
+        \flag{sets} pair of 294.6\,GB a side. The whole-chain run is affordable
+        now and has not been spent.
+  \item \textbf{aarch64 is correct and untimed.} \texttt{qemu-user} models no
+        microarchitecture, so nothing here says what NEON is worth on silicon.
+        The Mach-O half of \texttt{asm-check}'s pattern has also only ever been
+        matched against compiler-emitted assembly, never a linked binary: the
+        macOS cross-build stops in a C dependency, not in this crate.
+  \item \textbf{\flag{threads} does not spread the matrix decode.} A matrix is
+        decoded on the fold thread, because \bin{prefetch} parses text and a
+        second definition of what a record is would be the wrong kind of saving.
+        The \texttt{GROUPS} index exists for exactly that and is unused: 16 bytes
+        per 4\,096 rows, so any group can be decoded without its predecessor.
+  \item \textbf{The effective block count is still outside the family.} It is
+        quadratic (Section~\ref{sec:projections}), so no bounded per-colour state
+        folds it, and nothing here changes that.
 \end{itemize}
 
 \end{document}

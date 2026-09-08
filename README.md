@@ -50,10 +50,12 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 
 ```text
 coloring-bt-transactions [<record-limit>|all] [--stats]
-                         [--rings|--sets|--weighted] [--sum]
+                         [--rings|--sets|--weighted|--bands <K>|--bands64 <K>] [--sum|--moments]
+                         [--threads <n>|auto]
                          [--png <file>|--pdf <file>|--fold <file>|--view]
-                         [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>]
-                         < records
+                         [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] [--palette]
+                         [--release-oracle <file>] [--matrix <file>]
+                         < records, unless --matrix
 ```
 
 One line out per record: the transaction's id, a tab, and then its colour.  By
@@ -133,6 +135,14 @@ quadratic, and no bounded per-colour state folds a quadratic — under `--bands`
 that column counts bands rather than blocks.  That boundary is the precise
 statement of what a projection keeps.
 
+`--bands K --sum` takes the same carried first moment.  It used to sum band
+*centres*, because the hand-over was gated on `--moments` alone: a block-0
+coinbase printed 372 at `K=1024` and 1,488.5 at `K=256` — half a band each — and
+nothing refused it.  Both forms take it now, a binned `--sum` agrees with an
+exact `--weighted --sum` to 6.1e-9 blocks over the first 200,000 records at
+either width, and it got *faster* — 2.70s against 5.40s over 2,000,000 records —
+because a handed-over first moment does not walk the terms at all.
+
 ### Freeing a colour when nothing will read it
 
 `--release-oracle <file>` takes the file written by `cargo run --release
@@ -144,6 +154,104 @@ its last output happens to be spent — which is not the same question, since
 
 Measured over 400,000 real records, `--weighted --sum`: **947 MB → 258 MB**
 (3.67x) and slightly faster, with output byte-identical under every backend.
+
+### Writing down the five numbers the fold reads
+
+`--release-oracle` spends one pass over the file to make every later run
+cheaper.  `--matrix <file>` is that trade taken as far as it goes.  Only five
+things in a record are ever read — the header's `block-id` and `tx-id`, each
+input's `amount` and `prev-tx-id`, and how many outputs there are — and a record
+of the 2022 chain averages 193 bytes, so every run re-parses 150 GB of
+parenthesised text to reach a small minority of it, and pays it again for every
+`--bands`, every `K`, every change to what is emitted rather than to what is
+folded.  `cargo run --release --example matrix` writes those five down once, in
+the shape the fold wants them; `--matrix` reads them back instead of standard
+input, and a run given both is refused rather than quietly reading neither.
+
+```text
+matrix [--compact] <file>   < records
+matrix --structure <file>   < records
+matrix --csr <basename>     < records
+matrix --check <file>       < records
+matrix --verify <file>
+matrix --stats <file>
+```
+
+The whole 2022 chain, one streaming pass, 401.2 s:
+
+| the chain as | bytes | vs. text | |
+|---|---|---|---|
+| records, `finalBCUTXO_2022.scm` | 149,968,404,213 | 1.0x | exact |
+| `--csr` (`u32` row_ptr, `u32` col, `f32` val) | 19,473,632,380 | 7.7x | **lossy** |
+| `--compact` (the default) | **10,601,433,514** | **14.1x** | exact |
+| `--structure`, no amounts | 6,126,089,724 | 24.5x | shape only |
+
+The 19.5 GB CSR that was costed as the obvious binary form is the **lossy**
+one, and the exact file is 1.84x *smaller* than it.  `--csr` writes it still,
+because an argument about lossiness that is never run is only an argument, and
+what the run says is that an `f32` weight has a worst relative error of 5.96e-8,
+that only **28.10%** of the chain's weights round-trip at all, that the per-row
+`|sum(w) - 1|` degrades from 1.02e-13 to 5.96e-8 before the fold composes
+anything, and that replaying the fold on those weights changes **44.71%** of
+`--sum` lines and **98.92%** of the terms coefficients.  A colour is a
+distribution, and half the answers moving is not a rounding difference.  The fix
+is not a wider float: a weight is `amount / total` and both are integers, so
+storing the raw `u64` satoshi amounts is exact *and* smaller — 4.48 GB of
+deltas against 8.18 GB of `f32`, because amounts inside one row are nothing
+like uniformly distributed and a float is 32 bits of entropy by construction.
+Half the compact file is columns (5,317,886,057 bytes, 50.2%) and 42.2% is
+amounts; one byte a row of input and output counts comes to 804,399,854, the
+block ids to 762,261 — one varint a coinbase row and nothing on the other 777.8
+million, since records arrive in block order — and the header with its two
+indexes to 3,041,488.
+
+Two checks, asking different questions.  `--check` re-reads the 150 GB and
+compares field for field: 461.6 s at 8 MB resident, 778,613,440 records,
+778,613,438 transactions, 2,044,897,328 nonzeros, 762,261 blocks, every block id
+reconstructed from the coinbase rows alone and the content hash agreeing.
+`--verify` asks the same question without the 150 GB — a sweep of the matrix
+alone against that hash and every count, 108.6 s over the chain at 5 MB resident
+and 98 MB/s — and it exists because a fold checks no whole-file invariant: of
+347,416 single-bit flips inside the rows of a 20,000-record matrix, 102,220 are
+accepted by the per-row invariants, and a flip at byte 700,007 of a
+500,000-record matrix folds to exit 0, with an empty stderr and a different
+answer.  The row checks catch a damaged shape; only the hash catches a damaged
+number.
+
+What it saves is less than the size ratio, and the honest number is the smaller
+one.  Over 20,000,000 records with the fold as cheap as it goes (`--bands 1
+--sum`), 17.8 s off the text against 11.7 s off the matrix; at `--bands 1024
+--moments`, where the fold is most of the work, 70.5 s against 63.9 s.  Both with
+the 150 GB warm in a 503 GB page cache, which is the case that favours the text —
+cold, the two artefacts are 12.5 minutes of reading against 50 seconds at the
+205-270 MB/s this array gives.  What a matrix buys is not a faster fold; it is
+that the parse is paid once.
+
+It is a swap of readers and nothing under them, so a run off a matrix prints byte
+for byte what the same run over the records prints.  Checked at 50,000 records
+(the three pictures, a `--rows` window, a run under the release oracle), 200,000
+(`--rings`, `--sets --threads 8`, `--weighted`'s terms), 500,000 (six
+backend/line combinations, capped and uncapped), 2,000,000 (both banded
+backends, `--weighted --sum`, `--weighted --moments`, and a `--sets` pair of
+294.6 GB a side) and 20,000,000 (`--bands 1024 --moments`, 1,149,593,609 bytes).
+`--rings` and `--sets` still hash alike off a matrix, so the crate's oldest
+cross-check survives the change of reader.
+
+Two transforms were measured and refused, and both are reserved as flag bits a
+reader must refuse, so that nobody re-derives them later and quietly gets
+different colours.  Sorting each row's parents would shorten the delta chain by
+0.89 GB and change **4.06%** of lines, because the fold walks a row's inputs from
+the last to the first and reassociating an `f64` sum is not free.  Deduplicating
+a row that spends the same transaction twice would save 0.13 GB and free that
+colour at the wrong instant: the multiplicity is what the fold counts down to
+know when nothing will read a colour again, which is the question the section
+above is about.
+
+A matrix written with `--structure` carries the shape and none of the amounts, so
+a weighted backend is refused on it by name rather than quietly folding equal
+shares.  The full treatment — the row format, where every byte of it goes, why a
+single-input row stores no amount, what the one-pass write costs in disk — is in
+[the article](article/main.tex), *Writing A down*.
 
 ### A colour ramp instead of grey
 
@@ -199,9 +307,76 @@ support size would answer 2. So the spread and the effective count say
 different things and neither implies the other — one is a distance along the
 chain, the other a count of what holds the weight.
 
-Four running sums in one pass, so it costs what `--sum` costs (3.58s against
-3.57s over the same records).  Like `--sum` it needs weights, so it selects
-`--weighted` and contradicts the other two backends, and it contradicts `--sum`.
+Four running sums in one pass over the same terms, so it is nearly what `--sum`
+costs and not quite: over the first 150,000 records of `make corpus`, `--sum`
+takes 3.69s, 3.71s and 3.72s where `--moments` takes 3.85s, 3.86s and 3.88s —
+about 4%, and a gap that eight runs apiece never closed.  The three extra
+multiply-adds are not where it goes; the line is.  A `--moments` run over those
+records writes 7,606,880 bytes against `--sum`'s 3,241,478, 2.3x, and two of the
+three extra fields are another shortest round-tripping decimal each, which is the
+most expensive thing this program formats.  (An earlier reading had the two equal
+at 3.58s against 3.57s; they are close, not equal.)  Like `--sum` it needs
+weights, so it selects `--weighted` and contradicts the other two backends, and
+it contradicts `--sum`.
+
+### The colours those numbers name
+
+`cargo run --release --example tint` turns a `--moments` run into colours.  It
+needs no second fold and does not hit the memory wall at all, because a colour
+here is a function of two of the three numbers: the mean block as hue over a
+250° arc, saying *when* the coins came from, and the concentration
+`1 / (1 + spread/45000)` as chroma, saying how mixed they are — a coinbase comes
+out fully saturated, money that has been through everything comes out grey, and
+mixing literally desaturates.  A pass over the `--moments` file that already
+exists is the whole of the work.
+
+```text
+tint [--hex|--rgb|--index <file> [--palette <file>]|--png <file> [--side <n>] [--sample]
+     [--records <n>]] [--blocks <n>] < moments
+```
+
+Four outputs, three orders of magnitude apart, and which one is wanted depends on
+what the colours are *for*:
+
+- `--hex` — `<tx>`, a tab, `#rrggbb`, one line a transaction: about 18 bytes each
+  and 14 GB over the 2022 chain.  Joins against anything keyed by transaction id.
+- `--rgb` — three bytes a transaction, in record order and without ids: 2.3 GB.
+  For something that already knows which record is which and wants the pixels.
+- `--index` — **one** byte a transaction, below.
+- `--png` — the picture: one pixel a transaction, row-major on a square.  778
+  million pixels is a 28,000-square image no viewer will open, so `--side` bins
+  consecutive transactions into a cell and averages their *moments* before
+  colouring, which is the right way round — averaging colours mixes hues that
+  mean different things.  Averaging the moments over a whole chain is still
+  nearly a function of position, though, since the mean block climbs with the
+  record index, and it draws a smooth cyan-to-grey gradient that says nothing;
+  `--sample` takes one real transaction a cell instead and keeps the variance.
+  Both are honest and only one is informative.
+
+`--index` quantises the colour onto a table of 32 hues by 8 concentrations — 256
+entries, a byte — which is 778,614,320 bytes for the chain, or 1.0000011 bytes a
+record.  The split was measured, not chosen: over 60,000,000 real records the
+32-by-8 table is 0.005328 mean and **0.014707** worst Oklab distance from the
+continuous tint, where a just-noticeable difference is about 0.02, so no
+transaction anywhere moves by a difference an eye can find.  Quantising the
+spread rather than the concentration — one bin per doubling, the ladder
+`tx-view` uses — is worse on both statistics (0.007344 mean, 0.015578 worst),
+and 85 by 3 wins the mean and loses the worst at 0.027193, past a JND.  The
+worst case is what was minimised, because a mean hides exactly the transactions
+a picture of concentration is about.
+
+A bare byte stream answers nothing in six months, so the file says what it is: an
+80-byte header carrying the axis constants and `--blocks`, the 768-byte palette
+(`--palette <file>` dumps the same bytes bare, in `PLTE` order), and a table
+naming every place the run of transaction ids breaks — four entries chain-wide,
+which are the two BIP-30 duplicate coinbases arriving and departing — because a
+byte's position in the stream is a record ordinal and the moments file's first
+column is a transaction id.  All of that is 0.00011% of the file.
+
+**The byte is derived from the moments file and does not replace it.**  Every
+index can be recomputed from the three columns of `--moments` in one pass, and
+nothing goes the other way: a byte carries which of 256 boxes the mean and the
+spread landed in, and not the mean, the spread, or the effective count.
 
 ### Threads
 
