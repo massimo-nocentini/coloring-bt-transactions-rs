@@ -23,7 +23,9 @@
 //! the elementwise scaling loops that the compiler vectorises on its own
 //! ([`scale_into_uninit`], [`scale_add_into_uninit`], and their initialised
 //! twins that the tests hold them against) and its two run finders
-//! ([`leading_below`], [`common_prefix`]).
+//! ([`leading_below`], [`common_prefix`]).  [`common_prefix`] is the file's
+//! second hand-written kernel and, like [`digit_run`], it is written twice —
+//! NEON and SSE2 — because both are baseline and neither needs dispatch.
 //!
 //! ## Why not the rest of the parser
 //!
@@ -196,8 +198,18 @@ pub fn scale_into(dst: &mut [f64], src: &[f64], factor: f64) {
 /// `dst[k] = a[k] * fa + b[k] * fb`, for as many elements as all three hold.
 ///
 /// The blocks that both colors carry, once the merge has lined them up.  Same
-/// reasoning as [`scale_into`]: written plainly so the vectoriser can take it,
-/// and it fuses into a multiply-add on targets that have one.
+/// reasoning as [`scale_into`]: written plainly so the vectoriser can take it.
+///
+/// It does *not* fuse into a multiply-add, and the doc used to say it did.
+/// aarch64 has `fmla` and LLVM declines to use it: contracting `x * fa + y * fb`
+/// changes the rounding, and nothing in this crate turns on the fast-math flag
+/// that would licence that.  The cross-built aarch64 binary of 2026-09-07
+/// (rustc 1.98.0, `--release`, `aarch64-unknown-linux-gnu`) contains zero `fmla`
+/// and zero `fmls` in its whole text, jemalloc and all — 0 matches in 203,593
+/// disassembled lines.  On the default x86-64 target the question does not
+/// arise; that is plain SSE2 and has no FMA to fuse into.  What the vectoriser
+/// does take is the separate two-lane multiply and add, which is what
+/// `make asm-check` counts.
 #[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub fn scale_add_into(dst: &mut [f64], a: &[f64], fa: f64, b: &[f64], fb: f64) {
@@ -246,16 +258,27 @@ pub fn scale_add_into_uninit(
 /// compare per element, and at the depths where colours run to a hundred
 /// thousand blocks that loop was a fifth of the merge.  Four `u32` lanes at a
 /// time is the same compare four times wider, and finding the first lane that
-/// differs is one `movemask` and a `trailing_zeros`.
+/// differs is one mask and a count of trailing bits.
+///
+/// Until 2026-09-07 only x86-64 had a kernel here and aarch64 fell through to
+/// [`common_prefix_scalar`] — the paragraph above says what that costs, and it
+/// said it while one of the two targets was paying it.  `common_prefix_neon`
+/// closes that; it is the arm the tests at the bottom of this file exercise
+/// under `qemu-aarch64`.
 #[inline]
 pub fn common_prefix(a: &[u32], b: &[u32]) -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is baseline for every aarch64 target; the kernel reads
+        // only within both slices.
+        unsafe { common_prefix_neon(a, b) }
+    }
     #[cfg(target_arch = "x86_64")]
     {
-        // SAFETY: SSE2 is baseline for every x86-64 target; the kernel reads
-        // only within both slices.
+        // SAFETY: SSE2 is baseline for every x86-64 target, as above.
         unsafe { common_prefix_sse2(a, b) }
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
         common_prefix_scalar(a, b)
     }
@@ -291,6 +314,78 @@ unsafe fn common_prefix_sse2(a: &[u32], b: &[u32]) -> usize {
         let same = _mm_movemask_epi8(_mm_cmpeq_epi32(x, y)) as u32;
         if same != 0xFFFF {
             return i + (same.trailing_ones() >> 2) as usize;
+        }
+        i += 4;
+    }
+    i + common_prefix_scalar(&a[i..], &b[i..])
+}
+
+/// `common_prefix` on NEON.
+///
+/// `vceqq_u32` fills each of the four lanes with all ones where the two words
+/// agree, and then the mask has to come back out of the vector register the
+/// same way `digit_run_neon` gets its own out: aarch64 has no `movemask`, so
+/// `vshrn` by 4 narrows the eight `u16` halves of the register into the eight
+/// bytes of one `u64`, one nibble per byte of the input.
+///
+/// The trap is the divisor.  The nibbles count *input bytes*, and a `u32` lane
+/// is four of them, so a lane that matches sets sixteen bits here where a
+/// matching byte in `digit_run_neon` sets four: the first differing lane is at
+/// `trailing_ones() / 16`, not `/ 4`.  Copying either twin's `>> 2` across
+/// unchanged reports four times the answer and the merge reads past the run.
+///
+/// Reading the matches rather than the mismatches, and so `trailing_ones`
+/// against `u64::MAX` rather than `trailing_zeros` against zero, is a deliberate
+/// copy of `common_prefix_sse2`: it saves the `vmvnq_u32` that inverting the
+/// mask would cost, and the two kernels then read as the same kernel twice.
+///
+/// ## What the tests actually pin, and what they do not
+///
+/// Nine mutants of this function, each built and run against the four
+/// `common_prefix` tests under `qemu-aarch64` on 2026-09-07:
+///
+/// ```text
+///   trailing_ones() >> 2, the SSE2 divisor      3 of 4 tests fail
+///   trailing_ones() >> 3                        3 of 4 tests fail
+///   trailing_zeros() vs 0, not ones vs MAX      3 of 4 tests fail
+///   i += 8 in place of i += 4                   4 of 4 tests fail
+///   vceqq_u8 in place of vceqq_u32              all pass
+///   vshrn_n_u16::<1>, ::<2>, ::<8> for ::<4>    all pass
+///   vshrn_n_u16::<9> and ::<16>                 do not compile
+/// ```
+///
+/// The survivors survive for a reason rather than for want of a test, and both
+/// reasons are worth knowing.
+///
+/// The shift amount is inert.  After a compare every lane is `0x0000` or
+/// `0xFFFF`, so any narrow leaves the truncated byte `0x00` or `0xFF` — and
+/// `vshrn_n_u16` accepts only 1 through 8, so *every legal* argument gives this
+/// function the same behaviour.  LLVM sees it too: the emitted instruction is
+/// `xtn v0.8b, v0.8h`, a plain narrow with no shift at all.
+///
+/// The compare width is inert for a different reason: byte equality decides
+/// word equality here, because the first differing byte and the first differing
+/// word are the same quotient by four, which is the divisor already being
+/// applied.  `::<4>` and `vceqq_u32` are kept because they say what is meant —
+/// but no test distinguishes them from the alternatives, since the alternatives
+/// are not behavioural differences, and claiming the tests pin them would be
+/// worse than writing this down.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn common_prefix_neon(a: &[u32], b: &[u32]) -> usize {
+    use core::arch::aarch64::*;
+
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i + 4 <= n {
+        let x = vld1q_u32(a.as_ptr().add(i));
+        let y = vld1q_u32(b.as_ptr().add(i));
+        // Sixteen set bits per lane that agrees, zero per lane that does not.
+        let same = vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(
+            vreinterpretq_u16_u32(vceqq_u32(x, y)),
+        )));
+        if same != u64::MAX {
+            return i + (same.trailing_ones() >> 4) as usize;
         }
         i += 4;
     }
@@ -490,6 +585,33 @@ mod tests {
         assert_eq!(common_prefix(&a, &a), 23);
         assert_eq!(common_prefix(&a, &[]), 0);
         assert_eq!(common_prefix(&[], &[]), 0);
+    }
+
+    /// Differences finer than a lane: the two arrays differ in exactly one
+    /// *byte* of exactly one word, at every position through several 4-lane
+    /// blocks and at each of the four bytes of the word.  A word whose bytes
+    /// mostly agree is the case a vector compare could get wrong at some
+    /// granularity between byte and word, and the merge sees it constantly —
+    /// consecutive block ids differ only in their low byte.  It is one of the
+    /// three tests that the wrong nibbles-per-lane divisor fails; the mutant
+    /// table on `common_prefix_neon` says which mutants no test catches.
+    #[test]
+    fn common_prefix_finds_a_single_differing_byte() {
+        let a: Vec<u32> = (0..24).map(|k| 0x0101_0101 * (k + 1)).collect();
+        for len in 0..24usize {
+            for byte in 0..4u32 {
+                let mut b = a.clone();
+                b[len] ^= 1 << (8 * byte);
+                assert_eq!(
+                    common_prefix(&a, &b),
+                    len,
+                    "differing byte {} of word {}",
+                    byte,
+                    len
+                );
+                assert_eq!(common_prefix(&a, &b), common_prefix_scalar(&a, &b));
+            }
+        }
     }
 
     #[test]
