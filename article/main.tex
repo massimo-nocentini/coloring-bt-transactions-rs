@@ -716,19 +716,37 @@ became faster --- 2.70\,s against 5.40\,s over 2\,000\,000 records --- because a
 handed-over first moment does not walk the terms at all.
 
 \section{Output}
+\label{sec:output}
 
 \begin{center}
 \begin{tabular}{lrr}
 \toprule
 form & bytes/record & whole chain \\
 \midrule
-weighted terms                & $\sim$131\,648 & 102.5\,TB \\
-\flag{bands} 1024 terms       & $\sim$1\,211   & 0.94\,TB \\
+weighted terms                & $\sim$131\,648 & 102.5\,TB$^\ast$ \\
+\flag{bands} 1024 terms       & $\sim$12\,240  & \textbf{8.67\,TiB} \\
+\flag{bands} 1024, \texttt{zstd -6 -{}-long=27} & 2\,146.9 & 1.52\,TiB \\
 \flag{moments}                & 47.6           & 37.1\,GB \\
 \flag{moments}, \texttt{zstd -12} & 12.3       & 9.5\,GB \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\noindent$^\ast$ the only projection left in the table; the exact fold cannot
+reach the end of the chain (Section~\ref{sec:wall}). The two band rows are
+\texttt{zstd}'s own accounting of the run --- 8.67\,TiB in, 1.52\,TiB out,
+17.54\% --- and the compressed file is 1\,671\,571\,195\,397 bytes exactly. The
+uncompressed stream was never written to disk, so its size is quoted to the
+three figures \texttt{zstd} reports and no more.
+
+The band row used to be a projection too, and it was wrong by a factor of ten:
+$\sim$1\,211 bytes a record against the 12\,240 the run measures. The error was
+in taking the figure off a prefix. A band vector is only as sparse as the colour
+is shallow, and at $K = 1024$ a mature colour reaches nearly every band --- 12
+bytes a term times a thousand terms is the whole line, and 1\,211 bytes a record
+is what a hundred-band colour costs. Depth is exactly what a prefix does not
+have. It is the same mistake the census of Section~\ref{sec:wall} was built to
+avoid, made in the one row nobody had run.
 
 \paragraph{Compression.} The level is set by the byte rate, not by taste. The
 fold produces \flag{moments} output at about 48\,MB/s. Measured on a
@@ -864,12 +882,497 @@ coloring-bt-transactions [<record-limit>|all] [--stats]
     [--release-oracle <file>] [--matrix <file>]  < records
 \end{lstlisting}
 
-Flags that would quietly do nothing are refused rather than ignored:
-\flag{palette} needs \flag{weighted} and \flag{png}; \flag{sum} and
-\flag{moments} contradict each other and both refuse \flag{threads}; the three
-picture destinations contradict each other; a matrix written \flag{structure}
-is refused by name under a weighted backend, and one shorter than the run is
-refused before the fold starts.
+Flags that would quietly do nothing are refused rather than ignored: a flag
+with nothing to act on, and two flags that cannot both be meant, are errors
+and not defaults. Section~\ref{sec:invocations} carries the complete list ---
+forty-two messages across three tables --- and the six places the rule leaks.
+
+\subsection{Every way it can be invoked}
+\label{sec:invocations}
+
+The synopsis above is a grammar; this is the matrix. Twenty flags and two
+positional forms compose into the thirteen axes of Table~\ref{tab:axes}, and
+only three of the thirteen change the answer. The other ten choose where the
+records come from, when a colour may be dropped, how many threads format the
+lines, and what is drawn --- and every one of them is an equivalence that has to
+hold byte for byte, which is the crate's usual way of making a claim
+(Section~\ref{sec:verification}).
+
+Everything below is a measurement on the release binary over four corpora.
+\texttt{synth2000} and \texttt{real2000} are 2\,000 records each ---
+\bin{examples/records.rs} \flag{window}~4000, and the head of the 2022 chain ---
+and they are not interchangeable: \texttt{synth2000} reaches block 285 with
+1\,457 colours naming more than one block, \texttt{real2000} reaches block
+1\,969 with only 15, so on \texttt{real2000} most backends agree for the wrong
+reason. The cost figures name \texttt{synth20k} (20\,000 synthetic records,
+blocks 0--2\,857, 24.80 terms a colour) and \texttt{real200k} (200\,000 chain
+records, block 94\,404, 2\,185.5 terms a colour). Every md5 below is its first
+twelve hex digits. A sweep of 1\,698 invocations accepted 578, refused 1\,082
+and \emph{aborted} on 38, all 38 the same combination. That, and five accepted
+combinations that are not what they read as, are recorded at the end rather
+than smoothed over: the ``refuse rather than ignore'' rule holds in 43 places
+and leaks in six.
+
+\begin{table}[tp]
+\centering\small
+\begin{tabular}{lp{0.30\textwidth}p{0.34\textwidth}}
+\toprule
+axis & values & what it decides \\
+\midrule
+\multicolumn{3}{l}{\emph{changes the answer}} \\
+weights     & \flag{rings} $|$ \flag{sets} $|$ \flag{weighted} $|$ \flag{bands} $|$ \flag{bands64} & support only, or the distribution \\
+projection $P$ & identity $|$ $K$ bands of width $\lceil B/K \rceil$, for $B$ the \flag{blocks} value & Equation~\eqref{eq:project}: $L=762\,261$ or $L=K$ \\
+readout     & terms $|$ \flag{sum} $|$ \flag{moments} & the whole colour, its first moment, or three numbers \\
+\midrule
+\multicolumn{3}{l}{\emph{does not}} \\
+how many    & \texttt{<record-limit>} $|$ \texttt{all} & how many lines, not what each says \\
+lane width  & \flag{bands} (\texttt{f32}) $|$ \flag{bands64} (\texttt{f64}) & printed precision and drift only \\
+source      & \texttt{< records} $|$ \flag{matrix} & what is read, not what is folded \\
+release     & unspent output $|$ \flag{release-oracle} & when a colour is freed \\
+concurrency & serial $|$ \flag{threads} $n$ $|$ \flag{threads} \texttt{auto} & who formats the lines \\
+instrumentation & --- $|$ \flag{stats} & stderr only \\
+sink        & stdout $|$ \flag{png} $|$ \flag{pdf} $|$ \flag{fold} $|$ \flag{view} & where the answer goes \\
+width       & surveyed $|$ \flag{blocks} $n$ & the picture's columns \\
+rows        & all $|$ \flag{bin} $n$ $|$ \flag{rows} $a..b$ & which records get a row, and how many share one \\
+ink         & flat $|$ weighted $|$ \flag{palette} $|$ \flag{gain} $x$ & how a cell is shaded \\
+\bottomrule
+\end{tabular}
+\caption{The thirteen axes. Three decide what is computed; ten decide how it is
+read, written or paid for. \flag{blocks} appears on both sides of the rule and
+is entered once, under \emph{width}, where it is the picture's column count.
+Under \flag{bands} it instead says how many block ids the bands cover, and so
+sets the band width --- there it does change the answer.}
+\label{tab:axes}
+\end{table}
+
+\paragraph{The three axes that change the answer.}
+Table~\ref{tab:backends} gives the representations; Table~\ref{tab:answers} is
+the product with the readout, which is the actual set of things the program can
+be asked for.
+
+\begin{table}[tp]
+\centering\small
+\begin{tabular}{lp{0.40\textwidth}rr}
+\toprule
+ & & \multicolumn{2}{c}{bytes a record} \\
+\cmidrule(l){3-4}
+ & & \texttt{synth20k} & \texttt{real200k} \\
+\midrule
+\multicolumn{4}{l}{\emph{the fold}} \\
+\flag{rings}     & the support, as circular lists; the Knuth exercise, kept as the reference & 130.33 & 17\,489.60 \\
+\flag{sets}      & the support, as sorted \texttt{Rc<[u32]>}; byte-identical to \flag{rings} & 130.33 & 17\,489.60 \\
+\flag{weighted}  & the exact colour, one \texttt{f64} a block & 617.20 & 73\,502.19 \\
+\flag{bands} $K$ & Equation~\eqref{eq:project} with $P$ the $K$-band indicator, in \texttt{f32} lanes & 402.77$^\ast$ & 413.02$^\dagger$ \\
+\flag{bands64} $K$ & the same projection in \texttt{f64} lanes & 617.20$^\ast$ & 620.91$^\dagger$ \\
+\midrule
+\multicolumn{4}{l}{\emph{the readout}} \\
+terms            & every term, \texttt{weight:block}, or \texttt{weight:band} under a projection & \multicolumn{2}{c}{as above} \\
+\flag{sum}       & $\sum_b w_b\, b$, the undivided first moment, one number & 20.47 & 16.87 \\
+\flag{moments}   & mean block, spread, effective count & 49.27 & 34.32 \\
+\bottomrule
+\end{tabular}
+\caption{The five folds and the three readouts, and what a line of each costs.
+$^\ast$ at $K=4096$ \flag{blocks}~4096, $^\dagger$ at $K=1024$. On
+\texttt{real200k} a banded terms line is 42$\times$ shorter than the set line
+for the same fold, and \flag{moments} a further 12.0$\times$ shorter than
+that, which puts it 500$\times$ below the set line. The
+\flag{bands64} figure at $^\ast$ is \flag{weighted}'s exactly, for the reason
+below; the \flag{weighted} figure on \texttt{real200k} is 14.7\,GB of stdout
+from a 75-second run.}
+\label{tab:answers}
+\end{table}
+
+Three equivalences hold across Table~\ref{tab:answers} and are worth stating
+because they could each have failed. First, \flag{rings} and \flag{sets}
+agree byte for byte: md5 \texttt{a7360cfd17f4} over \texttt{synth2000},
+\texttt{61cae32a00b1} over \texttt{synth20k}. Rings pay 4.1--4.3$\times$ the
+resident memory for that agreement --- 25\,984--26\,880\,KB against
+6\,272\,KB on \texttt{synth20k}, four runs each. A ring node is 24 bytes and
+nothing is shared, and \flag{stats} reports 398\,476 live nodes against
+286\,674 live set elements --- 9.1\,MiB of nodes against 1.1\,MiB of
+elements. That is most of the gap and not all of it; the rest is the allocator's
+(Section~\ref{sec:allocator}), which is why the figure is quoted as a range of
+runs rather than derived.
+
+Second, the support is the same whether or not weights are carried, exactly as
+Section~\ref{sec:rule} claims. Strip each term's \texttt{weight:} and keep
+its exponent,
+
+\begin{lstlisting}
+cut -f2- | sed 's/[^,]*://g'
+\end{lstlisting}
+
+\noindent and \flag{sets}, \flag{weighted} and \flag{bands64}~4096
+\flag{blocks}~4096 give one stream: md5 \texttt{c40ac2b724d5} on
+\texttt{synth2000}, \texttt{ff992e779921} on \texttt{real2000}. A bare
+\texttt{cut -d: -f2} does \emph{not} do this, because the second colon-field
+of a multi-term line is \texttt{block,nextweight} rather than a block.
+
+Third, the lane width buys only precision. At $K=64$ over \texttt{synth20k} the
+worst drift of $\sum w$ from 1 is $1.350\times10^{-7}$ in \texttt{f32} against
+$6.661\times10^{-16}$ in \texttt{f64}. It is paid for twice over: 476\,672\,KB
+resident against 247\,296--249\,088\,KB at $K=1024$ on \texttt{real200k} over
+four runs each, a factor of 1.92, and 8.36 more bytes a term of output.
+
+\paragraph{Bands at width one is the identity projection, exactly.}
+\flag{bands64}~4096 \flag{blocks}~4096 over \texttt{synth20k}, which reaches
+block 2\,857, makes every band one block wide, and writes terms byte-identical
+to \flag{weighted}'s. That is the cleanest available statement of what
+\flag{bands} is: Equation~\eqref{eq:project} with $P = I$ when the band is a block.
+It is never a useful run --- the exact store with a dense vector's memory ---
+but it is the run that says the binned fold is a projection of the same solve
+rather than a different algorithm.
+
+\paragraph{The projection and the readout are not orthogonal.}
+Section~\ref{sec:carry} says a colour
+carries $\sum w$, $\sum wb$, $\sum wb^2$ in \texttt{f64} beside its lanes. The
+consequence at the command line is that the first two columns of \flag{moments},
+and all of \flag{sum}, are read off the carried moments and never off the bands:
+\texttt{cut -f1,2,3} is one md5 over \texttt{synth2000},
+\texttt{860b3de2fc64}, across all twelve of
+\flag{bands} and \flag{bands64} at $K=4$, 64 and 1024, with and without
+\flag{blocks}. The projection and the lane width leave no trace at all. Against
+the exact fold they differ in the last ulp --- $3.64\times10^{-12}$ blocks of
+mean over \texttt{synth20k}, $1.13\times10^{-8}$ over \texttt{real200k}.
+
+The third column does not ride along, because the effective block count is
+quadratic and outside the family (Section~\ref{sec:projections}). Under
+\flag{bands} it is the effective number of \emph{bands}, bounded by $K$:
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+ & \multicolumn{2}{c}{\texttt{synth20k}, \flag{blocks} 4096} & \multicolumn{2}{c}{\texttt{real200k}, default \flag{blocks}} \\
+\cmidrule(lr){2-3}\cmidrule(l){4-5}
+effective count & mean & max & mean & max \\
+\midrule
+$K=4$    & 1.14 & 2.97  & 1.00 & 1.00 \\
+$K=16$   & 1.49 & 6.76  & 1.04 & 2.00 \\
+$K=64$   & 1.94 & 10.22 & 1.45 & 6.21 \\
+$K=256$  & 2.45 & 14.29 & 2.00 & 17.06 \\
+$K=1024$ & 2.98 & 16.22 & 3.70 & 51.29 \\
+$K=4096$ & 3.32 & 17.97 & 7.07 & 164.70 \\
+exact    & 3.32 & 17.97 & 26.27 & 2\,495.41 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+It converges only when a band is one block wide: \texttt{synth20k} reaches that
+at $K=4096$, and \texttt{real200k}, spread over 762\,261 blocks, never does. So
+\flag{bands}~$K$ \flag{moments} prints two exact columns and one projected one,
+and nothing on the command line says so. Read the third as a band count, or set
+the band width to one and pay for the exact one.
+
+\paragraph{A short corpus needs \flag{blocks}, and cannot have it.} The band
+width is \texttt{ceil(-{}-blocks / K)}, with \flag{blocks} defaulting to the
+whole 2022 chain, $762\,261$; at $K=1024$ that is a band 745 blocks wide, so
+every block of a short prefix falls in band~0 and the projection does nothing.
+Over \texttt{synth2000}, which reaches block 285, \flag{bands}~1, 16, 64 and
+1024 write byte-identical terms, md5 \texttt{4aa6ea15db9f}. Over
+\texttt{real2000}, which reaches block 1\,969, that identity holds only to
+$K=64$: at $K=1024$ the 745-wide bands split the blocks across bands 0, 1 and 2
+and 1\,237 of the 2\,000 lines change. Nor is every line \texttt{1:0} where
+the identity does hold --- the \texttt{f32} lanes drift, and 58 of
+\texttt{synth2000}'s 2\,000 lines print \texttt{0.99999994:0} (45),
+\texttt{1.0000001:0} (9) or \texttt{0.9999999:0} (4). The colour is computed
+correctly and merely projected onto one band, and \flag{sum} and \flag{moments}
+are unaffected because they read the carried moments --- but anyone measuring
+band behaviour on a short prefix without \flag{blocks} is measuring nothing.
+Passing \flag{blocks} is what aborts the run, which is
+item~\ref{leak:abort} of \emph{Where the rule leaks} below.
+
+\paragraph{The ten axes that do not change the answer.}
+Table~\ref{tab:invariant} names them and the run that checked each.
+
+\begin{table}[p]
+\centering\small
+\begin{tabular}{p{0.24\textwidth}p{0.36\textwidth}p{0.24\textwidth}}
+\toprule
+flag & what it changes & measured \\
+\midrule
+\texttt{<record-limit>} & how many records are folded and emitted; default $1\,000\,001$ & \texttt{500} is the first 500 lines of \texttt{2000} \\
+\texttt{all} & no limit; also suppresses the oracle length check and the short-matrix notice & identical to a limit at or above the record count \\
+\flag{matrix} \texttt{f} & five numbers a record read out of 10.6\,GB instead of parsed out of 150 & identical \\
+\flag{release-oracle} \texttt{f} & frees a colour when nothing later reads it, not when its outputs are spent & identical; 14.3--14.6$\times$ less resident \\
+\flag{threads} $n$ $|$ \texttt{auto} & $n$ threads format, one more reads, this one folds & identical at $n{=}1,2,4,8$ and \texttt{auto}; 5.9$\times$ \\
+\flag{stats} & progress, store audit, drift, picture size --- on stderr & stdout unchanged \\
+\flag{png} \texttt{f} & one pixel per (transaction, block) & 12\,565\,B, \flag{weighted} over \texttt{real2000} \\
+\flag{fold} \texttt{f} & the same picture folded onto $\le 1024^2$ cells, as PNG & 6\,435\,B on the same run \\
+\flag{pdf} \texttt{f} & the same canvas as one Cairo page; needs \texttt{-{}-features pdf} & refused in this build \\
+\flag{view} & the same canvas in a GTK window; needs \texttt{-{}-features gui} & refused in this build \\
+\flag{blocks} $n$ & fixes the column count instead of surveying for it; under \flag{bands} it instead sets the band width, where it is \emph{not} invariant & \flag{blocks}~4096 draws 4096 columns for 1\,970 surveyed \\
+\flag{bin} $n$ & one row per $n$ consecutive transactions, their union & \flag{bin}~4 draws 500 rows for 2\,000 records \\
+\flag{rows} $a..b$ & draws only records $[a,b)$; narrows the limit to $\min(\text{limit},b)$ & \flag{rows}~100..600 draws 500 rows \\
+\flag{gain} $x$ & multiplies a folded cell's ink before the gamma & sample scales $x^{1/2.2}$ \\
+\flag{palette} & the weighted samples through the Oklab ramp & same \texttt{IDAT}, $+780$\,B \\
+\bottomrule
+\end{tabular}
+\caption{The invariance group and the picture flags. ``Identical'' means an
+md5 of stdout against the same run without the flag. The picture rows are
+measured as a file size instead, since they have no stdout to compare;
+Section~\ref{sec:pictures} says what is in them.}
+\label{tab:invariant}
+\end{table}
+
+Source, release policy, concurrency and instrumentation compose freely and with
+everything else: \texttt{all -{}-bands 1024 -{}-moments -{}-matrix s.mat
+-{}-release-oracle o.u32} and \texttt{2000 -{}-bands 1024 -{}-moments <
+records} are both md5 \texttt{978c15f3b22a} over \texttt{synth2000}, and adding
+\flag{stats} does not move it. The costs are the point of them, not the
+answers. The oracle takes \flag{weighted} \flag{sum} over 200\,000 synthetic
+records from 9.16\,s to 5.91\,s and from 4\,684\,060--4\,689\,784\,KB resident
+to 321\,980--328\,360\,KB; \flag{threads} takes 50\,000 weighted terms from
+1.48\,s to 0.25\,s at eight threads, and 68\,992\,KB resident to
+107\,392--120\,960\,KB. Both are the best of five runs on a 112-thread
+machine at load average 19, and both are wall clock, so read them as ratios
+rather than as constants. \flag{matrix} changes neither, and also retires the survey
+pass for a picture, because the header states both dimensions.
+
+Two edges of that group are worth naming. \flag{threads} is honoured for a
+\flag{matrix} source only in the formatter pool: there is no reading thread,
+because a matrix is decoded on the fold thread (Section~\ref{sec:matrix}'s last
+open item). And \flag{release-oracle} is unusable without an explicit limit,
+since the default is $1\,000\,001$ and the test is
+$\text{oracle records} \ge \text{limit}$. A 2\,000-record oracle is refused on
+a bare command line, accepted under \texttt{2000} and under \texttt{all}, and
+accepted under \texttt{3000} only if \flag{rows} narrows the limit to 2\,000
+or fewer: \texttt{3000 -{}-rows 0..2000 -{}-png p.png} is accepted,
+\texttt{3000 -{}-rows 0..2001 -{}-png p.png} refused. The \flag{png} is not
+decoration --- \flag{rows} is one of the three flags that need a sink to
+describe.
+
+\paragraph{What a pixel means, decoded rather than described.} Under
+\flag{rings} and \flag{sets} a pixel is one bit, cleared where the block is in
+the support --- the inked columns of the last row are exactly the exponents of
+the last \flag{sets} line. Under \flag{weighted} it is eight bits,
+$255 - \mathrm{round}(w^{1/2.2}\cdot 255)$: weight 0.778 gives sample 27, 0.0560
+gives 186, 0.0165 gives 216, 0.00173 gives 241, paper is 255. \flag{palette}
+writes those same bytes with colour type 3 and a 768-byte \texttt{PLTE} whose
+entry 0 is $(86,29,50)$ and entry 255 $(250,250,250)$, so a smaller index is
+heavier ink exactly as a smaller grey is. \flag{bin}~$n$ makes a row the union of
+$n$ transactions, which under \flag{weighted} is the per-block \emph{maximum} of
+their weights --- the darker pixel wins, which is the same rule as ``counted
+once'' when every weight is 1. \flag{fold} shades a cell by the coverage of its
+rectangle, so the same records come out genuinely lighter weighted than flat:
+mean ink 1.25/255 against 6.83/255. \flag{gain}~4 lifts that to 2.35, which is
+$1.25 \times 4^{1/2.2} = 1.25 \times 1.88$ and not $4\times$ anything --- the
+gain is applied before the gamma, so the sample scales as $x^{1/2.2}$.
+
+\flag{blocks} is a floor and not a crop, and it fails after the file exists:
+\flag{png} \flag{blocks}~200 over \texttt{synth2000}, which reaches block 285,
+prints ``2000 records over 286 blocks, so a 200 x 2000 picture'', then the
+too-narrow refusal of Table~\ref{tab:refusals-form}, and leaves a 33-byte stub.
+A larger value pads: the surveyed 286 columns write 7\,316 bytes and
+\flag{blocks}~400 writes 7\,761. What is capped in \flag{fold}, alone among
+the sinks, is the \emph{cell grid} --- never more than $1024\times1024$ cells
+however many records there are, which is why it is the only picture a long run
+can write. The file still grows with the run: \texttt{synth20k} gives
+$1024\times1024$ cells of $3\times20$ pixels each and 114\,511 bytes,
+\texttt{synth2000} $286\times1024$ cells of $1\times2$ and 10\,063.
+
+\paragraph{The value syntax.} Every value-taking flag accepts
+\texttt{-{}-name value} and \texttt{-{}-name=value}. A separate word is taken
+only if it does not begin with \texttt{-{}-}, and a glued value must follow an
+\texttt{=}, so \texttt{-{}-blocksy} is not \flag{blocks}, and a trailing
+\texttt{-{}-png} with no path after it falls through to the positional parse
+and prints the usage line rather than taking an empty path and carrying on.
+That is deliberate: a flag that eats the next flag is the failure mode this
+parser is shaped to avoid.
+
+\paragraph{What is refused, and what it says.} Forty-three refusal sites in the
+source collapse into the forty-two rows of Tables~\ref{tab:refusals-meaning},
+\ref{tab:refusals-empty} and~\ref{tab:refusals-form} --- the picture
+destinations clash through two arms of the same helper, so one message has two
+sites. They are checked in four places: inside the argument loop, as each value
+is parsed and as each backend and picture flag is chosen; after the whole
+command line, for contradictions between two flags, so that neither order is
+privileged and the message can name both; before the survey, for feature
+absence, so the refusal comes ahead of a whole pass over 150\,GB; and before the
+first record, for the release oracle, because a stale one produces a wrong
+answer rather than a crash.
+
+The place decides \emph{precedence} when two refusals are both due, and the
+order is the reading order of the three places rather than anything about the
+flags. The two-picture clash is raised by \texttt{choose} inside the argument
+loop (\texttt{src/main.rs:1387--1399}, called at 1493 and 1508) and the
+\flag{palette} clash with a non-raster sink after it, in \texttt{main}
+(\texttt{1727--1745}); both therefore beat anything in \texttt{plan}. Inside
+\texttt{plan} the feature checks (\texttt{1131--1142}) come before the
+\flag{sum}-with-a-picture check that follows them, so the feature check wins
+where the two collide: \texttt{500 -{}-sum -{}-pdf p.pdf} reports the missing
+\texttt{pdf} feature and never mentions \flag{sum}, while
+\texttt{500 -{}-sum -{}-fold p.png}, which needs no feature, reports the
+contradiction. The consequence worth stating is that a message quoted from this
+build is build-dependent: with \texttt{-{}-features pdf} the first of those two
+command lines prints the other message. No row of the three tables is
+unreachable in this build.
+
+\begin{table}[p]
+\centering\small
+\begin{tabular}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+combination & what it says \\
+\midrule
+\flag{rings} \flag{weighted} & ``\flag{weighted} cannot run on \flag{rings}; weights need the set representation'' \\
+\flag{sum} \flag{moments} & ``two ways of collapsing a color; drop one of them'' \\
+two of \flag{png} \flag{pdf} \flag{fold} \flag{view}$^\ddagger$ & ``\flag{png} and \flag{view} are two ways of drawing the one picture; drop one of them'' \\
+\flag{rings}$|$\flag{sets} then \flag{bands} $K$ & ``\flag{bands} bins the weighted colour, and the unweighted backends have no weights to bin; drop \flag{rings} or \flag{sets}'' \\
+\flag{sum}$|$\flag{moments} with \flag{rings}$|$\flag{sets} & ``adds up the weights of a color, and the unweighted backends have none to add up; drop \flag{rings} or \flag{sets}'' \\
+\flag{sum}$|$\flag{moments} with \flag{threads} $n>0$ & ``prints a few numbers a line, so there is nothing for \flag{threads} to spread; drop one of them'' \\
+\flag{bands}$|$\flag{bands64} with any picture & ``\flag{bands} colours by band and the pictures draw by block; drop one of them'' \\
+\flag{threads} $n>0$ with any picture$^\ddagger$ & ``\flag{threads} spreads the work of writing lines, and \flag{png} draws a picture instead; drop one of them'' \\
+\flag{sum} with any picture$^\ddagger$ & ``\flag{sum} says what a line says, and a picture has no lines: drop one of \flag{sum} and \flag{fold}'' \\
+\flag{gain} with \flag{png} & ``\flag{gain} shades the folded canvas; it goes with \flag{pdf}, \flag{fold} or \flag{view}, not \flag{png}'' \\
+\flag{palette} with a folded sheet$^\ddagger$ & ``\flag{palette} colours the pixels of a picture, and \flag{fold} folds it onto a canvas of shaded cells instead; use \flag{png}'' \\
+\flag{matrix} with records left on a seekable stdin$^\ddagger$ & ``\flag{matrix} reads the records out of \texttt{s.mat}, so the 147775 bytes still on standard input would be read by nothing at all; drop one of the two'' \\
+\bottomrule
+\end{tabular}
+\caption{Two flags that cannot both be meant. Quoted from a run, less the
+\texttt{circular-polynomial:\ } prefix every message carries on the terminal,
+and less the opening flag name where the left column already gives it. The
+rows marked $^\ddagger$ name whichever sink, backend, path or byte count the
+run actually had, and are shown here with one of them; a \ldots\ marks
+elision inside a message. \texttt{color} is how the source spells it in the two
+messages that use the word.}
+\label{tab:refusals-meaning}
+\end{table}
+
+\begin{table}[p]
+\centering\small
+\begin{tabular}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+combination & what it says \\
+\midrule
+\flag{palette} without weights & ``draws the weight of a block as a colour, and the unweighted backends have only whether it is there; add \flag{weighted}'' \\
+\flag{palette} with no picture & ``\flag{palette} describes the picture, so it needs \flag{png} \texttt{<file>}'' \\
+\flag{blocks}$|$\flag{bin}$|$\flag{rows} with no picture & ``describes the picture, so it needs \flag{png} \texttt{<file>}, \flag{pdf} \texttt{<file>}, \flag{fold} \texttt{<file>} or \flag{view}'' \\
+a weighted backend over a \flag{structure} matrix & ``written with \flag{structure}, which keeps the shape of $A$ and none of its weights, and a weighted fold shares a colour out in proportion to them'' \\
+\flag{pdf} without the \texttt{pdf} feature & ``draws with Cairo, and this was built without it: rebuild with \texttt{-{}-features pdf}'' \\
+\flag{view} without the \texttt{gui} feature & ``opens a GTK window, and this was built without one: rebuild with \texttt{-{}-features gui}'' \\
+a picture on an unrewindable stdin & ``standard input cannot be rewound, so the records cannot be counted before the picture is drawn \ldots\ Redirect the records from a file (\texttt{< records}) rather than through a pipe, or write them once as a matrix and pass \flag{matrix} \texttt{<file>}, whose header says both numbers \ldots'' \\
+\flag{release-oracle} shorter than the run & ``written for 2000 records and this run reads 3000; it would free colours that are still wanted'' \\
+an oracle overrun mid-run, under \texttt{all} & ``the release oracle covers 2000 records and this run reached 2001; it was written for different input'' \\
+\bottomrule
+\end{tabular}
+\caption{A flag with nothing to act on. Same quoting rule as
+Table~\ref{tab:refusals-meaning}. The oracle's length message is additionally
+prefixed with the oracle's path, since that check lives in \bin{src/oracle.rs}
+where the path is in hand; the mid-run overrun message, formatted in
+\bin{src/main.rs}, carries no path. The unrewindable-stdin message is abridged
+at the \ldots\ and again at its close --- it runs to 97 words, the longest
+refusal the program has.}
+\label{tab:refusals-empty}
+\end{table}
+
+\begin{table}[p]
+\centering\small
+\begin{tabular}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+combination & what it says \\
+\midrule
+\multicolumn{2}{l}{\emph{a value that is not one}} \\
+\flag{blocks}$|$\flag{bin} non-numeric & ``wants a count, got \texttt{"nope"}'' \\
+\flag{bands}$|$\flag{bands64} non-numeric or 0 & ``wants a positive count of bands, got \texttt{"0"}'' \\
+\flag{threads} not a count or \texttt{auto} & ``wants a count or \texttt{`auto'}, got \texttt{"x"}'' \\
+\flag{gain} not a float & ``wants a factor, got \texttt{"x"}'' \\
+\flag{rows} not \texttt{a..b} & ``wants a window like \texttt{830000..834096}, got \texttt{"x"}'' \\
+anything else & the whole usage line, with no prefix \\
+\flag{rows} $a \ge b$ & ``is a window with nothing in it: the start has to come first'' \\
+\flag{bin} 0 & ``asks a row to stand for no transactions'' \\
+\flag{blocks} 0 with a picture & ``leaves the picture no columns to draw in'' \\
+\flag{gain} $\le 0$ or non-finite & ``is not a usable factor'' \\
+\flag{blocks} $n$ too small for the picture & ``block 200 has no column in a 200-column picture; rerun with \flag{blocks} 201 or more'' \\
+\midrule
+\multicolumn{2}{l}{\emph{the records do not support it}} \\
+no records at all & ``no records, so there is no picture to draw in \ldots'' \\
+\flag{rows} starting past the last record & ``the records end at 500 --- before the row window starting at 9000, so there is no picture to draw in \ldots'' \\
+\midrule
+\multicolumn{2}{l}{\emph{the environment cannot supply it}} \\
+\flag{matrix} unopenable or not a matrix & ``\texttt{s.mat}: No such file or directory (os error 2)'' \\
+a short-matrix picture on a non-file & ``\ldots\ the blocks its own rows reach have to be read off it a second time, and a second read from the start is what a stream cannot give: opening a spent pipe again does not fail, it waits'' \\
+the second matrix pass fails to read & the io error \\
+the survey or the rewind around it fails & the io error \\
+\flag{png} cannot be created & \texttt{path: }the io error \\
+the canvas file cannot be created & the io error, with no path \\
+\flag{release-oracle} missing, unreadable, or without the magic & \texttt{path: }the io error, or ``not a release oracle'' \\
+a malformed record, mid-run & ``expected an integer, found \texttt{'z'} at byte offset 602'' \\
+\bottomrule
+\end{tabular}
+\caption{The refusals of form and of circumstance, quoted under the rule of
+Table~\ref{tab:refusals-meaning}. The \flag{png} row prints the path and the
+canvas row does not, which is a small inconsistency in the source and not a
+transcription slip. A broken downstream pipe is deliberately \emph{not} here:
+\texttt{| head} exits 0, because downstream going away is not this program's
+failure. Neither is the notice a short matrix prints on stderr --- ``the matrix
+holds 2000 records and this run asked for 5000, so it coloured the 2000 it
+had'' --- which is information and not a refusal, and is on stderr precisely so
+that stdout stays comparable byte for byte with a text run.}
+\label{tab:refusals-form}
+\end{table}
+
+\paragraph{Where the rule leaks.} Three accepted combinations do quietly
+nothing, two do something other than what they read as, and one aborts. They
+are kept here because the alternative is a section claiming a rule the binary
+does not keep.
+
+\begin{enumerate}
+  \item \textbf{\flag{moments} with a picture is accepted, and means
+        \flag{weighted}.} \texttt{500 -{}-moments -{}-png p.png} over
+        \texttt{real2000} is byte-identical to \texttt{500 -{}-weighted
+        -{}-png p.png} (md5 \texttt{59934dd58d4f}) and different from
+        \texttt{500 -{}-png p.png}, which is 1-bit flat ink
+        (\texttt{da4114a1ee28}). The three numbers are dropped --- a picture
+        has no lines --- and all that survives of the flag is that it selected
+        a weighted backend. \flag{sum} in the same position is refused;
+        \flag{moments} is simply never checked.
+  \item \textbf{\flag{gain} with no picture at all is ignored, and not even
+        validated.} \texttt{500 -{}-gain 2}, \texttt{-{}-gain 0},
+        \texttt{-{}-gain -1} and \texttt{-{}-gain inf} all exit 0 with output
+        byte-identical to \texttt{500}. Both gain refusals are real --- refused
+        with \flag{png}, honoured with \flag{fold} --- but they live after the
+        picture-less early return, which names only \flag{blocks}, \flag{bin}
+        and \flag{rows}. It is the one place the flag is inert.
+  \item \textbf{The backend contradictions are asymmetric.} The guard looks
+        backwards at whether a backend was already chosen, so the same pair is
+        refused in one order and silently obeyed in the other. Over
+        \texttt{real2000}: \flag{rings} \flag{weighted} is refused,
+        \flag{weighted} \flag{rings} gives rings (\texttt{c7d24fab0937});
+        \flag{sets} \flag{bands}~64 is refused, \flag{bands}~64 \flag{sets}
+        gives sets (the same md5); \flag{bands}~64 \flag{weighted} gives plain
+        weighted with the bands dropped (\texttt{74952ce95eb0}), while
+        \flag{weighted} \flag{bands}~64 gives bands (\texttt{154215bb3aaf}).
+        Every backend flag is last-wins except the one guard that is not.
+  \item \label{leak:blocks}\textbf{An overridden \flag{bands} still swallows \flag{blocks}.}
+        \texttt{2000 -{}-bands 64 -{}-weighted -{}-blocks 12345} exits 0 with
+        both flags doing nothing --- it is plain \flag{weighted} output ---
+        because \flag{blocks} is \emph{taken} whenever \flag{bands} was named
+        at all, which also lets it escape its own ``\flag{blocks} describes the
+        picture'' refusal, the one it gets when passed alone.
+  \item \textbf{\flag{matrix} catches records on a redirect and not on a pipe.}
+        \texttt{-{}-matrix s.mat < records} is refused by name and byte count;
+        \texttt{cat records | \ldots\ -{}-matrix s.mat} exits 0 and the piped
+        records are read by nothing. The check measures what it can seek over,
+        so the case a user is most likely to type at a 150\,GB file --- down a
+        pipe --- is the case it cannot see.
+  \item \label{leak:abort}\textbf{\flag{bands} with \flag{blocks} aborts instead of refusing.}
+        \flag{bands}~64 \flag{blocks}~0 panics at \texttt{src/bands.rs:113},
+        ``a band needs at least one block'' --- where \flag{blocks}~0 is refused
+        politely everywhere else. \flag{bands}~64 \flag{blocks}~100 over
+        \texttt{synth2000} panics at \texttt{src/bands.rs:123} with exit 134 and
+        ``block 128 is past the 128 blocks the bands cover; pass \flag{blocks}''
+        --- which is wrong about its own number, since 100 was asked for and the
+        coverage rounds up to $64\lceil 100/64 \rceil = 128$. Nothing reaches
+        stdout: the terms go through a 1\,MiB \texttt{BufWriter} the abort
+        never flushes, and \flag{bands} over \texttt{synth2000} writes 8.70
+        bytes a record, so the first flush is some 120\,500 records away. Partial
+        output appears only once a run has filled that buffer before the
+        aborting record. It is the same root as
+        item~\ref{leak:blocks}: \flag{blocks} is taken
+        away from the validation that would have caught it, and an assertion
+        becomes the error handler. It is also
+        exactly the flag a short corpus needs, so the one combination that makes
+        \flag{bands} measurable on a prefix is the one that dies.
+\end{enumerate}
 
 \subsection{Worked examples}
 
@@ -968,21 +1471,42 @@ of the quantity it decomposed --- are deliberately absent.
 
 \section{What is left}
 
-Four items stood here. Three are closed --- the aarch64 kernels are exercised
-(Section~\ref{sec:verification}), the per-transaction byte is written
-(Section~\ref{sec:byte}), and $A$ is on disk (Section~\ref{sec:matrix}) at 10.6\,GB
-rather than the 19.5 this section predicted, and exact where that number was not.
-What the fourth still wants, and what the three left behind:
+All four items that stood here are closed. The aarch64 kernels are exercised
+(Section~\ref{sec:verification}); the per-transaction byte is written
+(Section~\ref{sec:byte}); $A$ is on disk (Section~\ref{sec:matrix}) at 10.6\,GB
+rather than the 19.5 this section predicted, and exact where that number was not;
+and the band vectors have been written.
+
+That last one was the one item here that was a run and not a program, and it
+cost more than it was told it would. \flag{bands} 1024 over the whole chain,
+\flag{threads}~32, off the matrix and under the release oracle: 778\,613\,440
+records in \textbf{5:00:18} at 43\,k records/s and 37.0\,GB resident, writing
+8.67\,TiB that \texttt{zstd -6 -{}-long=27 -T32} took to 1.52\,TiB, 17.54\%.
+Not the 0.94\,TB this section promised --- ten times that, for the reason
+Section~\ref{sec:output} now gives. The audit line closes it: nought live
+colours at the end, all reachable.
+
+It was also, in passing, the first whole-chain solve made off a matrix, which
+was the second item on this list. Five hours of fold on a 10.6\,GB file that
+was not parsed once.
+
+One number came out of it that no prefix could have shown. The lanes are
+\texttt{f32}, and over 778 million records of accumulation the worst drift of a
+colour's mass from one is $3.138\times10^{-5}$ --- against the
+$1.02\times10^{-13}$ the exact \texttt{f64} fold holds
+(Section~\ref{sec:rule}). Eight orders of magnitude, bought knowingly: a band
+lane is half the memory and the whole reason \flag{bands} 1024 fits at all. It
+is a bound on what a banded coefficient means, and it belongs beside the number
+rather than in place of it.
+
+What is left now:
 
 \begin{itemize}
-  \item \textbf{The band vectors themselves} have not been written for the whole
-        chain: about 0.94\,TB, the same fold with the terms writer. It is the one
-        item here that is a run and not a program, and the matrix makes it a
-        cheaper run than it was.
-  \item \textbf{No whole-chain solve has been made off the matrix.} Every
-        equivalence in Section~\ref{sec:matrix} is a prefix, the largest a
-        \flag{sets} pair of 294.6\,GB a side. The whole-chain run is affordable
-        now and has not been spent.
+  \item \textbf{Nothing has read the band vectors back.} 1.67\,TB was written
+        and verified only by the fold that wrote it; the equivalences of
+        Section~\ref{sec:matrix} stop at the 20-million-record prefix. A
+        whole-chain \flag{sets} or \flag{weighted} pair would settle it and is
+        102\,TB a side, so it will not be that pair.
   \item \textbf{aarch64 is correct and untimed.} \texttt{qemu-user} models no
         microarchitecture, so nothing here says what NEON is worth on silicon.
         The Mach-O half of \texttt{asm-check}'s pattern has also only ever been
