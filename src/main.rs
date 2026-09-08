@@ -218,8 +218,90 @@
 //!
 //! It needs weights to mean anything, so it selects [`weighted`] the way
 //! `--sum` does, and contradicts it. Four running sums in one pass over the
-//! terms, so it costs what `--sum` costs: 3.58s against 3.57s over the records
-//! the [`emit`] numbers are taken on.
+//! terms, so it costs nearly what `--sum` costs and not quite: over the records
+//! the [`emit`] numbers are taken on, `--sum` takes 3.69s, 3.71s and 3.72s
+//! where this takes 3.85s, 3.86s and 3.88s — about 4%, a gap eight runs apiece
+//! never closed. The three extra multiply-adds are not where it goes; the line
+//! is. Four columns against two writes 7,606,880 bytes against 3,241,478 over
+//! those records, and two of the three extra fields are another shortest
+//! round-tripping decimal each, which is the most expensive thing this program
+//! formats. (An earlier reading had the two equal, at 3.58s against 3.57s.)
+//!
+//! # The records, already taken apart
+//!
+//! Only five things in a record are ever read — the header's block id and its
+//! transaction id, each input's amount and the transaction it spends, and how
+//! many outputs there are — and the file they are read out of is 150 GB of
+//! parenthesised text.  `--matrix <file>` reads them out of a [`matrix`] file
+//! instead: the same five fields, written down once in the shape the fold
+//! wants them, so that every solve after the first is a sweep over 10.6 GB
+//! rather than a re-parse of 150 GB.  `cargo run --release --example matrix`
+//! writes one, and that page is where the format is, and what each of its
+//! decisions cost.
+//!
+//! It is a swap of readers and nothing under them, so a run with `--matrix`
+//! prints byte for byte what the same run over the records prints.  Over the
+//! first 2,000,000 records of the 2022 chain — 283,104,637 bytes of text
+//! against a 16,121,691-byte matrix — with every pair below held against the
+//! other by `cmp`:
+//!
+//! ```text
+//!                             records     matrix    and they agree on
+//!     --bands 1024 --sum         2.70s      2.15s    42,873,474 bytes
+//!     --bands64 256 --moments    3.20s      2.60s    83,959,641
+//!     --bands 1024 --moments     5.40s      4.69s    86,128,731
+//!     --weighted --sum         278.65s    273.73s    43,054,523
+//!     --weighted --moments     302.73s    301.63s    90,754,069
+//! ```
+//!
+//! Those five are the collapsed forms, whose output is small enough to put on a
+//! disk twice.  `--sets` prints the whole colour, and over these records that is
+//! 294,578,757,229 bytes a side; it was compared as a stream rather than as a
+//! pair of files, and the two are the same byte for byte.  `--rings`, `--sets
+//! --threads 8` and `--weighted` were compared the same way over the first
+//! 200,000 records.  Two sizes there, not one: `--rings` and `--sets` print
+//! block ids and come to 3,497,920,545 bytes, and `--weighted` prints a decimal
+//! coefficient in front of every one of them and comes to 14,700,438,387 --
+//! 4.20x the same colours, and 1:09 to produce, which is why the weighted
+//! stream is the one that cost something to compare.  `--rings` and `--sets`
+//! still hash alike there, so the crate's oldest cross-check survives the
+//! change of reader.
+//!
+//! The first three rows are what the reader is worth and the last two are what
+//! it is not, and both are worth keeping.  Getting these records in costs about
+//! 0.6s more as text than as a matrix; where the colours are still small enough
+//! for the fold to be cheap that is a fifth of the run, and where they have
+//! grown into thousands of blocks the fold is five minutes and the reader is
+//! inside the noise.  What `--matrix` buys at chain length is not that
+//! half-second, it is the 150 GB that no longer has to come off a disk and
+//! through a parser to get at 10.6 GB of content.
+//!
+//! Two things it does not change.  `--threads` still spends its `n` threads on
+//! formatting lines, which is where a text run spends most of itself, and not
+//! the extra one on reading: [`prefetch`] parses text, so a matrix is decoded
+//! here between one colour and the next — worth the half-second the table
+//! above prices it at, against a second definition of what a record is, which
+//! is what a `Records::ahead` for matrices would be.  And the records on
+//! standard input are not read at all: `--matrix` replaces them rather than
+//! adding to them, so a run given both is refused rather than quietly reading
+//! neither -- the usage line ended with an unconditional `< records` for as
+//! long as the flag existed, and copying it put 150 GB next to a matrix that
+//! made it dead weight.
+//!
+//! A matrix written with `--structure` carries the shape of `A` and none of its
+//! amounts, so a weighted backend is refused on it by name rather than quietly
+//! folding equal shares.  Its record count is not held against the run's at
+//! all: a matrix that ends before the record limit prints the rows it has, the
+//! way the text reader prints the records it has and then stops at the end of
+//! the file.  [`oracle`]'s inequality was copied here once and did not carry --
+//! a short oracle answers `NEVER` where the truth is "later" and silently frees
+//! a colour the rest of the run still reads, where a short matrix simply ends,
+//! with no wrong answer anywhere -- and it cost the runs `--matrix` is cheapest
+//! on: the default limit reads 1,000,001 records, so `--sets --matrix` over a
+//! 500,000-row matrix was refused outright while the same run over the same
+//! 500,000 records as text printed its 500,000 lines.  A run that stops short
+//! of a matrix says so on stderr, where it cannot get into the bytes the two
+//! runs are compared on.
 //!
 //! # The other binaries
 //!
@@ -252,6 +334,10 @@ mod colorset;
 // off a copy of a color and so serves all three of them.
 mod emit;
 mod image;
+// The five fields of a record, written down once in the shape the fold reads
+// them, so that a solve is a sweep over 10.6 GB rather than a re-parse of 150.
+// What `--matrix` reads; `examples/matrix.rs` is what writes one.
+mod matrix;
 // The perceptual space the palette ink is built in, and the ramp itself.
 mod oklch;
 // Reading the records once to learn when a colour is dead, rather than holding
@@ -382,6 +468,19 @@ enum Line {
     /// this number is asking about.  The division would buy nothing and would
     /// quietly turn a broken invariant into a plausible number, where a sum that
     /// is not a mean shows up as one.
+    ///
+    /// # Under `--bands`
+    ///
+    /// This is the first moment, which is linear in the colour, so [`bands`]
+    /// carries it exactly beside its lanes and hands it over — the same
+    /// hand-over [`Line::Moments`] takes, and for the same reason.  Summed back
+    /// off the band indices a term would be worth the *centre* of its band, and
+    /// a block-0 coinbase printed 372 at `--bands 1024` and 1,488.5 at `--bands
+    /// 256`; handed over it prints 0.  Over the first 200,000 records of the
+    /// 2022 chain -- the corpus [`Line::Moments`]'s 1.1e-8 is measured on --
+    /// the worst disagreement between `--bands K --sum` and `--weighted --sum`
+    /// is 6.10e-9 blocks, at either width, which is the same bound and for the
+    /// same reason: it is the one number, arrived at the one way.
     Sum,
     /// Three numbers: the mean block id, the spread about it, and the effective
     /// number of blocks.
@@ -420,8 +519,9 @@ enum Line {
     /// four columns and `cut -f2,3,4` is the triple.  Each printed the way
     /// [`Line::Sum`]'s number is, through [`push_f64`].
     ///
-    /// One pass over the terms and four running sums, so this costs what
-    /// [`Line::Sum`] costs; see [`emit::Body`].
+    /// One pass over the terms and four running sums, so this costs nearly what
+    /// [`Line::Sum`] costs — about 4% more, and the extra is the two further
+    /// decimals on the line rather than the arithmetic; see [`emit::Body`].
     ///
     /// # Under `--bands`
     ///
@@ -511,14 +611,38 @@ impl Output {
                 // `bands` does, and only there do the two differ: its terms are
                 // band indices, so summing them puts the mean at a band's
                 // centre.  See `ColorStore::exact_moments`.
-                if *form == Line::Moments {
+                //
+                // Both collapsed forms take the hand-over, not just
+                // `--moments`.  `--sum` is that same first moment printed on
+                // its own, and while it was left out of this it was summed off
+                // the band indices instead: a block-0 coinbase printed 372
+                // under `--bands 1024` and 1,488.5 under `--bands 256` -- half
+                // a band, the exact error the hand-over exists to remove --
+                // and nothing on the command line refused the pair.  Extended
+                // rather than refused, because the store already carries the
+                // number `--sum` wants, exactly, beside its lanes.
+                //
+                // Whether the terms are walked at all is then a third thing.
+                // `--moments` still walks them for the effective count, which
+                // is `mass^2 / sum w^2`, quadratic, and so carried by nothing;
+                // `--sum` has been handed its whole answer and walking them
+                // would add it a second time, since `Body::term`'s `--sum` arm
+                // has no exact moments to skip past.  So a handed-over `--sum`
+                // skips the walk, which is also why a binned `--sum` run is
+                // faster than a binned `--moments` one: 2.70s against 5.40s
+                // over the first 2,000,000 records of the 2022 chain.
+                let mut walk = true;
+                if *form == Line::Moments || *form == Line::Sum {
                     if let Some(moments) = store.exact_moments(color) {
                         body = body.from_exact_moments(moments);
+                        walk = *form != Line::Sum;
                     }
                 }
-                store.for_each_term(color, |exponent, coefficient| {
-                    body.term(exponent, coefficient)
-                });
+                if walk {
+                    store.for_each_term(color, |exponent, coefficient| {
+                        body.term(exponent, coefficient)
+                    });
+                }
                 body.finish();
                 out.write_all(line)
             }
@@ -606,7 +730,8 @@ const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
                      [--threads <n>|auto] \
                      [--png <file>|--pdf <file>|--fold <file>|--view] \
                      [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] [--palette] \
-                     [--release-oracle <file>] < records";
+                     [--release-oracle <file>] [--matrix <file>] \
+                     [< records, unless --matrix]";
 
 /// Which of the three pictures was asked for.
 ///
@@ -669,6 +794,31 @@ fn rewindable_stdin() -> Option<File> {
     None
 }
 
+/// How many bytes of records are still waiting on standard input, for the one
+/// refusal that is about what was *not* asked for.
+///
+/// `--matrix` replaces the records, so a run that is given both has a redirect
+/// nothing will read; [`plan`] refuses that, and this is the number the refusal
+/// names.  Answering it costs no read and cannot block: the handle is already
+/// dup'd and already positioned, so a regular file's remainder is arithmetic on
+/// its metadata.
+///
+/// Zero for everything else, and that is the point of the `is_file` test rather
+/// than a length test alone.  A pipe never reaches here -- [`rewindable_stdin`]
+/// hands back nothing for one -- and `< /dev/null` is a character device, whose
+/// length is a fiction; both of those are the shapes an empty redirect takes,
+/// and neither is somebody handing this run records it asked to ignore.
+fn waiting_records(source: Option<&mut File>) -> u64 {
+    let Some(file) = source else { return 0 };
+    match file.metadata() {
+        Ok(meta) if meta.is_file() => {
+            let at = file.stream_position().unwrap_or(0);
+            meta.len().saturating_sub(at)
+        }
+        _ => 0,
+    }
+}
+
 /// Read the records once without coloring them, for the two numbers the picture
 /// has to know before it can write anything.
 ///
@@ -701,6 +851,139 @@ fn survey(input: impl io::Read, limit: usize) -> io::Result<(usize, usize)> {
     Ok((blocks, records))
 }
 
+/// The same two numbers off a matrix, for a run that stops short of the end of
+/// one.
+///
+/// A matrix's header already holds both for the whole file, so the survey pass
+/// is retired outright whenever the run reaches the end of it.  This is the
+/// other case: a run stopping at record `limit` colours only the blocks the
+/// first `limit` rows reach, and the header's count is one past the largest
+/// block id in *all* of them.  The picture would come out wider than the run
+/// that draws in it, which is a different picture and not the same answer.
+///
+/// It is bounded by the run rather than by the matrix, which is what makes it
+/// cheap: `limit` rows and not a byte more.  The default limit's 1,000,001
+/// rows of a whole-chain matrix are some ten megabytes, against the pass over
+/// the records this replaces, and a run with no limit never gets here at all.
+fn survey_matrix(path: &str, limit: usize) -> io::Result<(usize, usize)> {
+    let mut reader = matrix::Reader::open(path, None)?;
+    let mut inputs: Vec<sexp::Input> = Vec::new();
+    let (mut blocks, mut records) = (0, 0);
+
+    while records < limit {
+        match reader.next_record(&mut inputs)? {
+            Some(record) => blocks = blocks.max(record.block_id + 1),
+            None => break,
+        }
+        records += 1;
+    }
+    Ok((blocks, records))
+}
+
+/// Refuse a matrix that cannot be opened twice, before the second open.
+///
+/// [`survey_matrix`] opens the path again and reads it from the start, which is
+/// a thing only a file can do.  A fifo is the case that matters: the first open
+/// consumed the bytes, and opening it a second time blocks in `File::open`
+/// until somebody writes again -- so a run whose writer has already finished
+/// hangs there forever, with no message and nothing to wait for.  Held against
+/// a `stat` rather than against a timeout, since the question is what the path
+/// *is*, and the same answer covers a socket, a device and a directory.
+///
+/// Only the short runs get here: a run that reaches the end of a matrix takes
+/// both of the picture's dimensions off the header and never opens anything a
+/// second time, so a matrix on a fifo still draws the same picture as one in a
+/// file for every run that reads all of it.
+fn opens_twice(path: &str) -> Result<(), &'static str> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(()),
+        Ok(meta) => Err(kind_of(meta.file_type())),
+        // Nothing to stat is not this function's complaint to make: the matrix
+        // was opened above, so whatever this is, the reader will say it better.
+        Err(_) => Ok(()),
+    }
+}
+
+/// What a path is, for the refusal above to name.
+#[cfg(unix)]
+fn kind_of(file_type: std::fs::FileType) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    if file_type.is_fifo() {
+        "a named pipe"
+    } else if file_type.is_socket() {
+        "a socket"
+    } else if file_type.is_char_device() {
+        "a character device"
+    } else if file_type.is_block_device() {
+        "a block device"
+    } else if file_type.is_dir() {
+        "a directory"
+    } else {
+        "not a file"
+    }
+}
+
+#[cfg(not(unix))]
+fn kind_of(file_type: std::fs::FileType) -> &'static str {
+    if file_type.is_dir() {
+        "a directory"
+    } else {
+        "not a file"
+    }
+}
+
+/// Where the fold's records come from.
+///
+/// An enum for the reason [`Output`] is one: the choice is made once, before
+/// the first record, and what it decides is where a `&[sexp::Input]` is
+/// borrowed from — a borrow that outlives neither arm and so is easier to hand
+/// back from one method than to hide behind a `dyn`.  It is also the whole of
+/// what `--matrix` changes: the fold below this call does not know which of the
+/// two it is being fed, which is what makes the two runs comparable byte for
+/// byte.
+enum Source {
+    /// The records as text, parsed here between one colour and the next or on a
+    /// thread several batches ahead.  See [`prefetch`].
+    Records(prefetch::Records),
+    /// The same records, decoded out of a [`matrix`] file.
+    ///
+    /// Decoded here and never on a thread of its own: [`prefetch`] parses text,
+    /// and a second copy of its batching would be a second definition of what a
+    /// record is.  What that costs is measurable and small — over the first
+    /// 2,000,000 records of the 2022 chain the whole run comes in 0.55s to
+    /// 0.71s *faster* off a matrix than off the records under the three
+    /// `--bands` forms, so the decode is already cheaper than the parse the
+    /// reading thread was hiding, and there is that much less left to hide.
+    /// `--threads` still spends the rest of itself on the formatting, which is
+    /// most of a text run.
+    Matrix {
+        reader: matrix::Reader<File>,
+        inputs: Vec<sexp::Input>,
+        record: Option<sexp::Record>,
+    },
+}
+
+impl Source {
+    /// The next record and its inputs, or `None` at the end.
+    ///
+    /// [`prefetch::Records::next`]'s shape, since one of the arms is that call
+    /// and the other has to be substitutable for it.
+    #[inline]
+    fn next(&mut self) -> io::Result<Option<(&sexp::Record, &[sexp::Input])>> {
+        match self {
+            Source::Records(records) => records.next(),
+            Source::Matrix {
+                reader,
+                inputs,
+                record,
+            } => {
+                *record = reader.next_record(inputs)?;
+                Ok(record.as_ref().map(|r| (r, inputs.as_slice())))
+            }
+        }
+    }
+}
+
 /// Work out where the records come from and where the colors go.
 ///
 /// The two are settled together because a picture states its size before its
@@ -719,10 +1002,74 @@ fn plan(
     threads: usize,
     narrow: bool,
     limit: usize,
-) -> Result<(Output, Box<dyn io::Read + Send>, usize, usize), String> {
+    matrix: Option<&str>,
+    weighted: bool,
+) -> Result<(Output, Source, usize, usize), String> {
     // Held as a file when standard input is one, so that `survey` can read the
     // records and put them back.
     let mut source = rewindable_stdin();
+
+    // The matrix, opened in front of every refusal that needs a record read,
+    // because one of them is about what its header says and a run that is going
+    // to be refused should be refused before it has folded anything.  The one
+    // refusal ahead of even that costs no read at all.
+    let reader = match matrix {
+        None => None,
+        Some(path) => {
+            // `--matrix` replaces the records rather than adding to them, so
+            // records redirected next to it are read by nothing at all.
+            // Refused rather than ignored, the way every other flag that would
+            // quietly do nothing here is -- and the usage line ended with an
+            // unconditional `< records` for as long as this arm existed, so the
+            // redirect is exactly what somebody copying that line would type
+            // next to a 150 GB file.
+            //
+            // It costs no read: `rewindable_stdin` has already dup'd the
+            // descriptor and asked it where it is, so what is still waiting on
+            // a regular file is its length less that offset.  Nothing else
+            // answers -- a pipe refuses the position question and so never gets
+            // a handle at all -- and `< /dev/null` is a character device rather
+            // than a file, so the empty redirect a wrapper script leaves behind
+            // does not fire this.
+            let waiting = waiting_records(source.as_mut());
+            if waiting > 0 {
+                return Err(format!(
+                    "--matrix reads the records out of {}, so the {} bytes still on standard \
+                     input would be read by nothing at all; drop one of the two",
+                    path, waiting
+                ));
+            }
+            // No record count is passed, and the run's own is not computed:
+            // longer than the run and shorter than it are both fine, because a
+            // matrix that runs out of rows ends there, which is what the text
+            // reader does at the end of the file.  The release oracle's
+            // inequality was copied here once and does not carry -- a short
+            // oracle answers `NEVER` where the truth is "later" and silently
+            // corrupts the fold, where a short matrix prints a prefix and
+            // stops -- and what it cost was the cheap runs: the default limit
+            // reads 1,000,001 records, so a 500,000-row matrix was refused
+            // where the same 500,000 records as text printed 500,000 lines,
+            // and only `all` escaped it, which is backwards.  A run that ends
+            // short of its limit says so on stderr, in `run`, where the run
+            // actually ends and where it cannot reach the bytes the matrix and
+            // the records are compared on.
+            let reader = matrix::Reader::open(path, None)
+                .map_err(|e| format!("{}: {}", path, e))?;
+            // A `--structure` matrix keeps the shape of `A` and none of its
+            // amounts, and a reader has to fill the field with something: it
+            // fills a 1, which is an equal share.  That is exactly right for
+            // `--rings` and `--sets`, whose `S::WEIGHTED` is a constant `false`
+            // and which never look at it, and quietly wrong for every backend
+            // that does.  Refused rather than folded, as every other flag that
+            // would silently do something else here is.
+            if weighted {
+                reader
+                    .require_amounts()
+                    .map_err(|e| format!("{}: {}", path, e))?;
+            }
+            Some(reader)
+        }
+    };
 
     let Some((sheet, path)) = picture else {
         if let Some(name) = blocks
@@ -749,7 +1096,7 @@ fn plan(
                 narrow,
             )),
         };
-        return Ok((output, records_from(source), 0, limit));
+        return Ok((output, feed(reader, source, threads), 0, limit));
     };
 
     // A picture has no lines to format, so there is nothing for a pool of
@@ -831,19 +1178,64 @@ fn plan(
     // front of the picture and is not gone back to afterwards, so the records
     // are counted first even when `--blocks` has already settled the width.
     // See `image`.
-    let file = source.as_mut().ok_or_else(|| {
-        "standard input cannot be rewound, so the records cannot be counted before the \
-         picture is drawn: both of a picture's dimensions are settled before the first \
-         record — a PNG states how many rows it has in front of the first one, and a \
-         page has to have its canvas before it can count anything into it — and the \
-         rows are how many records there are.  Redirect the records from a file \
-         (`< records`) rather than through a pipe"
-            .to_string()
-    })?;
-    let start = file.stream_position().map_err(|e| e.to_string())?;
-    let (seen, records) = survey(&*file, limit).map_err(|e| e.to_string())?;
-    file.seek(SeekFrom::Start(start))
-        .map_err(|e| e.to_string())?;
+    let (seen, records) = match matrix {
+        // A matrix states both numbers about itself in its header, so a run
+        // that reaches the end of one settles the picture's size with two `u64`
+        // reads where the records cost a whole pass.  That is the article's
+        // fourth item arriving somewhere the fold is not: nothing is rewound,
+        // nothing is read twice, and a matrix arriving down a pipe draws the
+        // same picture as one in a file -- checked, over a 50,000-record
+        // matrix on a fifo, against the same run over the file.
+        //
+        // A run stopping short of the end still has to know which blocks *its*
+        // rows reach, and `survey_matrix` reads exactly those -- which means
+        // opening the path a second time, so that case does want a file.
+        // Anything else is refused here, in front of the second open rather
+        // than inside it: a fifo whose writer has closed does not fail there,
+        // it blocks in `File::open` and the run hangs with nothing on the
+        // screen.  See `opens_twice`.
+        Some(path) => {
+            let header = reader
+                .as_ref()
+                .expect("the matrix was opened above")
+                .header();
+            if limit as u64 >= header.records {
+                (header.blocks as usize, header.records as usize)
+            } else {
+                if let Err(kind) = opens_twice(path) {
+                    return Err(format!(
+                        "{} is {}, and this run stops at record {} -- short of the {} the \
+                         matrix holds, so the blocks its own rows reach have to be read off \
+                         it a second time, and a second read from the start is what a stream \
+                         cannot give: opening a spent pipe again does not fail, it waits.  \
+                         Give --matrix a file, or let the run reach the end of this one",
+                        path, kind, limit, header.records
+                    ));
+                }
+                survey_matrix(path, limit).map_err(|e| format!("{}: {}", path, e))?
+            }
+        }
+        // Standard input, which has to be read twice and so has to be a file.
+        // Unchanged: this is the pass `--matrix` exists to retire, and it is
+        // still what a run over the records makes.
+        None => {
+            let file = source.as_mut().ok_or_else(|| {
+                "standard input cannot be rewound, so the records cannot be counted before the \
+                 picture is drawn: both of a picture's dimensions are settled before the first \
+                 record — a PNG states how many rows it has in front of the first one, and a \
+                 page has to have its canvas before it can count anything into it — and the \
+                 rows are how many records there are.  Redirect the records from a file \
+                 (`< records`) rather than through a pipe, or write them once as a matrix and \
+                 pass --matrix <file>, whose header says both numbers outright"
+                    .to_string()
+            })?;
+            let start = file.stream_position().map_err(|e| e.to_string())?;
+            let surveyed = survey(&*file, limit).map_err(|e| e.to_string())?;
+            file.seek(SeekFrom::Start(start))
+                .map_err(|e| e.to_string())?;
+            surveyed
+        }
+    };
 
     // Every record carries a block, so no blocks means no records.  There is no
     // picture of nothing — a PNG has to have a column and a row — so this is
@@ -891,7 +1283,7 @@ fn plan(
         #[cfg(not(feature = "gui"))]
         Sheet::Shown => unreachable!("refused before the records were counted"),
     };
-    Ok((output, records_from(source), skip, limit))
+    Ok((output, feed(reader, source, threads), skip, limit))
 }
 
 /// The canvas both folding sheets accumulate into, and a line on stderr saying
@@ -921,6 +1313,30 @@ fn fold(
         rows.div_ceil(down)
     );
     Ok(writer)
+}
+
+/// The records, from whichever of the two `plan` settled on.
+///
+/// `--threads` spends one more thread than it is given: the pool formats and
+/// this one parses, so neither is on the fold's critical path.  There is no
+/// third arm for a matrix, and the doc on [`Source::Matrix`] says what that
+/// costs and why the alternative was not taken.
+fn feed(reader: Option<matrix::Reader<File>>, source: Option<File>, threads: usize) -> Source {
+    match reader {
+        Some(reader) => Source::Matrix {
+            reader,
+            inputs: Vec::new(),
+            record: None,
+        },
+        None => {
+            let input = records_from(source);
+            Source::Records(if threads > 0 {
+                prefetch::Records::ahead(input)
+            } else {
+                prefetch::Records::here(input)
+            })
+        }
+    }
 }
 
 /// The records, from the rewindable handle if there is one and from standard
@@ -1001,6 +1417,9 @@ fn main() -> ExitCode {
     // A file saying, per transaction, which record spends it last -- so a
     // colour can be freed when nothing will read it again.  See `oracle`.
     let mut release_oracle: Option<String> = None;
+    // The records themselves, already taken apart, in place of the text on
+    // standard input.  See `matrix`.
+    let mut matrix: Option<String> = None;
     // 0 is the serial path, which is what runs unless a count is asked for.
     let mut threads: usize = 0;
     // How many bands a `--bands` colour has, once one is asked for.
@@ -1160,6 +1579,11 @@ fn main() -> ExitCode {
                     i += used;
                     continue;
                 }
+                if let Some((path, used)) = option(&args, i, "--matrix") {
+                    matrix = Some(path.to_string());
+                    i += used;
+                    continue;
+                }
                 if let Some((n, used)) = option(&args, i, "--threads") {
                     // `auto` is what the machine says, less one for the fold
                     // thread that feeds the pool -- it is the producer, and
@@ -1259,11 +1683,14 @@ fn main() -> ExitCode {
         // help: the copy is the cost, not the channel.  So this is refused
         // rather than obeyed.
         //
-        // Worth recording that the second row costs what the first does --
-        // 3.58s against 3.57s over the same records.  Four running sums rather
-        // than one is three more multiply-adds a term, and the loop is bound by
-        // walking the color, not by the arithmetic on it, so the two further
-        // moments are free.
+        // Worth recording that the second row costs nearly what the first does
+        // and not quite: 3.69/3.71/3.72s against 3.85/3.86/3.88s over the same
+        // records, about 4%, measured eight runs apiece on an idle machine.
+        // Four running sums rather than one is three more multiply-adds a term
+        // and those really are free -- the loop is bound by walking the color.
+        // What is not free is the line: two of the three extra fields are
+        // another shortest round-tripping decimal each.  (An earlier reading
+        // had the two equal, at 3.58s against 3.57s.)
         if threads > 0 {
             eprintln!(
                 "circular-polynomial: {} prints a few numbers a line, so there is \
@@ -1336,7 +1763,7 @@ fn main() -> ExitCode {
         None => 0,
     };
 
-    let (output, input, skip, limit) =
+    let (output, source, skip, limit) =
         match plan(
             picture,
             blocks,
@@ -1350,22 +1777,17 @@ fn main() -> ExitCode {
             // narrower than the `f64` they travel as.
             backend == Backend::Bands,
             limit,
+            matrix.as_deref(),
+            // Which of the two refusals a `--structure` matrix gets: a store
+            // that shares a colour out in proportion to the amounts needs them
+            // to be there.
+            backend.weighted(),
         ) {
         Ok(plan) => plan,
         Err(message) => {
             eprintln!("circular-polynomial: {}", message);
             return ExitCode::FAILURE;
         }
-    };
-
-    // `--threads` spends one more than it is given: the pool formats and this
-    // one parses, so neither is on the fold's critical path.  Without it the
-    // records are read here, between one colour and the next, exactly as they
-    // always were.
-    let source = if threads > 0 {
-        prefetch::Records::ahead(input)
-    } else {
-        prefetch::Records::here(input)
     };
 
     // The oracle is checked against the run before a record is read, since a
@@ -1428,7 +1850,7 @@ fn run<S: ColorStore>(
     skip: usize,
     stats: bool,
     mut out: Output,
-    mut source: prefetch::Records,
+    mut source: Source,
     oracle: Option<oracle::Oracle>,
 ) -> io::Result<()> {
     let mut store = S::new();
@@ -1653,6 +2075,28 @@ fn run<S: ColorStore>(
         }
     }
 
+    // A matrix that ends before the record limit prints the rows it had and
+    // stops, which is what the records do at the end of the file and why the
+    // limit is no longer held against the header (see `plan`).  It is still
+    // worth saying: a matrix is a derived file, and one that is short is
+    // usually one written for a shorter run than the one being made now.  Said
+    // here because here is where the run actually ends -- the count is known
+    // nowhere else -- and said on stderr because stdout is the thing a matrix
+    // run is held against a text run byte for byte, and a line of this on it
+    // would be the difference.  `all` asks for everything and so is never
+    // short of anything.
+    if records < limit && limit != usize::MAX {
+        if let Source::Matrix { reader, .. } = &source {
+            eprintln!(
+                "circular-polynomial: the matrix holds {} records and this run asked for {}, \
+                 so it coloured the {} it had",
+                reader.records(),
+                limit,
+                records
+            );
+        }
+    }
+
     if stats {
         let elapsed = started.elapsed().as_secs_f64();
         eprintln!(
@@ -1839,8 +2283,10 @@ mod tests {
     }
 
     /// The records as something `run` can read, parsed on this thread.
-    fn source(records: &str) -> prefetch::Records {
-        prefetch::Records::here(Box::new(io::Cursor::new(records.to_string().into_bytes())))
+    fn source(records: &str) -> Source {
+        Source::Records(prefetch::Records::here(Box::new(io::Cursor::new(
+            records.to_string().into_bytes(),
+        ))))
     }
 
     /// Color `records` with the backend `form` implies and answer the lines.
@@ -1861,8 +2307,8 @@ mod tests {
                 .collect::<Vec<String>>()
         };
         let here = read(source(records));
-        let ahead = read(prefetch::Records::ahead(Box::new(io::Cursor::new(
-            records.to_string().into_bytes(),
+        let ahead = read(Source::Records(prefetch::Records::ahead(Box::new(
+            io::Cursor::new(records.to_string().into_bytes()),
         ))));
         assert_eq!(ahead, here, "the two readers coloured the records differently");
         here
@@ -1894,6 +2340,34 @@ mod tests {
                     .collect()
             };
             out.push_str(&record(tx * 3, tx, &spends, 4));
+        }
+        out
+    }
+
+    /// [`mixed`], with the block ids a real chain has: a block is opened by the
+    /// coinbase that mints it and every record after that one is in it until
+    /// the next coinbase.
+    ///
+    /// [`mixed`] puts every transaction in a block of its own, which no chain
+    /// does and which a [`matrix`] cannot even write down: a FOLDMAT row
+    /// carries a block only when it has no inputs, on the argument that every
+    /// other record is in the block the last coinbase opened.  So the matrix
+    /// tests need a corpus that argument is true of, and this is it -- same
+    /// spends, same amounts, same mixing of ancestry, and the blocks stepping
+    /// only where a block really steps.
+    fn blocked(n: usize, mint: usize) -> String {
+        let mut out = String::new();
+        for tx in 0..n {
+            let spends: Vec<(usize, usize)> = if tx % mint == 0 {
+                Vec::new()
+            } else {
+                [1usize, 2, 5]
+                    .iter()
+                    .filter(|k| tx >= **k)
+                    .map(|k| (tx - k, 1 + (tx * 7 + k) % 11))
+                    .collect()
+            };
+            out.push_str(&record((tx - tx % mint) * 3, tx, &spends, 4));
         }
         out
     }
@@ -2436,6 +2910,396 @@ mod tests {
                 serial,
                 "--bands disagreed at {} threads",
                 threads
+            );
+        }
+    }
+
+    /// A matrix of `records`, written the way `examples/matrix.rs` writes one.
+    fn write_matrix(records: &str, path: &str, amounts: bool) {
+        let mut writer = matrix::Writer::create(path, amounts).expect("a matrix to write into");
+        let mut reader = sexp::Reader::new(records.as_bytes());
+        let mut inputs: Vec<sexp::Input> = Vec::new();
+        while let Some(record) = reader.next_record(&mut inputs).expect("well formed records") {
+            writer.push(&record, &inputs).expect("the matrix takes every record");
+        }
+        writer.finish().expect("the matrix closes");
+    }
+
+    /// The same lines as [`lines`], off a matrix rather than off the text.
+    fn matrix_lines<S: ColorStore>(path: &str, form: Line, limit: usize) -> Vec<String> {
+        let sink = Shared::default();
+        let out = Output::text(Box::new(sink.clone()), form);
+        let source = Source::Matrix {
+            reader: matrix::Reader::open(path, None).expect("the matrix opens"),
+            inputs: Vec::new(),
+            record: None,
+        };
+        run::<S>(limit, 0, false, out, source, None).expect("the matrix folds");
+        let written = sink.0.borrow().clone();
+        String::from_utf8(written)
+            .expect("the output is digits and punctuation")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A directory of this process's own, so two test binaries do not write
+    /// over each other -- `image` and `page` name their files the same way.
+    fn scratch(name: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("foldmat-driver-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to write matrices into");
+        dir.join(name).to_string_lossy().into_owned()
+    }
+
+    /// `--matrix` is a swap of readers and nothing below it, so the lines a run
+    /// makes off a matrix are the lines the same run makes off the records the
+    /// matrix was written from -- every backend, every line form, and a prefix
+    /// as well as the whole of it.
+    ///
+    /// This is the crate's verification habit applied to the reader rather than
+    /// to the fold: two implementations of "what a record is", one diff.
+    /// `matrix`'s own `--check` compares the two field by field; this compares
+    /// what the fold makes of them, which is the thing anybody actually reads.
+    #[test]
+    fn a_matrix_folds_to_exactly_what_the_records_do() {
+        let records = blocked(400, 7);
+        let path = scratch("blocked.fm");
+        write_matrix(&records, &path, true);
+
+        // Whole runs, and a prefix, since a matrix stops on the record limit
+        // the way the reader stops on the end of the text.
+        for limit in [usize::MAX, 137] {
+            assert_eq!(
+                matrix_lines::<RingStore>(&path, Line::Terms, limit),
+                lines::<RingStore>(&records, Line::Terms, limit),
+                "--rings over a matrix, limit {}",
+                limit
+            );
+            assert_eq!(
+                matrix_lines::<colorset::SetStore>(&path, Line::Terms, limit),
+                lines::<colorset::SetStore>(&records, Line::Terms, limit),
+                "--sets over a matrix, limit {}",
+                limit
+            );
+            for form in [Line::Terms, Line::Sum, Line::Moments] {
+                assert_eq!(
+                    matrix_lines::<weighted::WeightedSets>(&path, form, limit),
+                    lines::<weighted::WeightedSets>(&records, form, limit),
+                    "--weighted over a matrix, limit {}",
+                    limit
+                );
+            }
+            bands::configure(bands::Layout::new(12, 1200));
+            for form in [Line::Terms, Line::Sum, Line::Moments] {
+                assert_eq!(
+                    matrix_lines::<bands::BandStore<f32>>(&path, form, limit),
+                    lines::<bands::BandStore<f32>>(&records, form, limit),
+                    "--bands over a matrix, limit {}",
+                    limit
+                );
+            }
+        }
+        // And the corpus has to be worth comparing over.
+        assert_eq!(
+            matrix_lines::<weighted::WeightedSets>(&path, Line::Terms, usize::MAX).len(),
+            400
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A `--structure` matrix keeps the shape of `A` and none of its amounts,
+    /// so the unweighted backends fold it exactly and the weighted ones are
+    /// refused by name rather than handed equal shares.
+    #[test]
+    fn a_structure_matrix_is_refused_where_the_weights_matter() {
+        let records = blocked(200, 7);
+        let path = scratch("structure.fm");
+        write_matrix(&records, &path, false);
+
+        // No weights are read, so these are the same lines.
+        assert_eq!(
+            matrix_lines::<colorset::SetStore>(&path, Line::Terms, usize::MAX),
+            lines::<colorset::SetStore>(&records, Line::Terms, usize::MAX)
+        );
+
+        // And the refusal, through the place the command line is settled.
+        let refused = plan(
+            None,
+            None,
+            None,
+            None,
+            None,
+            image::Ink::Weighted,
+            Line::Sum,
+            0,
+            false,
+            usize::MAX,
+            Some(&path),
+            true,
+        )
+        .err()
+        .expect("a weighted fold cannot run on a matrix with no amounts");
+        assert!(
+            refused.contains("--structure"),
+            "the refusal has to name the flag that wrote it: {}",
+            refused
+        );
+        // The same file under an unweighted backend is not refused at all.
+        assert!(plan(
+            None, None, None, None, None, image::Ink::Flat, Line::Terms, 0, false, usize::MAX,
+            Some(&path), false,
+        )
+        .is_ok());
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The same lines again, but taken through `plan` -- the call the binary
+    /// makes -- rather than by opening the matrix here.
+    ///
+    /// [`matrix_lines`] asks the reader for a matrix directly and so says
+    /// nothing about the command line in front of it.  That is where the
+    /// record count was decided, and where it was decided wrongly, so the claim
+    /// about a capped run has to be made on this side of `plan` to mean
+    /// anything.
+    fn planned_lines<S: ColorStore>(
+        path: &str,
+        form: Line,
+        limit: usize,
+        weighted: bool,
+    ) -> Vec<String> {
+        let ink = if weighted {
+            image::Ink::Weighted
+        } else {
+            image::Ink::Flat
+        };
+        // The `Output` this hands back writes to standard output, which is not
+        // where a test reads from; dropped here and replaced with a sink, since
+        // what is under test is the `Source` beside it and the limit beside
+        // that.
+        let (_, source, skip, limit) = plan(
+            None, None, None, None, None, ink, form, 0, false, limit, Some(path), weighted,
+        )
+        .expect("the command line settles");
+        let sink = Shared::default();
+        let out = Output::text(Box::new(sink.clone()), form);
+        run::<S>(limit, skip, false, out, source, None).expect("the matrix folds");
+        let written = sink.0.borrow().clone();
+        String::from_utf8(written)
+            .expect("the output is digits and punctuation")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A matrix that ends before the run's record limit prints the rows it has
+    /// and stops -- exactly what the text reader does at the end of the file.
+    ///
+    /// This is the central claim under a cap, and the cap is the case it was
+    /// broken in.  `plan` used to derive a record count from the limit and
+    /// refuse any matrix written for fewer, so `--sets --matrix 500k.foldmat`
+    /// printed nothing at all -- "written for 500000 records and this run reads
+    /// 1000001" -- where `--sets < 500k-records` printed its 500,000 lines.
+    /// Only `all` escaped the check, which is backwards: the hour-long
+    /// whole-chain run went unchecked and the cheap capped ones were refused.
+    ///
+    /// [`oracle`]'s inequality, which that was copied from, does not carry: a
+    /// short oracle answers `NEVER` where the truth is "later" and silently
+    /// frees a colour the rest of the run still reads, where a short matrix
+    /// simply ends, with no wrong answer anywhere.  So the assertion is not
+    /// that the short matrix is refused, it is that it prints the same prefix
+    /// the records do -- at the default limit, which is the run somebody
+    /// actually types.
+    #[test]
+    fn a_matrix_shorter_than_the_run_prints_the_prefix_it_has() {
+        let records = blocked(50, 7);
+        let path = scratch("short.fm");
+        write_matrix(&records, &path, true);
+
+        // 200 and 1,000,001 rows asked of 50, and the whole of it asked for
+        // exactly: every one of them is the 50 rows the file holds.
+        for limit in [200usize, DEFAULT_LIMIT, 50] {
+            for form in [Line::Terms, Line::Sum, Line::Moments] {
+                assert_eq!(
+                    planned_lines::<weighted::WeightedSets>(&path, form, limit, true),
+                    lines::<weighted::WeightedSets>(&records, form, limit),
+                    "--weighted off a 50-row matrix at limit {}",
+                    limit
+                );
+            }
+            assert_eq!(
+                planned_lines::<colorset::SetStore>(&path, Line::Terms, limit, false),
+                lines::<colorset::SetStore>(&records, Line::Terms, limit),
+                "--sets off a 50-row matrix at limit {}",
+                limit
+            );
+            assert_eq!(
+                planned_lines::<RingStore>(&path, Line::Terms, limit, false).len(),
+                50,
+                "a 50-row matrix has 50 rows to print at limit {}",
+                limit
+            );
+        }
+        // And a limit inside the matrix, which is the case that always worked:
+        // a prefix of the rows, and the same prefix of the records.
+        assert_eq!(
+            planned_lines::<colorset::SetStore>(&path, Line::Terms, 20, false),
+            lines::<colorset::SetStore>(&records, Line::Terms, 20)
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `--matrix` replaces the records, so a redirect next to it is bytes
+    /// nothing in the run will read, and the run says so rather than ignoring
+    /// them.
+    ///
+    /// The number in that refusal is what [`waiting_records`] answers, and this
+    /// is what it has to get right: a regular file counts from where the handle
+    /// stands, and everything an empty redirect looks like counts zero.  The
+    /// refusal itself needs a redirect on descriptor 0, which is not a thing a
+    /// test in this process can arrange; it was checked by hand instead --
+    /// `--sets --matrix d500k.fm < d500k.scm` answers "so the 55090609 bytes
+    /// still on standard input would be read by nothing at all" and exits 1,
+    /// and `< /dev/null` beside the same matrix prints its lines.
+    #[test]
+    fn a_redirect_beside_a_matrix_is_records_nobody_would_read() {
+        let path = scratch("waiting.scm");
+        let records = blocked(20, 7);
+        std::fs::write(&path, &records).expect("a file of records");
+
+        let mut file = File::open(&path).expect("the records open");
+        assert_eq!(waiting_records(Some(&mut file)), records.len() as u64);
+        // Half read is half waiting: the offset is the handle's, not zero.
+        file.seek(SeekFrom::Start(10)).expect("a seekable file");
+        assert_eq!(waiting_records(Some(&mut file)), records.len() as u64 - 10);
+        file.seek(SeekFrom::End(0)).expect("a seekable file");
+        assert_eq!(waiting_records(Some(&mut file)), 0);
+
+        // The two shapes an empty redirect takes.  `< /dev/null` is a character
+        // device, not a file, so it is zero by kind rather than by length --
+        // which is the test that keeps the refusal from firing on a wrapper
+        // script that redirects standard input away.
+        assert_eq!(waiting_records(None), 0, "a pipe hands back no handle at all");
+        if let Ok(mut null) = File::open("/dev/null") {
+            assert_eq!(waiting_records(Some(&mut null)), 0, "/dev/null holds no records");
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A run that stops short of the end of a matrix reads it a second time to
+    /// find which blocks its own rows reach, and a path that cannot be read
+    /// twice is refused before that second open rather than hung on.
+    ///
+    /// The fifo is the case: its writer has closed, the bytes are gone, and
+    /// `File::open` on it does not fail -- it blocks until somebody writes
+    /// again, so the run stops dead with nothing on the screen and nothing to
+    /// wait for.  Confirmed by hand before this guard existed, with a
+    /// `--png` run over a fifo that had to be killed.  A socket and a character
+    /// device are the same answer for the same reason, and a plain file is the
+    /// only thing that passes.
+    #[test]
+    fn a_matrix_a_short_run_cannot_read_twice_is_refused() {
+        let file = scratch("twice.fm");
+        write_matrix(&blocked(20, 7), &file, true);
+        assert!(opens_twice(&file).is_ok(), "a file can be opened twice");
+        // Nothing to stat says nothing here: the matrix is opened before this
+        // is asked, so a missing path is the reader's complaint to make.
+        assert!(opens_twice(&scratch("no-such-matrix.fm")).is_ok());
+
+        assert_eq!(opens_twice("/dev/null"), Err("a character device"));
+        assert_eq!(
+            opens_twice(&scratch("")),
+            Err("a directory"),
+            "the scratch directory is not a matrix"
+        );
+
+        #[cfg(unix)]
+        {
+            let socket = scratch("twice.sock");
+            std::fs::remove_file(&socket).ok();
+            let listener =
+                std::os::unix::net::UnixListener::bind(&socket).expect("a socket to stat");
+            assert_eq!(opens_twice(&socket), Err("a socket"));
+            drop(listener);
+            std::fs::remove_file(&socket).ok();
+
+            // The one that hangs.  `mkfifo` rather than a binding, since this
+            // crate has no libc dependency and one named pipe is not a reason
+            // to take one.
+            let fifo = scratch("twice.fifo");
+            std::fs::remove_file(&fifo).ok();
+            let made = std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if made {
+                assert_eq!(opens_twice(&fifo), Err("a named pipe"));
+                std::fs::remove_file(&fifo).ok();
+            }
+        }
+        std::fs::remove_file(&file).ok();
+    }
+
+    /// `--sum` under `--bands` is the *block* mean, not the band's centre.
+    ///
+    /// The first moment is linear in the colour, so [`bands`] carries it beside
+    /// its lanes exactly as it carries the second, and the collapsed forms take
+    /// it from there rather than summing it back off the band indices.  Summed
+    /// off the indices a term is worth the centre of its band, which is the
+    /// same error `--moments` was given the hand-over to avoid: half a band,
+    /// 372 blocks at `--bands 1024` over the 2022 chain's block count and
+    /// 1,488.5 at `--bands 256`.  Those two numbers are what a block-0 coinbase
+    /// printed before the hand-over was extended past `Line::Moments`, with
+    /// nothing on the command line refusing the combination.
+    ///
+    /// So: the coinbase, at both widths, and then the whole corpus against the
+    /// exact fold at the precision the carried moments are claimed to hold --
+    /// 1.1e-8 blocks, measured over the first 200,000 records of the 2022 chain
+    /// and quoted in `Line::Moments`.
+    #[test]
+    fn the_summed_bands_are_the_exact_first_moment_and_not_a_band_centre() {
+        let coinbase = record(0, 0, &[], 1);
+        for k in [1024usize, 256] {
+            bands::configure(bands::Layout::new(k, bands::CHAIN_BLOCKS));
+            assert_eq!(
+                lines::<bands::BandStore<f32>>(&coinbase, Line::Sum, usize::MAX),
+                vec!["0\t0".to_string()],
+                "a block-0 coinbase over {} bands",
+                k
+            );
+        }
+
+        // And the same hand-over on colours that actually mix blocks: `--sum`
+        // is `--moments`'s first column, so the two have to agree with each
+        // other and both with the exact fold.
+        let records = mixed(400, 7);
+        let exact: Vec<f64> = sums(&records, usize::MAX)
+            .iter()
+            .map(|l| l.split('\t').nth(1).unwrap().parse().unwrap())
+            .collect();
+        for k in [4usize, 12, 64] {
+            bands::configure(bands::Layout::new(k, 1200));
+            let binned = lines::<bands::BandStore<f64>>(&records, Line::Sum, usize::MAX);
+            let means: Vec<f64> = lines::<bands::BandStore<f64>>(&records, Line::Moments, usize::MAX)
+                .iter()
+                .map(|l| l.split('\t').nth(1).unwrap().parse().unwrap())
+                .collect();
+            assert_eq!(binned.len(), exact.len());
+            let mut worst = 0.0f64;
+            for (r, line) in binned.iter().enumerate() {
+                let got: f64 = line.split('\t').nth(1).unwrap().parse().unwrap();
+                worst = worst.max((got - exact[r]).abs());
+                assert!(
+                    (got - means[r]).abs() <= 1e-9 * means[r].abs().max(1.0),
+                    "{} bands, record {}: --sum {} against --moments {}",
+                    k, r, got, means[r]
+                );
+            }
+            assert!(
+                worst <= 1.1e-8,
+                "{} bands: --sum drifted {} blocks from the exact fold",
+                k,
+                worst
             );
         }
     }
