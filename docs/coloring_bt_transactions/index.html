@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Bitcoin transaction colors"><title>coloring_bt_transactions - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate coloring_bt_transactions</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#bitcoin-transaction-colors" title="Bitcoin transaction colors">Bitcoin transaction colors</a></li><li><a href="#a-picture-instead" title="A picture instead">A picture instead</a></li><li><a href="#a-page-instead" title="A page instead">A page instead</a></li><li><a href="#a-window-instead" title="A window instead">A window instead</a></li><li><a href="#backends" title="Backends">Backends</a></li><li><a href="#weighted-colors" title="Weighted colors">Weighted colors</a></li><li><a href="#one-number-instead" title="One number instead">One number instead</a></li><li><a href="#threads" title="Threads">Threads</a></li><li><a href="#the-other-binaries" title="The other binaries">The other binaries</a></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>coloring_<wbr>bt_<wbr>transactions</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/coloring_bt_transactions/main.rs.html#1-1726">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="bitcoin-transaction-colors"><a class="doc-anchor" href="#bitcoin-transaction-colors">§</a>Bitcoin transaction colors</h2>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Bitcoin transaction colors"><title>coloring_bt_transactions - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-0c87338a.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.99.0 (b940084d7 2026-09-28)" data-channel="1.99.0" data-search-js="search-cf4fc35e.js" data-stringdex-js="stringdex-b5109af9.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-9f56287d.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate coloring_bt_transactions</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#bitcoin-transaction-colors" title="Bitcoin transaction colors">Bitcoin transaction colors</a></li><li><a href="#a-picture-instead" title="A picture instead">A picture instead</a></li><li><a href="#a-page-instead" title="A page instead">A page instead</a></li><li><a href="#a-window-instead" title="A window instead">A window instead</a></li><li><a href="#backends" title="Backends">Backends</a></li><li><a href="#weighted-colors" title="Weighted colors">Weighted colors</a></li><li><a href="#one-number-instead" title="One number instead">One number instead</a></li><li><a href="#threads" title="Threads">Threads</a></li><li><a href="#three-numbers-instead" title="Three numbers instead">Three numbers instead</a></li><li><a href="#seven-numbers-that-fold-exactly" title="Seven numbers that fold exactly">Seven numbers that fold exactly</a></li><li><a href="#the-records-already-taken-apart" title="The records, already taken apart">The records, already taken apart</a></li><li><a href="#the-other-binaries" title="The other binaries">The other binaries</a></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#statics" title="Statics">Statics</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>coloring_<wbr>bt_<wbr>transactions</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/coloring_bt_transactions/main.rs.html#1-3690">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="bitcoin-transaction-colors"><a class="doc-anchor" href="#bitcoin-transaction-colors">§</a>Bitcoin transaction colors</h2>
 <p>A port of the driver at the bottom of <code>src/test/circular-polynomial.scm</code>.</p>
 <p>Transaction records stream in on stdin (see <a href="sexp/index.html" title="mod coloring_bt_transactions::sexp"><code>sexp</code></a>).  Each transaction is
 given a <strong>color</strong>: the polynomial whose exponents are the ids of the blocks
@@ -13,7 +13,8 @@ entry, which is also what tells the arena the ring can be reused: the count
 is the whole memory-management story here, and it is why the working set
 tracks the UTXO set rather than the whole chain.</p>
 <p>One line goes out per record: the transaction’s id, a tab, and then the
-color.  What follows the tab is one of two things, and <code>--sum</code> is which:</p>
+color.  What follows the tab is the color in full, or the color collapsed to
+numbers by <code>--sum</code>, <code>--moments</code> or <code>--laplace</code>:</p>
 <ul>
 <li>by default, the color in full — each term as <code>coefficient:exponent</code>, terms
 separated by a comma and nothing trailing the last of them, so a
@@ -22,6 +23,8 @@ takes a term apart: a weighted coefficient carries dots of its own, and
 <code>0.5:3</code> is half a unit of block 3.</li>
 <li>under <code>--sum</code>, one number — <code>sum_b b . weight(b)</code>, the color’s terms added
 up.  See <a href="enum.Line.html#variant.Sum" title="variant coloring_bt_transactions::Line::Sum"><code>Line::Sum</code></a> for what that number is and why it takes weights.</li>
+<li>under <code>--moments</code>, three — <a href="enum.Line.html#variant.Moments" title="variant coloring_bt_transactions::Line::Moments"><code>Line::Moments</code></a>; under <code>--laplace</code>, seven —
+<a href="enum.Line.html#variant.Laplace" title="variant coloring_bt_transactions::Line::Laplace"><code>Line::Laplace</code></a>.</li>
 </ul>
 <h2 id="a-picture-instead"><a class="doc-anchor" href="#a-picture-instead">§</a>A picture instead</h2>
 <p>That output is enormous — a color of a thousand blocks is some nine thousand
@@ -43,6 +46,19 @@ states its height in front of its first scanline too, and the height is the
 number of records, so a picture always reads the records once before it
 colors any of them and always wants an input that can be rewound.</li>
 </ul>
+<p><code>--palette</code> draws that weighted picture through a colour ramp rather than as
+a grey.  The samples are the same numbers and the file is the same size —
+colour type 3 and a <code>PLTE</code> chunk, so the difference on disk is 780 bytes and
+the image data is byte for byte what the greyscale run writes.  What it buys
+is levels: grey has 254 of them and an eye reads perhaps thirty, and the
+weights here live in a fraction of a percent, so most of what the picture
+distinguishes is invisible in it.  The ramp is built in a perceptual space
+and carries the magnitude on lightness, monotonically, so it stays readable
+photocopied and to a colour-deficient eye; see <a href="oklch/index.html" title="mod coloring_bt_transactions::oklch"><code>oklch</code></a>.</p>
+<p>It needs a quantity to spend the levels on, so it wants <code>--weighted</code>, and it
+colours pixels, so it wants <code>--png</code> — the folded outputs shade a cell by how
+much of it is inked and have no sample to look up.  Both are refused rather
+than ignored.</p>
 <h2 id="a-page-instead"><a class="doc-anchor" href="#a-page-instead">§</a>A page instead</h2>
 <p><code>--bin</code> shrinks the picture down one axis, and nothing shrinks it along the
 other: the default run draws 135,659 columns by 1,000,001 rows, which is a
@@ -136,6 +152,126 @@ lines at all, so <code>--png</code>, <code>--pdf</code>, <code>--fold</code> and
 always better: the pool saturates once this thread is the bottleneck, which
 is around 8 for <code>--sets</code> and 16 for <code>--weighted</code> on the records measured
 above, and past that the extra threads only contend.</p>
+<h2 id="three-numbers-instead"><a class="doc-anchor" href="#three-numbers-instead">§</a>Three numbers instead</h2>
+<p><code>--sum</code> is the colour’s first moment and nothing else, which loses more than
+it looks like: a transaction whose coins all came from block 500,000 and one
+that took half its value from block 0 and half from block 1,000,000 print
+the same number, and they could hardly be less alike.</p>
+<p><code>--moments</code> prints the smallest summary that tells them apart — the mean
+block id, the spread about it, and the effective number of blocks, three
+tab-separated fields so a line is four columns:</p>
+<div class="example-wrap"><pre class="language-text"><code>    199999   39946.98043478284   4640.739930886573   459.99999999999346
+    200000   65570.37794351605  10102.826758127023    11.286387658100137
+    200001   94406               0                     1</code></pre></div>
+<p>The first of those rests on some four hundred and sixty blocks, the second
+on eleven despite reaching twice as far across the chain, and the third is a
+coinbase — one block, no spread. <code>--sum</code> gives the first column alone and
+calls the three of them comparable.</p>
+<p>The spread and the effective count are not the same measurement and neither
+implies the other: a colour split evenly between two far-apart blocks has a
+huge spread and an effective count of 2, and one spread thinly over a
+thousand adjacent blocks has a small spread and an effective count of 1000.
+One is a distance along the chain, the other a count of what carries the
+weight — see <a href="enum.Line.html#variant.Moments" title="variant coloring_bt_transactions::Line::Moments"><code>Line::Moments</code></a>.</p>
+<p>It needs weights to mean anything, so it selects <a href="weighted/index.html" title="mod coloring_bt_transactions::weighted"><code>weighted</code></a> the way
+<code>--sum</code> does, and contradicts it. Four running sums in one pass over the
+terms, so it costs nearly what <code>--sum</code> costs and not quite: over the records
+the <a href="emit/index.html" title="mod coloring_bt_transactions::emit"><code>emit</code></a> numbers are taken on, <code>--sum</code> takes 3.69s, 3.71s and 3.72s
+where this takes 3.85s, 3.86s and 3.88s — about 4%, a gap eight runs apiece
+never closed. The three extra multiply-adds are not where it goes; the line
+is. Four columns against two writes 7,606,880 bytes against 3,241,478 over
+those records, and two of the three extra fields are another shortest
+round-tripping decimal each, which is the most expensive thing this program
+formats. (An earlier reading had the two equal, at 3.58s against 3.57s.)</p>
+<h2 id="seven-numbers-that-fold-exactly"><a class="doc-anchor" href="#seven-numbers-that-fold-exactly">§</a>Seven numbers that fold exactly</h2>
+<p>Under <code>--weighted</code> a colour is <code>P(x) = sum_b w_b x^b</code>, and the obvious
+number to read off a polynomial is useless here: the weights sum to 1, so
+<code>P(1)</code> is 1 for every transaction there is.  <code>--laplace</code> evaluates it
+somewhere that is not 1 instead, at seven points:</p>
+<div class="example-wrap"><pre class="language-text"><code>    F(s)  =  P(exp(-s / L))  =  sum_b w_b . exp(-s . b / L),
+             s in 0.5, 1, 2, 4, 8, 16, 32,    L = 762,261</code></pre></div>
+<p>the Laplace transform of the colour as a distribution over blocks, sampled
+on a doubling grid – see <a href="bands/constant.LAPLACE.html" title="constant coloring_bt_transactions::bands::LAPLACE"><code>bands::LAPLACE</code></a> for what each <code>s</code> resolves.  A
+line is the transaction’s id and the seven values, tab-separated, small <code>s</code>
+first.  <code>L</code> is the 2022 chain’s block count rather than the run’s, so a
+value means the same thing in every run.</p>
+<p>Each <code>F(s)</code> is linear in the colour, so it folds exactly through the convex
+combination the way the moments do, and <a href="bands/index.html" title="mod coloring_bt_transactions::bands"><code>bands</code></a> carries all seven beside
+its lanes when asked; and each is a sum of positive terms in
+<code>[exp(-32), 1]</code>, so nothing cancels, nothing overflows, and the binned run
+prints what the exact one does to rounding: over the first 200,000 records
+of the 2022 chain the worst relative disagreement between <code>--bands 1 --laplace</code> and <code>--weighted --laplace</code> is 7.1e-14 in any column, the same at
+<code>--bands 1024</code> and <code>--bands64 1024</code>, and 116,933 of the lines are
+byte-identical.  It grows with depth, as rounding accumulated through more
+combinations does: 1.7e-13 over 300,000 records and 2.6e-13 over 400,000.  The exact run takes 4.44s and the binned one 0.24s.  It
+needs weights, so it selects <a href="weighted/index.html" title="mod coloring_bt_transactions::weighted"><code>weighted</code></a> and contradicts <code>--sum</code> and
+<code>--moments</code> the way they contradict each other, <code>--threads</code> as they do,
+and the pictures as <code>--sum</code> does.  See <a href="enum.Line.html#variant.Laplace" title="variant coloring_bt_transactions::Line::Laplace"><code>Line::Laplace</code></a>.</p>
+<h2 id="the-records-already-taken-apart"><a class="doc-anchor" href="#the-records-already-taken-apart">§</a>The records, already taken apart</h2>
+<p>Only five things in a record are ever read — the header’s block id and its
+transaction id, each input’s amount and the transaction it spends, and how
+many outputs there are — and the file they are read out of is 150 GB of
+parenthesised text.  <code>--matrix &lt;file&gt;</code> reads them out of a <a href="matrix/index.html" title="mod coloring_bt_transactions::matrix"><code>matrix</code></a> file
+instead: the same five fields, written down once in the shape the fold
+wants them, so that every solve after the first is a sweep over 10.6 GB
+rather than a re-parse of 150 GB.  <code>cargo run --release --example matrix</code>
+writes one, and that page is where the format is, and what each of its
+decisions cost.</p>
+<p>It is a swap of readers and nothing under them, so a run with <code>--matrix</code>
+prints byte for byte what the same run over the records prints.  Over the
+first 2,000,000 records of the 2022 chain — 283,104,637 bytes of text
+against a 16,121,691-byte matrix — with every pair below held against the
+other by <code>cmp</code>:</p>
+<div class="example-wrap"><pre class="language-text"><code>                            records     matrix    and they agree on
+    --bands 1024 --sum         2.70s      2.15s    42,873,474 bytes
+    --bands64 256 --moments    3.20s      2.60s    83,959,641
+    --bands 1024 --moments     5.40s      4.69s    86,128,731
+    --weighted --sum         278.65s    273.73s    43,054,523
+    --weighted --moments     302.73s    301.63s    90,754,069</code></pre></div>
+<p>Those five are the collapsed forms, whose output is small enough to put on a
+disk twice.  <code>--sets</code> prints the whole colour, and over these records that is
+294,578,757,229 bytes a side; it was compared as a stream rather than as a
+pair of files, and the two are the same byte for byte.  <code>--rings</code>, <code>--sets --threads 8</code> and <code>--weighted</code> were compared the same way over the first
+200,000 records.  Two sizes there, not one: <code>--rings</code> and <code>--sets</code> print
+block ids and come to 3,497,920,545 bytes, and <code>--weighted</code> prints a decimal
+coefficient in front of every one of them and comes to 14,700,438,387 –
+4.20x the same colours, and 1:09 to produce, which is why the weighted
+stream is the one that cost something to compare.  <code>--rings</code> and <code>--sets</code>
+still hash alike there, so the crate’s oldest cross-check survives the
+change of reader.</p>
+<p>The first three rows are what the reader is worth and the last two are what
+it is not, and both are worth keeping.  Getting these records in costs about
+0.6s more as text than as a matrix; where the colours are still small enough
+for the fold to be cheap that is a fifth of the run, and where they have
+grown into thousands of blocks the fold is five minutes and the reader is
+inside the noise.  What <code>--matrix</code> buys at chain length is not that
+half-second, it is the 150 GB that no longer has to come off a disk and
+through a parser to get at 10.6 GB of content.</p>
+<p>Two things it does not change.  <code>--threads</code> still spends its <code>n</code> threads on
+formatting lines, which is where a text run spends most of itself, and not
+the extra one on reading: <a href="prefetch/index.html" title="mod coloring_bt_transactions::prefetch"><code>prefetch</code></a> parses text, so a matrix is decoded
+here between one colour and the next — worth the half-second the table
+above prices it at, against a second definition of what a record is, which
+is what a <code>Records::ahead</code> for matrices would be.  And the records on
+standard input are not read at all: <code>--matrix</code> replaces them rather than
+adding to them, so a run given both is refused rather than quietly reading
+neither – the usage line ended with an unconditional <code>&lt; records</code> for as
+long as the flag existed, and copying it put 150 GB next to a matrix that
+made it dead weight.</p>
+<p>A matrix written with <code>--structure</code> carries the shape of <code>A</code> and none of its
+amounts, so a weighted backend is refused on it by name rather than quietly
+folding equal shares.  Its record count is not held against the run’s at
+all: a matrix that ends before the record limit prints the rows it has, the
+way the text reader prints the records it has and then stops at the end of
+the file.  <a href="oracle/index.html" title="mod coloring_bt_transactions::oracle"><code>oracle</code></a>’s inequality was copied here once and did not carry –
+a short oracle answers <code>NEVER</code> where the truth is “later” and silently frees
+a colour the rest of the run still reads, where a short matrix simply ends,
+with no wrong answer anywhere – and it cost the runs <code>--matrix</code> is cheapest
+on: the default limit reads 1,000,001 records, so <code>--sets --matrix</code> over a
+500,000-row matrix was refused outright while the same run over the same
+500,000 records as text printed its 500,000 lines.  A run that stops short
+of a matrix says so on stderr, where it cannot get into the bytes the two
+runs are compared on.</p>
 <h2 id="the-other-binaries"><a class="doc-anchor" href="#the-other-binaries">§</a>The other binaries</h2>
 <p>This is the driver, and the rest of the crate is three programs that do
 something else with the same colouring or the same layout.  Each is its own
@@ -153,14 +289,21 @@ the <code>gui</code> feature, since GTK is a C library the rest of the crate has
 reason to want installed, so they are absent from a default <code>cargo doc</code>
 and from these pages; <code>cargo doc --features gui</code> builds them.</li>
 </ul>
-</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="colorset/index.html" title="mod coloring_bt_transactions::colorset">colorset</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Colors as sorted sets of block ids</dd><dt><a class="mod" href="emit/index.html" title="mod coloring_bt_transactions::emit">emit</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Formatting lines on more than one thread</dd><dt><a class="mod" href="image/index.html" title="mod coloring_bt_transactions::image">image</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Colors as a picture</dd><dt><a class="mod" href="page/index.html" title="mod coloring_bt_transactions::page">page</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The same picture, on a page</dd><dt><a class="mod" href="poly/index.html" title="mod coloring_bt_transactions::poly">poly</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Polynomials as circular linked lists</dd><dt><a class="mod" href="prefetch/index.html" title="mod coloring_bt_transactions::prefetch">prefetch</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Reading the records on a thread of its own</dd><dt><a class="mod" href="sexp/index.html" title="mod coloring_bt_transactions::sexp">sexp</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A streaming reader for the transaction records the driver eats.</dd><dt><a class="mod" href="simd/index.html" title="mod coloring_bt_transactions::simd">simd</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Wide byte scanning for the record reader</dd><dt><a class="mod" href="store/index.html" title="mod coloring_bt_transactions::store">store</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>What the driver needs a color to be</dd><dt><a class="mod" href="weighted/index.html" title="mod coloring_bt_transactions::weighted">weighted</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Colors as weighted distributions over block ids</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.Backend.html" title="enum coloring_bt_transactions::Backend">Backend</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Which representation of a color to run with.  See <a href="store/index.html" title="mod coloring_bt_transactions::store"><code>store</code></a> for what the
+</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="bands/index.html" title="mod coloring_bt_transactions::bands">bands</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Colors as fixed vectors of weights over bands of block ids</dd><dt><a class="mod" href="colorset/index.html" title="mod coloring_bt_transactions::colorset">colorset</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Colors as sorted sets of block ids</dd><dt><a class="mod" href="emit/index.html" title="mod coloring_bt_transactions::emit">emit</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Formatting lines on more than one thread</dd><dt><a class="mod" href="image/index.html" title="mod coloring_bt_transactions::image">image</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Colors as a picture</dd><dt><a class="mod" href="matrix/index.html" title="mod coloring_bt_transactions::matrix">matrix</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The matrix, written once and swept over</dd><dt><a class="mod" href="oklch/index.html" title="mod coloring_bt_transactions::oklch">oklch</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A perceptual colour space, and the ramp the picture is drawn in</dd><dt><a class="mod" href="oracle/index.html" title="mod coloring_bt_transactions::oracle">oracle</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Knowing when a colour is dead rather than guessing</dd><dt><a class="mod" href="page/index.html" title="mod coloring_bt_transactions::page">page</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The same picture, on a page</dd><dt><a class="mod" href="poly/index.html" title="mod coloring_bt_transactions::poly">poly</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Polynomials as circular linked lists</dd><dt><a class="mod" href="prefetch/index.html" title="mod coloring_bt_transactions::prefetch">prefetch</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Reading the records on a thread of its own</dd><dt><a class="mod" href="sexp/index.html" title="mod coloring_bt_transactions::sexp">sexp</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A streaming reader for the transaction records the driver eats.</dd><dt><a class="mod" href="simd/index.html" title="mod coloring_bt_transactions::simd">simd</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Wide byte scanning for the record reader</dd><dt><a class="mod" href="store/index.html" title="mod coloring_bt_transactions::store">store</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>What the driver needs a color to be</dd><dt><a class="mod" href="weighted/index.html" title="mod coloring_bt_transactions::weighted">weighted</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Colors as weighted distributions over block ids</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.Backend.html" title="enum coloring_bt_transactions::Backend">Backend</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Which representation of a color to run with.  See <a href="store/index.html" title="mod coloring_bt_transactions::store"><code>store</code></a> for what the
 three have in common and why more than one of them exists.</dd><dt><a class="enum" href="enum.Line.html" title="enum coloring_bt_transactions::Line">Line</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>What a line says about a color, once the transaction’s id and the tab are
-out of the way.  <code>--sum</code> is the choice between them.</dd><dt><a class="enum" href="enum.Output.html" title="enum coloring_bt_transactions::Output">Output</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Where a finished color goes.</dd><dt><a class="enum" href="enum.Sheet.html" title="enum coloring_bt_transactions::Sheet">Sheet</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Which of the three pictures was asked for.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.DEFAULT_LIMIT.html" title="constant coloring_bt_transactions::DEFAULT_LIMIT">DEFAULT_<wbr>LIMIT</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The Scheme stops at <code>(&gt; i 1000000)</code>, i.e. after 1,000,001 records.  Kept as
+out of the way.  <code>--sum</code> is the choice between them.</dd><dt><a class="enum" href="enum.Output.html" title="enum coloring_bt_transactions::Output">Output</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Where a finished color goes.</dd><dt><a class="enum" href="enum.Sheet.html" title="enum coloring_bt_transactions::Sheet">Sheet</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Which of the three pictures was asked for.</dd><dt><a class="enum" href="enum.Source.html" title="enum coloring_bt_transactions::Source">Source</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Where the fold’s records come from.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.DEFAULT_LIMIT.html" title="constant coloring_bt_transactions::DEFAULT_LIMIT">DEFAULT_<wbr>LIMIT</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The Scheme stops at <code>(&gt; i 1000000)</code>, i.e. after 1,000,001 records.  Kept as
 the default so a run reproduces the recorded output; override with <code>argv[1]</code>,
-or pass <code>all</code> for no limit.</dd><dt><a class="constant" href="constant.STATS_EVERY.html" title="constant coloring_bt_transactions::STATS_EVERY">STATS_<wbr>EVERY</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How often <code>--stats</code> reports, in records.</dd><dt><a class="constant" href="constant.USAGE.html" title="constant coloring_bt_transactions::USAGE">USAGE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.choose.html" title="fn coloring_bt_transactions::choose">choose</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Records which picture was asked for, refusing a second one that disagrees.</dd><dt><a class="fn" href="fn.fold.html" title="fn coloring_bt_transactions::fold">fold</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The canvas both folding sheets accumulate into, and a line on stderr saying
+or pass <code>all</code> for no limit.</dd><dt><a class="constant" href="constant.STATS_EVERY.html" title="constant coloring_bt_transactions::STATS_EVERY">STATS_<wbr>EVERY</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How often <code>--stats</code> reports, in records.</dd><dt><a class="constant" href="constant.USAGE.html" title="constant coloring_bt_transactions::USAGE">USAGE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt></dl><h2 id="statics" class="section-header">Statics<a href="#statics" class="anchor">§</a></h2><dl class="item-table"><dt><a class="static" href="static.GLOBAL.html" title="static coloring_bt_transactions::GLOBAL">GLOBAL</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The fold’s heap is a few hundred thousand blocks of tens of kilobytes to a
+megabyte each, freed and reallocated at every merge, and glibc’s malloc
+degrades on exactly that shape: measured at 1.5 M records of the 2022 chain
+a call had gone from 47 ns to 26 us and was a quarter of the fold.  Either of
+these allocators holds the cost flat; the features pick one.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.choose.html" title="fn coloring_bt_transactions::choose">choose</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Records which picture was asked for, refusing a second one that disagrees.</dd><dt><a class="fn" href="fn.feed.html" title="fn coloring_bt_transactions::feed">feed</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The records, from whichever of the two <code>plan</code> settled on.</dd><dt><a class="fn" href="fn.fold.html" title="fn coloring_bt_transactions::fold">fold</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The canvas both folding sheets accumulate into, and a line on stderr saying
 how much of the picture each of its cells is standing for.</dd><dt><a class="fn" href="fn.folded.html" title="fn coloring_bt_transactions::folded">folded</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>What <code>--stats</code> says about a folded picture: the size it would have had, and
-the size it was drawn at.</dd><dt><a class="fn" href="fn.main.html" title="fn coloring_bt_transactions::main">main</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="fn" href="fn.option.html" title="fn coloring_bt_transactions::option">option</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The value of a <code>--name &lt;value&gt;</code> or <code>--name=&lt;value&gt;</code> option at <code>args[i]</code>, with
-how many arguments it took.</dd><dt><a class="fn" href="fn.plan.html" title="fn coloring_bt_transactions::plan">plan</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Work out where the records come from and where the colors go.</dd><dt><a class="fn" href="fn.push_f64.html" title="fn coloring_bt_transactions::push_f64">push_<wbr>f64</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>An <code>f64</code> at full precision: the shortest decimal that reads back as exactly
+the size it was drawn at.</dd><dt><a class="fn" href="fn.kind_of.html" title="fn coloring_bt_transactions::kind_of">kind_of</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>What a path is, for the refusal above to name.</dd><dt><a class="fn" href="fn.main.html" title="fn coloring_bt_transactions::main">main</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="fn" href="fn.opens_twice.html" title="fn coloring_bt_transactions::opens_twice">opens_<wbr>twice</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Refuse a matrix that cannot be opened twice, before the second open.</dd><dt><a class="fn" href="fn.option.html" title="fn coloring_bt_transactions::option">option</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The value of a <code>--name &lt;value&gt;</code> or <code>--name=&lt;value&gt;</code> option at <code>args[i]</code>, with
+how many arguments it took.</dd><dt><a class="fn" href="fn.plan.html" title="fn coloring_bt_transactions::plan">plan</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Work out where the records come from and where the colors go.</dd><dt><a class="fn" href="fn.push_f32.html" title="fn coloring_bt_transactions::push_f32">push_<wbr>f32</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The same for an <code>f32</code>: the shortest decimal that reads back as this <code>f32</code>,
+which is what a <code>--bands</code> weight is.  Printing it through <a href="fn.push_f64.html" title="fn coloring_bt_transactions::push_f64"><code>push_f64</code></a> would
+be correct and twice as long – <code>0.35835019</code> against <code>0.3583501875400543</code>,
+the latter being what it takes to read back as the same <code>f64</code>.</dd><dt><a class="fn" href="fn.push_f64.html" title="fn coloring_bt_transactions::push_f64">push_<wbr>f64</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>An <code>f64</code> at full precision: the shortest decimal that reads back as exactly
 this number, which is what Rust’s <code>Display</code> gives and what every float this
 program prints — a term’s coefficient, and <code>--sum</code>’s one number — goes
 through.</dd><dt><a class="fn" href="fn.push_int.html" title="fn coloring_bt_transactions::push_int">push_<wbr>int</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Decimal, straight into the line buffer.  <code>write!</code> would do it too, but its
@@ -168,4 +311,6 @@ formatting machinery is a real cost across a million lines of thousands of
 terms each.</dd><dt><a class="fn" href="fn.rate.html" title="fn coloring_bt_transactions::rate">rate</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd><code>records</code> over <code>seconds</code>, short enough to hold a fixed column.</dd><dt><a class="fn" href="fn.records_from.html" title="fn coloring_bt_transactions::records_from">records_<wbr>from</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The records, from the rewindable handle if there is one and from standard
 input as it comes otherwise.</dd><dt><a class="fn" href="fn.rewindable_stdin.html" title="fn coloring_bt_transactions::rewindable_stdin">rewindable_<wbr>stdin</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Standard input, as something that can be read a second time — when the
 platform and the shell allow it.</dd><dt><a class="fn" href="fn.run.html" title="fn coloring_bt_transactions::run">run</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="fn" href="fn.survey.html" title="fn coloring_bt_transactions::survey">survey</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Read the records once without coloring them, for the two numbers the picture
-has to know before it can write anything.</dd></dl></section></div></main></body></html>
+has to know before it can write anything.</dd><dt><a class="fn" href="fn.survey_matrix.html" title="fn coloring_bt_transactions::survey_matrix">survey_<wbr>matrix</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The same two numbers off a matrix, for a run that stops short of the end of
+one.</dd><dt><a class="fn" href="fn.waiting_records.html" title="fn coloring_bt_transactions::waiting_records">waiting_<wbr>records</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How many bytes of records are still waiting on standard input, for the one
+refusal that is about what was <em>not</em> asked for.</dd></dl></section></div></main></body></html>

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["combine_into"],"struct":["Terms","WeightedSets"],"type":["Color"]};
+window.SIDEBAR_ITEMS = {"fn":["combine_into","put"],"struct":["Terms","WeightedSets"],"type":["Color"]};

@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/weighted.rs`."><title>weighted.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0 (88d9e12ae 2026-08-18)" data-channel="1.98.0" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">coloring_bt_transactions/</div>weighted.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! # Colors as weighted distributions over block ids
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/weighted.rs`."><title>weighted.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-0c87338a.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.99.0 (b940084d7 2026-09-28)" data-channel="1.99.0" data-search-js="search-cf4fc35e.js" data-stringdex-js="stringdex-b5109af9.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-9f56287d.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">coloring_bt_transactions/</div>weighted.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! # Colors as weighted distributions over block ids
 <a href=#2 id=2 data-nosnippet>2</a>//!
 <a href=#3 id=3 data-nosnippet>3</a>//! The backend behind `--weighted`.  Where [`crate::colorset`] answers *which*
 <a href=#4 id=4 data-nosnippet>4</a>//! blocks a transaction's coins came from, this answers *how much of it* came
@@ -50,400 +50,544 @@
 <a href=#50 id=50 data-nosnippet>50</a>//!
 <a href=#51 id=51 data-nosnippet>51</a>//! Both are flat loops over contiguous `f64`, which vectorise.  The merge finds
 <a href=#52 id=52 data-nosnippet>52</a>//! the runs; the vector unit does them.
-<a href=#53 id=53 data-nosnippet>53</a>
-<a href=#54 id=54 data-nosnippet>54</a></span><span class="kw">use </span><span class="kw">crate</span>::simd;
-<a href=#55 id=55 data-nosnippet>55</a><span class="kw">use </span><span class="kw">crate</span>::store::ColorStore;
-<a href=#56 id=56 data-nosnippet>56</a><span class="kw">use </span>std::collections::HashSet;
-<a href=#57 id=57 data-nosnippet>57</a><span class="kw">use </span>std::rc::Rc;
-<a href=#58 id=58 data-nosnippet>58</a>
-<a href=#59 id=59 data-nosnippet>59</a><span class="doccomment">/// Blocks ascending, weights alongside.  Always the same length.
-<a href=#60 id=60 data-nosnippet>60</a></span><span class="kw">pub struct </span>Terms {
-<a href=#61 id=61 data-nosnippet>61</a>    blocks: Box&lt;[u32]&gt;,
-<a href=#62 id=62 data-nosnippet>62</a>    weights: Box&lt;[f64]&gt;,
-<a href=#63 id=63 data-nosnippet>63</a>}
-<a href=#64 id=64 data-nosnippet>64</a>
-<a href=#65 id=65 data-nosnippet>65</a><span class="kw">impl </span>Terms {
-<a href=#66 id=66 data-nosnippet>66</a>    <span class="kw">fn </span>len(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
-<a href=#67 id=67 data-nosnippet>67</a>        <span class="self">self</span>.blocks.len()
-<a href=#68 id=68 data-nosnippet>68</a>    }
-<a href=#69 id=69 data-nosnippet>69</a>}
-<a href=#70 id=70 data-nosnippet>70</a>
-<a href=#71 id=71 data-nosnippet>71</a><span class="kw">pub type </span>Color = Rc&lt;Terms&gt;;
-<a href=#72 id=72 data-nosnippet>72</a>
-<a href=#73 id=73 data-nosnippet>73</a><span class="kw">pub struct </span>WeightedSets {
-<a href=#74 id=74 data-nosnippet>74</a>    <span class="doccomment">/// The merge builds here and is frozen into an `Rc` once its length is
-<a href=#75 id=75 data-nosnippet>75</a>    /// known, so no merge reallocates after the first few records.
-<a href=#76 id=76 data-nosnippet>76</a>    </span>blocks: Vec&lt;u32&gt;,
-<a href=#77 id=77 data-nosnippet>77</a>    weights: Vec&lt;f64&gt;,
-<a href=#78 id=78 data-nosnippet>78</a>    live: usize,
-<a href=#79 id=79 data-nosnippet>79</a>    peak: usize,
-<a href=#80 id=80 data-nosnippet>80</a>    <span class="doccomment">/// The largest `|sum of weights - 1|` seen in a finished color.  Every color
-<a href=#81 id=81 data-nosnippet>81</a>    /// is a distribution, so this is the accumulated floating-point drift and
-<a href=#82 id=82 data-nosnippet>82</a>    /// nothing else; if it ever stops being tiny, the arithmetic is wrong.
-<a href=#83 id=83 data-nosnippet>83</a>    </span>drift: f64,
+<a href=#53 id=53 data-nosnippet>53</a>//!
+<a href=#54 id=54 data-nosnippet>54</a>//! That the runs are long is not an assumption: counted over records 1.4-1.5 M
+<a href=#55 id=55 data-nosnippet>55</a>//! of the 2022 chain, 97% of the terms a merge writes arrive in runs, the
+<a href=#56 id=56 data-nosnippet>56</a>//! one-sided ones averaging 1,900 blocks and the shared ones 140.  Colours at
+<a href=#57 id=57 data-nosnippet>57</a>//! that depth are near-copies of a few common ancestors, not independent
+<a href=#58 id=58 data-nosnippet>58</a>//! mixtures.  A block-at-a-time gear for the short runs was built and measured
+<a href=#59 id=59 data-nosnippet>59</a>//! -- 12 to 9 ns a term on synthetic colours that *were* independent mixtures,
+<a href=#60 id=60 data-nosnippet>60</a>//! and nothing on the real chain, where it could reach 3% of the terms -- and
+<a href=#61 id=61 data-nosnippet>61</a>//! dropped.
+<a href=#62 id=62 data-nosnippet>62</a>//!
+<a href=#63 id=63 data-nosnippet>63</a>//! ## Where the memory goes, and how it is allocated
+<a href=#64 id=64 data-nosnippet>64</a>//!
+<a href=#65 id=65 data-nosnippet>65</a>//! A colour is two boxed slices, allocated exactly once at their final length
+<a href=#66 id=66 data-nosnippet>66</a>//! -- or at an upper bound and shrunk in place, for a merge, whose length is
+<a href=#67 id=67 data-nosnippet>67</a>//! not known until it has run.  Nothing is staged and copied.  That relies on
+<a href=#68 id=68 data-nosnippet>68</a>//! the allocator shrinking without moving and without waste, which jemalloc
+<a href=#69 id=69 data-nosnippet>69</a>//! does and glibc's malloc and mimalloc were measured not to (see the features
+<a href=#70 id=70 data-nosnippet>70</a>//! in `Cargo.toml`): on the same 1.5 M records the resident set was 32.0 GB
+<a href=#71 id=71 data-nosnippet>71</a>//! under jemalloc, 37.4 GB under glibc and 39.8 GB under mimalloc.  The store
+<a href=#72 id=72 data-nosnippet>72</a>//! is what runs into this machine's memory, so the allocator is not a detail.
+<a href=#73 id=73 data-nosnippet>73</a>
+<a href=#74 id=74 data-nosnippet>74</a></span><span class="kw">use </span><span class="kw">crate</span>::simd;
+<a href=#75 id=75 data-nosnippet>75</a><span class="kw">use </span>std::mem::MaybeUninit;
+<a href=#76 id=76 data-nosnippet>76</a><span class="kw">use </span><span class="kw">crate</span>::store::ColorStore;
+<a href=#77 id=77 data-nosnippet>77</a><span class="kw">use </span>std::collections::HashSet;
+<a href=#78 id=78 data-nosnippet>78</a><span class="kw">use </span>std::rc::Rc;
+<a href=#79 id=79 data-nosnippet>79</a>
+<a href=#80 id=80 data-nosnippet>80</a><span class="doccomment">/// Blocks ascending, weights alongside.  Always the same length.
+<a href=#81 id=81 data-nosnippet>81</a></span><span class="kw">pub struct </span>Terms {
+<a href=#82 id=82 data-nosnippet>82</a>    blocks: Box&lt;[u32]&gt;,
+<a href=#83 id=83 data-nosnippet>83</a>    weights: Box&lt;[f64]&gt;,
 <a href=#84 id=84 data-nosnippet>84</a>}
 <a href=#85 id=85 data-nosnippet>85</a>
-<a href=#86 id=86 data-nosnippet>86</a><span class="kw">impl </span>WeightedSets {
-<a href=#87 id=87 data-nosnippet>87</a>    <span class="kw">fn </span>intern(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; Color {
-<a href=#88 id=88 data-nosnippet>88</a>        <span class="kw">let </span>color = Rc::new(Terms {
-<a href=#89 id=89 data-nosnippet>89</a>            blocks: <span class="self">self</span>.blocks.as_slice().into(),
-<a href=#90 id=90 data-nosnippet>90</a>            weights: <span class="self">self</span>.weights.as_slice().into(),
-<a href=#91 id=91 data-nosnippet>91</a>        });
-<a href=#92 id=92 data-nosnippet>92</a>        <span class="self">self</span>.live += color.len();
-<a href=#93 id=93 data-nosnippet>93</a>        <span class="self">self</span>.peak = <span class="self">self</span>.peak.max(<span class="self">self</span>.live);
-<a href=#94 id=94 data-nosnippet>94</a>        color
-<a href=#95 id=95 data-nosnippet>95</a>    }
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a>    <span class="doccomment">/// Room for `n` blocks and `n` weights, with the lengths already set so the
-<a href=#98 id=98 data-nosnippet>98</a>    /// merge can write through slices rather than pushing.
-<a href=#99 id=99 data-nosnippet>99</a>    </span><span class="kw">fn </span>stage(<span class="kw-2">&amp;mut </span><span class="self">self</span>, n: usize) {
-<a href=#100 id=100 data-nosnippet>100</a>        <span class="self">self</span>.blocks.clear();
-<a href=#101 id=101 data-nosnippet>101</a>        <span class="self">self</span>.weights.clear();
-<a href=#102 id=102 data-nosnippet>102</a>        <span class="self">self</span>.blocks.resize(n, <span class="number">0</span>);
-<a href=#103 id=103 data-nosnippet>103</a>        <span class="self">self</span>.weights.resize(n, <span class="number">0.0</span>);
-<a href=#104 id=104 data-nosnippet>104</a>    }
-<a href=#105 id=105 data-nosnippet>105</a>
-<a href=#106 id=106 data-nosnippet>106</a>}
-<a href=#107 id=107 data-nosnippet>107</a>
-<a href=#108 id=108 data-nosnippet>108</a><span class="doccomment">/// `wa * a + wb * b` into the staging slices, answering how many terms it wrote.
-<a href=#109 id=109 data-nosnippet>109</a>///
-<a href=#110 id=110 data-nosnippet>110</a>/// One pass over both inputs.  A run that only one side has is copied and scaled
-<a href=#111 id=111 data-nosnippet>111</a>/// through [`simd::scale_into`]; a run they share goes through
-<a href=#112 id=112 data-nosnippet>112</a>/// [`simd::scale_add_into`].  Finding those runs is the scalar part, and it is
-<a href=#113 id=113 data-nosnippet>113</a>/// the part that resists vectorising — which is why the loop below looks for
-<a href=#114 id=114 data-nosnippet>114</a>/// *runs* rather than stepping one block at a time: the longer the runs, the
-<a href=#115 id=115 data-nosnippet>115</a>/// more of the work lands in the vector helpers.
-<a href=#116 id=116 data-nosnippet>116</a></span><span class="kw">fn </span>combine_into(
-<a href=#117 id=117 data-nosnippet>117</a>    out_blocks: <span class="kw-2">&amp;mut </span>[u32],
-<a href=#118 id=118 data-nosnippet>118</a>    out_weights: <span class="kw-2">&amp;mut </span>[f64],
-<a href=#119 id=119 data-nosnippet>119</a>    a: <span class="kw-2">&amp;</span>Terms,
-<a href=#120 id=120 data-nosnippet>120</a>    wa: f64,
-<a href=#121 id=121 data-nosnippet>121</a>    b: <span class="kw-2">&amp;</span>Terms,
-<a href=#122 id=122 data-nosnippet>122</a>    wb: f64,
-<a href=#123 id=123 data-nosnippet>123</a>) -&gt; usize {
-<a href=#124 id=124 data-nosnippet>124</a>    <span class="kw">let </span>(<span class="kw-2">mut </span>i, <span class="kw-2">mut </span>j, <span class="kw-2">mut </span>k) = (<span class="number">0usize</span>, <span class="number">0usize</span>, <span class="number">0usize</span>);
+<a href=#86 id=86 data-nosnippet>86</a><span class="kw">impl </span>Terms {
+<a href=#87 id=87 data-nosnippet>87</a>    <span class="kw">fn </span>len(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
+<a href=#88 id=88 data-nosnippet>88</a>        <span class="self">self</span>.blocks.len()
+<a href=#89 id=89 data-nosnippet>89</a>    }
+<a href=#90 id=90 data-nosnippet>90</a>}
+<a href=#91 id=91 data-nosnippet>91</a>
+<a href=#92 id=92 data-nosnippet>92</a><span class="kw">pub type </span>Color = Rc&lt;Terms&gt;;
+<a href=#93 id=93 data-nosnippet>93</a>
+<a href=#94 id=94 data-nosnippet>94</a><span class="kw">pub struct </span>WeightedSets {
+<a href=#95 id=95 data-nosnippet>95</a>    live: usize,
+<a href=#96 id=96 data-nosnippet>96</a>    peak: usize,
+<a href=#97 id=97 data-nosnippet>97</a>    <span class="doccomment">/// The largest `|sum of weights - 1|` seen in a finished color.  Every color
+<a href=#98 id=98 data-nosnippet>98</a>    /// is a distribution, so this is the accumulated floating-point drift and
+<a href=#99 id=99 data-nosnippet>99</a>    /// nothing else; if it ever stops being tiny, the arithmetic is wrong.
+<a href=#100 id=100 data-nosnippet>100</a>    </span>drift: f64,
+<a href=#101 id=101 data-nosnippet>101</a>}
+<a href=#102 id=102 data-nosnippet>102</a>
+<a href=#103 id=103 data-nosnippet>103</a><span class="kw">impl </span>WeightedSets {
+<a href=#104 id=104 data-nosnippet>104</a>    <span class="doccomment">/// Freeze a finished pair of arrays into a colour.
+<a href=#105 id=105 data-nosnippet>105</a>    ///
+<a href=#106 id=106 data-nosnippet>106</a>    /// The vectors arrive with their length set to what was written and their
+<a href=#107 id=107 data-nosnippet>107</a>    /// capacity at whatever upper bound the caller had, and `into_boxed_slice`
+<a href=#108 id=108 data-nosnippet>108</a>    /// gives the difference back — a `realloc` downward, which jemalloc does in
+<a href=#109 id=109 data-nosnippet>109</a>    /// place and to size (glibc and mimalloc do not; see the module docs).
+<a href=#110 id=110 data-nosnippet>110</a>    /// Nothing is copied here, and that is the point: the merge used to build
+<a href=#111 id=111 data-nosnippet>111</a>    /// into a staging buffer that was zeroed first and copied out after, and at
+<a href=#112 id=112 data-nosnippet>112</a>    /// depth in the 2022 chain the zeroing, the copy and the `malloc` behind it
+<a href=#113 id=113 data-nosnippet>113</a>    /// were half the fold.
+<a href=#114 id=114 data-nosnippet>114</a>    </span><span class="kw">fn </span>intern(<span class="kw-2">&amp;mut </span><span class="self">self</span>, blocks: Vec&lt;u32&gt;, weights: Vec&lt;f64&gt;) -&gt; Color {
+<a href=#115 id=115 data-nosnippet>115</a>        <span class="macro">debug_assert_eq!</span>(blocks.len(), weights.len());
+<a href=#116 id=116 data-nosnippet>116</a>        <span class="kw">let </span>color = Rc::new(Terms {
+<a href=#117 id=117 data-nosnippet>117</a>            blocks: blocks.into_boxed_slice(),
+<a href=#118 id=118 data-nosnippet>118</a>            weights: weights.into_boxed_slice(),
+<a href=#119 id=119 data-nosnippet>119</a>        });
+<a href=#120 id=120 data-nosnippet>120</a>        <span class="self">self</span>.live += color.len();
+<a href=#121 id=121 data-nosnippet>121</a>        <span class="self">self</span>.peak = <span class="self">self</span>.peak.max(<span class="self">self</span>.live);
+<a href=#122 id=122 data-nosnippet>122</a>        color
+<a href=#123 id=123 data-nosnippet>123</a>    }
+<a href=#124 id=124 data-nosnippet>124</a>}
 <a href=#125 id=125 data-nosnippet>125</a>
-<a href=#126 id=126 data-nosnippet>126</a>    <span class="kw">while </span>i &lt; a.len() &amp;&amp; j &lt; b.len() {
-<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span>(ka, kb) = (a.blocks[i], b.blocks[j]);
-<a href=#128 id=128 data-nosnippet>128</a>
-<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw">if </span>ka &lt; kb {
-<a href=#130 id=130 data-nosnippet>130</a>            <span class="comment">// A run of A that B does not reach yet: scale and copy it whole.
-<a href=#131 id=131 data-nosnippet>131</a>            </span><span class="kw">let </span>run = a.blocks[i..].partition_point(|<span class="kw-2">&amp;</span>x| x &lt; kb);
-<a href=#132 id=132 data-nosnippet>132</a>            out_blocks[k..k + run].copy_from_slice(<span class="kw-2">&amp;</span>a.blocks[i..i + run]);
-<a href=#133 id=133 data-nosnippet>133</a>            simd::scale_into(
-<a href=#134 id=134 data-nosnippet>134</a>                <span class="kw-2">&amp;mut </span>out_weights[k..k + run],
-<a href=#135 id=135 data-nosnippet>135</a>                <span class="kw-2">&amp;</span>a.weights[i..i + run],
-<a href=#136 id=136 data-nosnippet>136</a>                wa,
-<a href=#137 id=137 data-nosnippet>137</a>            );
-<a href=#138 id=138 data-nosnippet>138</a>            i += run;
-<a href=#139 id=139 data-nosnippet>139</a>            k += run;
-<a href=#140 id=140 data-nosnippet>140</a>        } <span class="kw">else if </span>kb &lt; ka {
-<a href=#141 id=141 data-nosnippet>141</a>            <span class="kw">let </span>run = b.blocks[j..].partition_point(|<span class="kw-2">&amp;</span>x| x &lt; ka);
-<a href=#142 id=142 data-nosnippet>142</a>            out_blocks[k..k + run].copy_from_slice(<span class="kw-2">&amp;</span>b.blocks[j..j + run]);
-<a href=#143 id=143 data-nosnippet>143</a>            simd::scale_into(
-<a href=#144 id=144 data-nosnippet>144</a>                <span class="kw-2">&amp;mut </span>out_weights[k..k + run],
-<a href=#145 id=145 data-nosnippet>145</a>                <span class="kw-2">&amp;</span>b.weights[j..j + run],
-<a href=#146 id=146 data-nosnippet>146</a>                wb,
-<a href=#147 id=147 data-nosnippet>147</a>            );
-<a href=#148 id=148 data-nosnippet>148</a>            j += run;
-<a href=#149 id=149 data-nosnippet>149</a>            k += run;
-<a href=#150 id=150 data-nosnippet>150</a>        } <span class="kw">else </span>{
-<a href=#151 id=151 data-nosnippet>151</a>            <span class="comment">// A run both sides carry, block for block.  Common: colors that
-<a href=#152 id=152 data-nosnippet>152</a>            // share an ancestor share whole stretches of its support.
-<a href=#153 id=153 data-nosnippet>153</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>run = <span class="number">1</span>;
-<a href=#154 id=154 data-nosnippet>154</a>            <span class="kw">while </span>i + run &lt; a.len()
-<a href=#155 id=155 data-nosnippet>155</a>                &amp;&amp; j + run &lt; b.len()
-<a href=#156 id=156 data-nosnippet>156</a>                &amp;&amp; a.blocks[i + run] == b.blocks[j + run]
-<a href=#157 id=157 data-nosnippet>157</a>            {
-<a href=#158 id=158 data-nosnippet>158</a>                run += <span class="number">1</span>;
-<a href=#159 id=159 data-nosnippet>159</a>            }
-<a href=#160 id=160 data-nosnippet>160</a>            out_blocks[k..k + run].copy_from_slice(<span class="kw-2">&amp;</span>a.blocks[i..i + run]);
-<a href=#161 id=161 data-nosnippet>161</a>            simd::scale_add_into(
-<a href=#162 id=162 data-nosnippet>162</a>                <span class="kw-2">&amp;mut </span>out_weights[k..k + run],
-<a href=#163 id=163 data-nosnippet>163</a>                <span class="kw-2">&amp;</span>a.weights[i..i + run],
-<a href=#164 id=164 data-nosnippet>164</a>                wa,
-<a href=#165 id=165 data-nosnippet>165</a>                <span class="kw-2">&amp;</span>b.weights[j..j + run],
-<a href=#166 id=166 data-nosnippet>166</a>                wb,
-<a href=#167 id=167 data-nosnippet>167</a>            );
-<a href=#168 id=168 data-nosnippet>168</a>            i += run;
-<a href=#169 id=169 data-nosnippet>169</a>            j += run;
-<a href=#170 id=170 data-nosnippet>170</a>            k += run;
-<a href=#171 id=171 data-nosnippet>171</a>        }
-<a href=#172 id=172 data-nosnippet>172</a>    }
-<a href=#173 id=173 data-nosnippet>173</a>
-<a href=#174 id=174 data-nosnippet>174</a>    <span class="comment">// Whatever is left of one side is a single scaled run.
-<a href=#175 id=175 data-nosnippet>175</a>    </span><span class="kw">let </span>rest_a = a.len() - i;
-<a href=#176 id=176 data-nosnippet>176</a>    out_blocks[k..k + rest_a].copy_from_slice(<span class="kw-2">&amp;</span>a.blocks[i..]);
-<a href=#177 id=177 data-nosnippet>177</a>    simd::scale_into(<span class="kw-2">&amp;mut </span>out_weights[k..k + rest_a], <span class="kw-2">&amp;</span>a.weights[i..], wa);
-<a href=#178 id=178 data-nosnippet>178</a>    k += rest_a;
-<a href=#179 id=179 data-nosnippet>179</a>
-<a href=#180 id=180 data-nosnippet>180</a>    <span class="kw">let </span>rest_b = b.len() - j;
-<a href=#181 id=181 data-nosnippet>181</a>    out_blocks[k..k + rest_b].copy_from_slice(<span class="kw-2">&amp;</span>b.blocks[j..]);
-<a href=#182 id=182 data-nosnippet>182</a>    simd::scale_into(<span class="kw-2">&amp;mut </span>out_weights[k..k + rest_b], <span class="kw-2">&amp;</span>b.weights[j..], wb);
-<a href=#183 id=183 data-nosnippet>183</a>    k + rest_b
-<a href=#184 id=184 data-nosnippet>184</a>}
-<a href=#185 id=185 data-nosnippet>185</a>
-<a href=#186 id=186 data-nosnippet>186</a><span class="kw">impl </span>ColorStore <span class="kw">for </span>WeightedSets {
-<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">type </span>Color = Color;
-<a href=#188 id=188 data-nosnippet>188</a>
-<a href=#189 id=189 data-nosnippet>189</a>    <span class="kw">const </span>WEIGHTED: bool = <span class="bool-val">true</span>;
-<a href=#190 id=190 data-nosnippet>190</a>
-<a href=#191 id=191 data-nosnippet>191</a>    <span class="kw">fn </span>new() -&gt; <span class="self">Self </span>{
-<a href=#192 id=192 data-nosnippet>192</a>        WeightedSets {
-<a href=#193 id=193 data-nosnippet>193</a>            blocks: Vec::new(),
-<a href=#194 id=194 data-nosnippet>194</a>            weights: Vec::new(),
-<a href=#195 id=195 data-nosnippet>195</a>            live: <span class="number">0</span>,
-<a href=#196 id=196 data-nosnippet>196</a>            peak: <span class="number">0</span>,
-<a href=#197 id=197 data-nosnippet>197</a>            drift: <span class="number">0.0</span>,
-<a href=#198 id=198 data-nosnippet>198</a>        }
-<a href=#199 id=199 data-nosnippet>199</a>    }
-<a href=#200 id=200 data-nosnippet>200</a>
-<a href=#201 id=201 data-nosnippet>201</a>    <span class="kw">fn </span>singleton(<span class="kw-2">&amp;mut </span><span class="self">self</span>, block: usize) -&gt; Color {
-<a href=#202 id=202 data-nosnippet>202</a>        <span class="kw">let </span>block = u32::try_from(block)
-<a href=#203 id=203 data-nosnippet>203</a>            .unwrap_or_else(|<span class="kw">_</span>| <span class="macro">panic!</span>(<span class="string">"block id {} does not fit in a u32 — see weighted"</span>, block));
-<a href=#204 id=204 data-nosnippet>204</a>        <span class="self">self</span>.stage(<span class="number">1</span>);
-<a href=#205 id=205 data-nosnippet>205</a>        <span class="self">self</span>.blocks[<span class="number">0</span>] = block;
-<a href=#206 id=206 data-nosnippet>206</a>        <span class="self">self</span>.weights[<span class="number">0</span>] = <span class="number">1.0</span>;
-<a href=#207 id=207 data-nosnippet>207</a>        <span class="self">self</span>.intern()
-<a href=#208 id=208 data-nosnippet>208</a>    }
-<a href=#209 id=209 data-nosnippet>209</a>
-<a href=#210 id=210 data-nosnippet>210</a>    <span class="kw">fn </span>combine(<span class="kw-2">&amp;mut </span><span class="self">self</span>, a: <span class="kw-2">&amp;</span>Color, wa: f64, b: <span class="kw-2">&amp;</span>Color, wb: f64) -&gt; Color {
-<a href=#211 id=211 data-nosnippet>211</a>        <span class="kw">if </span>a.len() == <span class="number">0 </span>{
-<a href=#212 id=212 data-nosnippet>212</a>            <span class="kw">return </span><span class="self">self</span>.scale(b, wb);
-<a href=#213 id=213 data-nosnippet>213</a>        }
-<a href=#214 id=214 data-nosnippet>214</a>        <span class="kw">if </span>b.len() == <span class="number">0 </span>{
-<a href=#215 id=215 data-nosnippet>215</a>            <span class="kw">return </span><span class="self">self</span>.scale(a, wa);
-<a href=#216 id=216 data-nosnippet>216</a>        }
-<a href=#217 id=217 data-nosnippet>217</a>
-<a href=#218 id=218 data-nosnippet>218</a>        <span class="comment">// Unlike the unweighted store there is no shortcut for `a` and `b` being
-<a href=#219 id=219 data-nosnippet>219</a>        // the same allocation: `wa * C + wb * C` is `(wa + wb) * C`, which is
-<a href=#220 id=220 data-nosnippet>220</a>        // still a scale rather than nothing.
-<a href=#221 id=221 data-nosnippet>221</a>        </span><span class="kw">if </span>Rc::ptr_eq(a, b) {
-<a href=#222 id=222 data-nosnippet>222</a>            <span class="kw">return </span><span class="self">self</span>.scale(a, wa + wb);
-<a href=#223 id=223 data-nosnippet>223</a>        }
-<a href=#224 id=224 data-nosnippet>224</a>
-<a href=#225 id=225 data-nosnippet>225</a>        <span class="self">self</span>.stage(a.len() + b.len());
-<a href=#226 id=226 data-nosnippet>226</a>        <span class="kw">let </span><span class="kw-2">mut </span>blocks = std::mem::take(<span class="kw-2">&amp;mut </span><span class="self">self</span>.blocks);
-<a href=#227 id=227 data-nosnippet>227</a>        <span class="kw">let </span><span class="kw-2">mut </span>weights = std::mem::take(<span class="kw-2">&amp;mut </span><span class="self">self</span>.weights);
-<a href=#228 id=228 data-nosnippet>228</a>        <span class="kw">let </span>written = combine_into(<span class="kw-2">&amp;mut </span>blocks, <span class="kw-2">&amp;mut </span>weights, a, wa, b, wb);
-<a href=#229 id=229 data-nosnippet>229</a>        blocks.truncate(written);
-<a href=#230 id=230 data-nosnippet>230</a>        weights.truncate(written);
-<a href=#231 id=231 data-nosnippet>231</a>        <span class="self">self</span>.blocks = blocks;
-<a href=#232 id=232 data-nosnippet>232</a>        <span class="self">self</span>.weights = weights;
-<a href=#233 id=233 data-nosnippet>233</a>        <span class="self">self</span>.intern()
-<a href=#234 id=234 data-nosnippet>234</a>    }
-<a href=#235 id=235 data-nosnippet>235</a>
-<a href=#236 id=236 data-nosnippet>236</a>    <span class="kw">fn </span>scale(<span class="kw-2">&amp;mut </span><span class="self">self</span>, color: <span class="kw-2">&amp;</span>Color, w: f64) -&gt; Color {
-<a href=#237 id=237 data-nosnippet>237</a>        <span class="comment">// Weight 1 changes nothing, and a transaction with a single input is
-<a href=#238 id=238 data-nosnippet>238</a>        // exactly that case -- its one ancestor contributes all of the value.
-<a href=#239 id=239 data-nosnippet>239</a>        // Sharing rather than rebuilding keeps the commonest shape free.
-<a href=#240 id=240 data-nosnippet>240</a>        </span><span class="kw">if </span>w == <span class="number">1.0 </span>{
-<a href=#241 id=241 data-nosnippet>241</a>            <span class="kw">return </span><span class="self">self</span>.share(color);
-<a href=#242 id=242 data-nosnippet>242</a>        }
-<a href=#243 id=243 data-nosnippet>243</a>        <span class="self">self</span>.stage(color.len());
-<a href=#244 id=244 data-nosnippet>244</a>        <span class="self">self</span>.blocks.copy_from_slice(<span class="kw-2">&amp;</span>color.blocks);
-<a href=#245 id=245 data-nosnippet>245</a>        <span class="kw">let </span><span class="kw-2">mut </span>weights = std::mem::take(<span class="kw-2">&amp;mut </span><span class="self">self</span>.weights);
-<a href=#246 id=246 data-nosnippet>246</a>        simd::scale_into(<span class="kw-2">&amp;mut </span>weights, <span class="kw-2">&amp;</span>color.weights, w);
-<a href=#247 id=247 data-nosnippet>247</a>        <span class="self">self</span>.weights = weights;
-<a href=#248 id=248 data-nosnippet>248</a>        <span class="self">self</span>.intern()
-<a href=#249 id=249 data-nosnippet>249</a>    }
-<a href=#250 id=250 data-nosnippet>250</a>
-<a href=#251 id=251 data-nosnippet>251</a>    <span class="kw">fn </span>share(<span class="kw-2">&amp;mut </span><span class="self">self</span>, color: <span class="kw-2">&amp;</span>Color) -&gt; Color {
-<a href=#252 id=252 data-nosnippet>252</a>        Rc::clone(color)
-<a href=#253 id=253 data-nosnippet>253</a>    }
-<a href=#254 id=254 data-nosnippet>254</a>
-<a href=#255 id=255 data-nosnippet>255</a>    <span class="doccomment">/// Every finished color is a distribution, so its weights sum to 1 and
-<a href=#256 id=256 data-nosnippet>256</a>    /// anything else is accumulated floating-point drift.  Tracking the worst of
-<a href=#257 id=257 data-nosnippet>257</a>    /// it turns the invariant into something a run can actually report.
-<a href=#258 id=258 data-nosnippet>258</a>    </span><span class="kw">fn </span>observe(<span class="kw-2">&amp;mut </span><span class="self">self</span>, color: <span class="kw-2">&amp;</span>Color) {
-<a href=#259 id=259 data-nosnippet>259</a>        <span class="kw">let </span>total: f64 = color.weights.iter().sum();
-<a href=#260 id=260 data-nosnippet>260</a>        <span class="self">self</span>.drift = <span class="self">self</span>.drift.max((total - <span class="number">1.0</span>).abs());
-<a href=#261 id=261 data-nosnippet>261</a>    }
-<a href=#262 id=262 data-nosnippet>262</a>
-<a href=#263 id=263 data-nosnippet>263</a>    <span class="kw">fn </span>release(<span class="kw-2">&amp;mut </span><span class="self">self</span>, color: Color) {
-<a href=#264 id=264 data-nosnippet>264</a>        <span class="kw">if </span>Rc::strong_count(<span class="kw-2">&amp;</span>color) == <span class="number">1 </span>{
-<a href=#265 id=265 data-nosnippet>265</a>            <span class="self">self</span>.live -= color.len();
-<a href=#266 id=266 data-nosnippet>266</a>        }
-<a href=#267 id=267 data-nosnippet>267</a>    }
-<a href=#268 id=268 data-nosnippet>268</a>
-<a href=#269 id=269 data-nosnippet>269</a>    <span class="kw">fn </span>for_each_term(<span class="kw-2">&amp;</span><span class="self">self</span>, color: <span class="kw-2">&amp;</span>Color, <span class="kw-2">mut </span>f: <span class="kw">impl </span>FnMut(usize, f64)) {
-<a href=#270 id=270 data-nosnippet>270</a>        <span class="comment">// Stored ascending because that is what a merge wants; printed in
-<a href=#271 id=271 data-nosnippet>271</a>        // decreasing exponent order, like the polynomial it stands in for.
-<a href=#272 id=272 data-nosnippet>272</a>        </span><span class="kw">for </span>k <span class="kw">in </span>(<span class="number">0</span>..color.len()).rev() {
-<a href=#273 id=273 data-nosnippet>273</a>            f(color.blocks[k] <span class="kw">as </span>usize, color.weights[k]);
-<a href=#274 id=274 data-nosnippet>274</a>        }
-<a href=#275 id=275 data-nosnippet>275</a>    }
-<a href=#276 id=276 data-nosnippet>276</a>
-<a href=#277 id=277 data-nosnippet>277</a>    <span class="kw">fn </span>usage(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (usize, usize) {
-<a href=#278 id=278 data-nosnippet>278</a>        (<span class="self">self</span>.live, <span class="self">self</span>.peak)
-<a href=#279 id=279 data-nosnippet>279</a>    }
-<a href=#280 id=280 data-nosnippet>280</a>
-<a href=#281 id=281 data-nosnippet>281</a>    <span class="kw">fn </span>usage_labels(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) {
-<a href=#282 id=282 data-nosnippet>282</a>        (<span class="string">"live terms"</span>, <span class="string">"peak terms"</span>)
+<a href=#126 id=126 data-nosnippet>126</a><span class="doccomment">/// `dst[..src.len()] = src`, into memory that has not been initialised.
+<a href=#127 id=127 data-nosnippet>127</a>///
+<a href=#128 id=128 data-nosnippet>128</a>/// What `copy_from_slice` is for the block ids once the destination is a fresh
+<a href=#129 id=129 data-nosnippet>129</a>/// allocation rather than a zeroed buffer.  The standard library has this as
+<a href=#130 id=130 data-nosnippet>130</a>/// `MaybeUninit::copy_from_slice`, but not on stable yet.
+<a href=#131 id=131 data-nosnippet>131</a></span><span class="attr">#[inline]
+<a href=#132 id=132 data-nosnippet>132</a></span><span class="kw">fn </span>put(dst: <span class="kw-2">&amp;mut </span>[MaybeUninit&lt;u32&gt;], src: <span class="kw-2">&amp;</span>[u32]) {
+<a href=#133 id=133 data-nosnippet>133</a>    <span class="macro">assert!</span>(dst.len() &gt;= src.len(), <span class="string">"run of {} into room for {}"</span>, src.len(), dst.len());
+<a href=#134 id=134 data-nosnippet>134</a>    <span class="comment">// SAFETY: `src` is a live slice of `src.len()` initialised `u32`s, `dst` has
+<a href=#135 id=135 data-nosnippet>135</a>    // room for at least that many, and the two cannot overlap -- one borrows a
+<a href=#136 id=136 data-nosnippet>136</a>    // finished colour, the other the allocation being built.
+<a href=#137 id=137 data-nosnippet>137</a>    </span><span class="kw">unsafe </span>{
+<a href=#138 id=138 data-nosnippet>138</a>        std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr() <span class="kw">as </span><span class="kw-2">*mut </span>u32, src.len());
+<a href=#139 id=139 data-nosnippet>139</a>    }
+<a href=#140 id=140 data-nosnippet>140</a>}
+<a href=#141 id=141 data-nosnippet>141</a>
+<a href=#142 id=142 data-nosnippet>142</a><span class="doccomment">/// `wa * a + wb * b` into fresh, uninitialised output slices, answering how
+<a href=#143 id=143 data-nosnippet>143</a>/// many terms it wrote.  Every element below that count is initialised on
+<a href=#144 id=144 data-nosnippet>144</a>/// return; nothing above it is touched.
+<a href=#145 id=145 data-nosnippet>145</a>///
+<a href=#146 id=146 data-nosnippet>146</a>/// One pass over both inputs.  A run that only one side has is copied and scaled
+<a href=#147 id=147 data-nosnippet>147</a>/// through [`simd::scale_into_uninit`]; a run they share goes through
+<a href=#148 id=148 data-nosnippet>148</a>/// [`simd::scale_add_into_uninit`].  Finding those runs is the scalar part, and
+<a href=#149 id=149 data-nosnippet>149</a>/// it is the part that resists vectorising — which is why the loop below looks
+<a href=#150 id=150 data-nosnippet>150</a>/// for *runs* rather than stepping one block at a time: the longer the runs, the
+<a href=#151 id=151 data-nosnippet>151</a>/// more of the work lands in the vector helpers.
+<a href=#152 id=152 data-nosnippet>152</a>///
+<a href=#153 id=153 data-nosnippet>153</a>/// Two things about how the runs are found, both measured on the real chain
+<a href=#154 id=154 data-nosnippet>154</a>/// where colours reach a hundred thousand blocks:
+<a href=#155 id=155 data-nosnippet>155</a>///
+<a href=#156 id=156 data-nosnippet>156</a>/// - the one-sided run is found by galloping ([`simd::leading_below`]) rather
+<a href=#157 id=157 data-nosnippet>157</a>///   than bisecting the whole remainder, because bisection's probes land far
+<a href=#158 id=158 data-nosnippet>158</a>///   ahead of where the merge is streaming and miss the cache, and most runs are
+<a href=#159 id=159 data-nosnippet>159</a>///   short next to the colour;
+<a href=#160 id=160 data-nosnippet>160</a>/// - the shared run is found four blocks at a time ([`simd::common_prefix`]),
+<a href=#161 id=161 data-nosnippet>161</a>///   since a scalar walk of it was one dependent compare per block over stretches
+<a href=#162 id=162 data-nosnippet>162</a>///   that are exactly as long as the colours are shared, which is most of them.
+<a href=#163 id=163 data-nosnippet>163</a></span><span class="kw">fn </span>combine_into(
+<a href=#164 id=164 data-nosnippet>164</a>    out_blocks: <span class="kw-2">&amp;mut </span>[MaybeUninit&lt;u32&gt;],
+<a href=#165 id=165 data-nosnippet>165</a>    out_weights: <span class="kw-2">&amp;mut </span>[MaybeUninit&lt;f64&gt;],
+<a href=#166 id=166 data-nosnippet>166</a>    a: <span class="kw-2">&amp;</span>Terms,
+<a href=#167 id=167 data-nosnippet>167</a>    wa: f64,
+<a href=#168 id=168 data-nosnippet>168</a>    b: <span class="kw-2">&amp;</span>Terms,
+<a href=#169 id=169 data-nosnippet>169</a>    wb: f64,
+<a href=#170 id=170 data-nosnippet>170</a>) -&gt; usize {
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="kw">let </span>(<span class="kw-2">mut </span>i, <span class="kw-2">mut </span>j, <span class="kw-2">mut </span>k) = (<span class="number">0usize</span>, <span class="number">0usize</span>, <span class="number">0usize</span>);
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a>    <span class="kw">while </span>i &lt; a.len() &amp;&amp; j &lt; b.len() {
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">let </span>(ka, kb) = (a.blocks[i], b.blocks[j]);
+<a href=#175 id=175 data-nosnippet>175</a>
+<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">if </span>ka &lt; kb {
+<a href=#177 id=177 data-nosnippet>177</a>            <span class="comment">// A run of A that B does not reach yet: scale and copy it whole.
+<a href=#178 id=178 data-nosnippet>178</a>            </span><span class="kw">let </span>run = simd::leading_below(<span class="kw-2">&amp;</span>a.blocks[i..], kb);
+<a href=#179 id=179 data-nosnippet>179</a>            put(<span class="kw-2">&amp;mut </span>out_blocks[k..k + run], <span class="kw-2">&amp;</span>a.blocks[i..i + run]);
+<a href=#180 id=180 data-nosnippet>180</a>            simd::scale_into_uninit(
+<a href=#181 id=181 data-nosnippet>181</a>                <span class="kw-2">&amp;mut </span>out_weights[k..k + run],
+<a href=#182 id=182 data-nosnippet>182</a>                <span class="kw-2">&amp;</span>a.weights[i..i + run],
+<a href=#183 id=183 data-nosnippet>183</a>                wa,
+<a href=#184 id=184 data-nosnippet>184</a>            );
+<a href=#185 id=185 data-nosnippet>185</a>            i += run;
+<a href=#186 id=186 data-nosnippet>186</a>            k += run;
+<a href=#187 id=187 data-nosnippet>187</a>        } <span class="kw">else if </span>kb &lt; ka {
+<a href=#188 id=188 data-nosnippet>188</a>            <span class="kw">let </span>run = simd::leading_below(<span class="kw-2">&amp;</span>b.blocks[j..], ka);
+<a href=#189 id=189 data-nosnippet>189</a>            put(<span class="kw-2">&amp;mut </span>out_blocks[k..k + run], <span class="kw-2">&amp;</span>b.blocks[j..j + run]);
+<a href=#190 id=190 data-nosnippet>190</a>            simd::scale_into_uninit(
+<a href=#191 id=191 data-nosnippet>191</a>                <span class="kw-2">&amp;mut </span>out_weights[k..k + run],
+<a href=#192 id=192 data-nosnippet>192</a>                <span class="kw-2">&amp;</span>b.weights[j..j + run],
+<a href=#193 id=193 data-nosnippet>193</a>                wb,
+<a href=#194 id=194 data-nosnippet>194</a>            );
+<a href=#195 id=195 data-nosnippet>195</a>            j += run;
+<a href=#196 id=196 data-nosnippet>196</a>            k += run;
+<a href=#197 id=197 data-nosnippet>197</a>        } <span class="kw">else </span>{
+<a href=#198 id=198 data-nosnippet>198</a>            <span class="comment">// A run both sides carry, block for block.  Common: colors that
+<a href=#199 id=199 data-nosnippet>199</a>            // share an ancestor share whole stretches of its support.
+<a href=#200 id=200 data-nosnippet>200</a>            </span><span class="kw">let </span>run = simd::common_prefix(<span class="kw-2">&amp;</span>a.blocks[i..], <span class="kw-2">&amp;</span>b.blocks[j..]);
+<a href=#201 id=201 data-nosnippet>201</a>            put(<span class="kw-2">&amp;mut </span>out_blocks[k..k + run], <span class="kw-2">&amp;</span>a.blocks[i..i + run]);
+<a href=#202 id=202 data-nosnippet>202</a>            simd::scale_add_into_uninit(
+<a href=#203 id=203 data-nosnippet>203</a>                <span class="kw-2">&amp;mut </span>out_weights[k..k + run],
+<a href=#204 id=204 data-nosnippet>204</a>                <span class="kw-2">&amp;</span>a.weights[i..i + run],
+<a href=#205 id=205 data-nosnippet>205</a>                wa,
+<a href=#206 id=206 data-nosnippet>206</a>                <span class="kw-2">&amp;</span>b.weights[j..j + run],
+<a href=#207 id=207 data-nosnippet>207</a>                wb,
+<a href=#208 id=208 data-nosnippet>208</a>            );
+<a href=#209 id=209 data-nosnippet>209</a>            i += run;
+<a href=#210 id=210 data-nosnippet>210</a>            j += run;
+<a href=#211 id=211 data-nosnippet>211</a>            k += run;
+<a href=#212 id=212 data-nosnippet>212</a>        }
+<a href=#213 id=213 data-nosnippet>213</a>    }
+<a href=#214 id=214 data-nosnippet>214</a>
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="comment">// Whatever is left of one side is a single scaled run.
+<a href=#216 id=216 data-nosnippet>216</a>    </span><span class="kw">let </span>rest_a = a.len() - i;
+<a href=#217 id=217 data-nosnippet>217</a>    put(<span class="kw-2">&amp;mut </span>out_blocks[k..k + rest_a], <span class="kw-2">&amp;</span>a.blocks[i..]);
+<a href=#218 id=218 data-nosnippet>218</a>    simd::scale_into_uninit(<span class="kw-2">&amp;mut </span>out_weights[k..k + rest_a], <span class="kw-2">&amp;</span>a.weights[i..], wa);
+<a href=#219 id=219 data-nosnippet>219</a>    k += rest_a;
+<a href=#220 id=220 data-nosnippet>220</a>
+<a href=#221 id=221 data-nosnippet>221</a>    <span class="kw">let </span>rest_b = b.len() - j;
+<a href=#222 id=222 data-nosnippet>222</a>    put(<span class="kw-2">&amp;mut </span>out_blocks[k..k + rest_b], <span class="kw-2">&amp;</span>b.blocks[j..]);
+<a href=#223 id=223 data-nosnippet>223</a>    simd::scale_into_uninit(<span class="kw-2">&amp;mut </span>out_weights[k..k + rest_b], <span class="kw-2">&amp;</span>b.weights[j..], wb);
+<a href=#224 id=224 data-nosnippet>224</a>    k + rest_b
+<a href=#225 id=225 data-nosnippet>225</a>}
+<a href=#226 id=226 data-nosnippet>226</a>
+<a href=#227 id=227 data-nosnippet>227</a><span class="kw">impl </span>ColorStore <span class="kw">for </span>WeightedSets {
+<a href=#228 id=228 data-nosnippet>228</a>    <span class="kw">type </span>Color = Color;
+<a href=#229 id=229 data-nosnippet>229</a>
+<a href=#230 id=230 data-nosnippet>230</a>    <span class="kw">const </span>WEIGHTED: bool = <span class="bool-val">true</span>;
+<a href=#231 id=231 data-nosnippet>231</a>
+<a href=#232 id=232 data-nosnippet>232</a>    <span class="kw">fn </span>new() -&gt; <span class="self">Self </span>{
+<a href=#233 id=233 data-nosnippet>233</a>        WeightedSets {
+<a href=#234 id=234 data-nosnippet>234</a>            live: <span class="number">0</span>,
+<a href=#235 id=235 data-nosnippet>235</a>            peak: <span class="number">0</span>,
+<a href=#236 id=236 data-nosnippet>236</a>            drift: <span class="number">0.0</span>,
+<a href=#237 id=237 data-nosnippet>237</a>        }
+<a href=#238 id=238 data-nosnippet>238</a>    }
+<a href=#239 id=239 data-nosnippet>239</a>
+<a href=#240 id=240 data-nosnippet>240</a>    <span class="kw">fn </span>singleton(<span class="kw-2">&amp;mut </span><span class="self">self</span>, block: usize) -&gt; Color {
+<a href=#241 id=241 data-nosnippet>241</a>        <span class="kw">let </span>block = u32::try_from(block)
+<a href=#242 id=242 data-nosnippet>242</a>            .unwrap_or_else(|<span class="kw">_</span>| <span class="macro">panic!</span>(<span class="string">"block id {} does not fit in a u32 — see weighted"</span>, block));
+<a href=#243 id=243 data-nosnippet>243</a>        <span class="self">self</span>.intern(<span class="macro">vec!</span>[block], <span class="macro">vec!</span>[<span class="number">1.0</span>])
+<a href=#244 id=244 data-nosnippet>244</a>    }
+<a href=#245 id=245 data-nosnippet>245</a>
+<a href=#246 id=246 data-nosnippet>246</a>    <span class="kw">fn </span>combine(<span class="kw-2">&amp;mut </span><span class="self">self</span>, a: <span class="kw-2">&amp;</span>Color, wa: f64, b: <span class="kw-2">&amp;</span>Color, wb: f64) -&gt; Color {
+<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">if </span>a.len() == <span class="number">0 </span>{
+<a href=#248 id=248 data-nosnippet>248</a>            <span class="kw">return </span><span class="self">self</span>.scale(b, wb);
+<a href=#249 id=249 data-nosnippet>249</a>        }
+<a href=#250 id=250 data-nosnippet>250</a>        <span class="kw">if </span>b.len() == <span class="number">0 </span>{
+<a href=#251 id=251 data-nosnippet>251</a>            <span class="kw">return </span><span class="self">self</span>.scale(a, wa);
+<a href=#252 id=252 data-nosnippet>252</a>        }
+<a href=#253 id=253 data-nosnippet>253</a>
+<a href=#254 id=254 data-nosnippet>254</a>        <span class="comment">// Unlike the unweighted store there is no shortcut for `a` and `b` being
+<a href=#255 id=255 data-nosnippet>255</a>        // the same allocation: `wa * C + wb * C` is `(wa + wb) * C`, which is
+<a href=#256 id=256 data-nosnippet>256</a>        // still a scale rather than nothing.
+<a href=#257 id=257 data-nosnippet>257</a>        </span><span class="kw">if </span>Rc::ptr_eq(a, b) {
+<a href=#258 id=258 data-nosnippet>258</a>            <span class="kw">return </span><span class="self">self</span>.scale(a, wa + wb);
+<a href=#259 id=259 data-nosnippet>259</a>        }
+<a href=#260 id=260 data-nosnippet>260</a>
+<a href=#261 id=261 data-nosnippet>261</a>        <span class="comment">// The result has at most as many terms as the two sides together, and
+<a href=#262 id=262 data-nosnippet>262</a>        // exactly how many is not known until the merge has run.  So: allocate
+<a href=#263 id=263 data-nosnippet>263</a>        // the bound, merge straight into it, and let `intern` hand the unused
+<a href=#264 id=264 data-nosnippet>264</a>        // tail back.
+<a href=#265 id=265 data-nosnippet>265</a>        </span><span class="kw">let </span>bound = a.len() + b.len();
+<a href=#266 id=266 data-nosnippet>266</a>        <span class="kw">let </span><span class="kw-2">mut </span>blocks: Vec&lt;u32&gt; = Vec::with_capacity(bound);
+<a href=#267 id=267 data-nosnippet>267</a>        <span class="kw">let </span><span class="kw-2">mut </span>weights: Vec&lt;f64&gt; = Vec::with_capacity(bound);
+<a href=#268 id=268 data-nosnippet>268</a>        <span class="kw">let </span>written = combine_into(
+<a href=#269 id=269 data-nosnippet>269</a>            blocks.spare_capacity_mut(),
+<a href=#270 id=270 data-nosnippet>270</a>            weights.spare_capacity_mut(),
+<a href=#271 id=271 data-nosnippet>271</a>            a,
+<a href=#272 id=272 data-nosnippet>272</a>            wa,
+<a href=#273 id=273 data-nosnippet>273</a>            b,
+<a href=#274 id=274 data-nosnippet>274</a>            wb,
+<a href=#275 id=275 data-nosnippet>275</a>        );
+<a href=#276 id=276 data-nosnippet>276</a>        <span class="comment">// SAFETY: `combine_into` initialised exactly the first `written`
+<a href=#277 id=277 data-nosnippet>277</a>        // elements of both, and `written &lt;= bound`.
+<a href=#278 id=278 data-nosnippet>278</a>        </span><span class="kw">unsafe </span>{
+<a href=#279 id=279 data-nosnippet>279</a>            blocks.set_len(written);
+<a href=#280 id=280 data-nosnippet>280</a>            weights.set_len(written);
+<a href=#281 id=281 data-nosnippet>281</a>        }
+<a href=#282 id=282 data-nosnippet>282</a>        <span class="self">self</span>.intern(blocks, weights)
 <a href=#283 id=283 data-nosnippet>283</a>    }
 <a href=#284 id=284 data-nosnippet>284</a>
-<a href=#285 id=285 data-nosnippet>285</a>    <span class="kw">fn </span>audit(<span class="kw-2">&amp;</span><span class="self">self</span>, live: <span class="kw-2">&amp;mut </span><span class="kw">dyn </span>Iterator&lt;Item = <span class="kw-2">&amp;</span>Color&gt;) -&gt; String {
-<a href=#286 id=286 data-nosnippet>286</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen: HashSet&lt;<span class="kw-2">*const </span>Terms&gt; = HashSet::new();
-<a href=#287 id=287 data-nosnippet>287</a>        <span class="kw">let </span><span class="kw-2">mut </span>reachable = <span class="number">0</span>;
-<a href=#288 id=288 data-nosnippet>288</a>        <span class="kw">for </span>color <span class="kw">in </span>live {
-<a href=#289 id=289 data-nosnippet>289</a>            <span class="kw">if </span>seen.insert(Rc::as_ptr(color)) {
-<a href=#290 id=290 data-nosnippet>290</a>                reachable += color.len();
-<a href=#291 id=291 data-nosnippet>291</a>            }
-<a href=#292 id=292 data-nosnippet>292</a>        }
-<a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">let </span>leak = <span class="kw">if </span>reachable == <span class="self">self</span>.live {
-<a href=#294 id=294 data-nosnippet>294</a>            <span class="macro">format!</span>(<span class="string">"{} live terms, all reachable"</span>, <span class="self">self</span>.live)
-<a href=#295 id=295 data-nosnippet>295</a>        } <span class="kw">else </span>{
-<a href=#296 id=296 data-nosnippet>296</a>            <span class="macro">format!</span>(
-<a href=#297 id=297 data-nosnippet>297</a>                <span class="string">"LEAK -- {} live terms but only {} reachable"</span>,
-<a href=#298 id=298 data-nosnippet>298</a>                <span class="self">self</span>.live, reachable
-<a href=#299 id=299 data-nosnippet>299</a>            )
-<a href=#300 id=300 data-nosnippet>300</a>        };
-<a href=#301 id=301 data-nosnippet>301</a>        <span class="macro">format!</span>(<span class="string">"audit: {}, worst drift from sum 1 was {:.3e}"</span>, leak, <span class="self">self</span>.drift)
-<a href=#302 id=302 data-nosnippet>302</a>    }
-<a href=#303 id=303 data-nosnippet>303</a>}
-<a href=#304 id=304 data-nosnippet>304</a>
-<a href=#305 id=305 data-nosnippet>305</a><span class="attr">#[cfg(test)]
-<a href=#306 id=306 data-nosnippet>306</a></span><span class="kw">mod </span>tests {
-<a href=#307 id=307 data-nosnippet>307</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#308 id=308 data-nosnippet>308</a>
-<a href=#309 id=309 data-nosnippet>309</a>    <span class="kw">fn </span>color(store: <span class="kw-2">&amp;mut </span>WeightedSets, terms: <span class="kw-2">&amp;</span>[(u32, f64)]) -&gt; Color {
-<a href=#310 id=310 data-nosnippet>310</a>        store.stage(terms.len());
-<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">for </span>(k, <span class="kw-2">&amp;</span>(block, weight)) <span class="kw">in </span>terms.iter().enumerate() {
-<a href=#312 id=312 data-nosnippet>312</a>            store.blocks[k] = block;
-<a href=#313 id=313 data-nosnippet>313</a>            store.weights[k] = weight;
-<a href=#314 id=314 data-nosnippet>314</a>        }
-<a href=#315 id=315 data-nosnippet>315</a>        store.intern()
-<a href=#316 id=316 data-nosnippet>316</a>    }
-<a href=#317 id=317 data-nosnippet>317</a>
-<a href=#318 id=318 data-nosnippet>318</a>    <span class="kw">fn </span>dump(c: <span class="kw-2">&amp;</span>Color) -&gt; Vec&lt;(u32, f64)&gt; {
-<a href=#319 id=319 data-nosnippet>319</a>        c.blocks
-<a href=#320 id=320 data-nosnippet>320</a>            .iter()
-<a href=#321 id=321 data-nosnippet>321</a>            .copied()
-<a href=#322 id=322 data-nosnippet>322</a>            .zip(c.weights.iter().copied())
-<a href=#323 id=323 data-nosnippet>323</a>            .collect()
-<a href=#324 id=324 data-nosnippet>324</a>    }
-<a href=#325 id=325 data-nosnippet>325</a>
-<a href=#326 id=326 data-nosnippet>326</a>    <span class="doccomment">/// What a weighted union is, written out slowly: gather every block from
-<a href=#327 id=327 data-nosnippet>327</a>    /// both sides, scale, and add where they meet.
-<a href=#328 id=328 data-nosnippet>328</a>    </span><span class="kw">fn </span>oracle(a: <span class="kw-2">&amp;</span>[(u32, f64)], wa: f64, b: <span class="kw-2">&amp;</span>[(u32, f64)], wb: f64) -&gt; Vec&lt;(u32, f64)&gt; {
-<a href=#329 id=329 data-nosnippet>329</a>        <span class="kw">let </span><span class="kw-2">mut </span>all: std::collections::BTreeMap&lt;u32, f64&gt; = std::collections::BTreeMap::new();
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>(block, weight) <span class="kw">in </span>a {
-<a href=#331 id=331 data-nosnippet>331</a>            <span class="kw-2">*</span>all.entry(block).or_insert(<span class="number">0.0</span>) += weight * wa;
-<a href=#332 id=332 data-nosnippet>332</a>        }
-<a href=#333 id=333 data-nosnippet>333</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>(block, weight) <span class="kw">in </span>b {
-<a href=#334 id=334 data-nosnippet>334</a>            <span class="kw-2">*</span>all.entry(block).or_insert(<span class="number">0.0</span>) += weight * wb;
-<a href=#335 id=335 data-nosnippet>335</a>        }
-<a href=#336 id=336 data-nosnippet>336</a>        all.into_iter().collect()
-<a href=#337 id=337 data-nosnippet>337</a>    }
-<a href=#338 id=338 data-nosnippet>338</a>
-<a href=#339 id=339 data-nosnippet>339</a>    <span class="kw">fn </span>check(a: <span class="kw-2">&amp;</span>[(u32, f64)], wa: f64, b: <span class="kw-2">&amp;</span>[(u32, f64)], wb: f64) {
-<a href=#340 id=340 data-nosnippet>340</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
-<a href=#341 id=341 data-nosnippet>341</a>        <span class="kw">let </span>ca = color(<span class="kw-2">&amp;mut </span>store, a);
-<a href=#342 id=342 data-nosnippet>342</a>        <span class="kw">let </span>cb = color(<span class="kw-2">&amp;mut </span>store, b);
-<a href=#343 id=343 data-nosnippet>343</a>        <span class="kw">let </span>combined = store.combine(<span class="kw-2">&amp;</span>ca, wa, <span class="kw-2">&amp;</span>cb, wb);
-<a href=#344 id=344 data-nosnippet>344</a>        <span class="kw">let </span>got = dump(<span class="kw-2">&amp;</span>combined);
-<a href=#345 id=345 data-nosnippet>345</a>        <span class="kw">let </span>want = oracle(a, wa, b, wb);
-<a href=#346 id=346 data-nosnippet>346</a>        <span class="macro">assert_eq!</span>(got.len(), want.len(), <span class="string">"a={:?} b={:?}"</span>, a, b);
-<a href=#347 id=347 data-nosnippet>347</a>        <span class="kw">for </span>(g, w) <span class="kw">in </span>got.iter().zip(<span class="kw-2">&amp;</span>want) {
-<a href=#348 id=348 data-nosnippet>348</a>            <span class="macro">assert_eq!</span>(g.<span class="number">0</span>, w.<span class="number">0</span>, <span class="string">"blocks differ: {:?} vs {:?}"</span>, got, want);
-<a href=#349 id=349 data-nosnippet>349</a>            <span class="macro">assert!</span>(
-<a href=#350 id=350 data-nosnippet>350</a>                (g.<span class="number">1 </span>- w.<span class="number">1</span>).abs() &lt; <span class="number">1e-12</span>,
-<a href=#351 id=351 data-nosnippet>351</a>                <span class="string">"weight for block {} is {} not {}"</span>,
-<a href=#352 id=352 data-nosnippet>352</a>                g.<span class="number">0</span>,
-<a href=#353 id=353 data-nosnippet>353</a>                g.<span class="number">1</span>,
-<a href=#354 id=354 data-nosnippet>354</a>                w.<span class="number">1
-<a href=#355 id=355 data-nosnippet>355</a>            </span>);
-<a href=#356 id=356 data-nosnippet>356</a>        }
-<a href=#357 id=357 data-nosnippet>357</a>    }
-<a href=#358 id=358 data-nosnippet>358</a>
-<a href=#359 id=359 data-nosnippet>359</a>    <span class="attr">#[test]
-<a href=#360 id=360 data-nosnippet>360</a>    </span><span class="kw">fn </span>combines_the_shapes_the_run_finder_is_about() {
-<a href=#361 id=361 data-nosnippet>361</a>        <span class="kw">let </span>a: Vec&lt;(u32, f64)&gt; = (<span class="number">0</span>..<span class="number">10</span>).map(|b| (b, <span class="number">0.1</span>)).collect();
-<a href=#362 id=362 data-nosnippet>362</a>        <span class="kw">let </span>b: Vec&lt;(u32, f64)&gt; = (<span class="number">5</span>..<span class="number">15</span>).map(|b| (b, <span class="number">0.1</span>)).collect();
-<a href=#363 id=363 data-nosnippet>363</a>        <span class="comment">// fully shared, so one long matching run
-<a href=#364 id=364 data-nosnippet>364</a>        </span>check(<span class="kw-2">&amp;</span>a, <span class="number">0.25</span>, <span class="kw-2">&amp;</span>a, <span class="number">0.75</span>);
-<a href=#365 id=365 data-nosnippet>365</a>        <span class="comment">// partly shared
-<a href=#366 id=366 data-nosnippet>366</a>        </span>check(<span class="kw-2">&amp;</span>a, <span class="number">0.5</span>, <span class="kw-2">&amp;</span>b, <span class="number">0.5</span>);
-<a href=#367 id=367 data-nosnippet>367</a>        <span class="comment">// disjoint, either way round
-<a href=#368 id=368 data-nosnippet>368</a>        </span>check(<span class="kw-2">&amp;</span>a, <span class="number">0.3</span>, <span class="kw-2">&amp;</span>(<span class="number">100</span>..<span class="number">110</span>).map(|b| (b, <span class="number">0.1</span>)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="number">0.7</span>);
-<a href=#369 id=369 data-nosnippet>369</a>        check(<span class="kw-2">&amp;</span>(<span class="number">100</span>..<span class="number">110</span>).map(|b| (b, <span class="number">0.1</span>)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="number">0.7</span>, <span class="kw-2">&amp;</span>a, <span class="number">0.3</span>);
-<a href=#370 id=370 data-nosnippet>370</a>        <span class="comment">// interleaved, so every run is length one -- the worst case for the
-<a href=#371 id=371 data-nosnippet>371</a>        // vector helpers, and the one most likely to be mis-indexed
-<a href=#372 id=372 data-nosnippet>372</a>        </span>check(
-<a href=#373 id=373 data-nosnippet>373</a>            <span class="kw-2">&amp;</span>(<span class="number">0</span>..<span class="number">20</span>).filter(|b| b % <span class="number">2 </span>== <span class="number">0</span>).map(|b| (b, <span class="number">0.1</span>)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(),
-<a href=#374 id=374 data-nosnippet>374</a>            <span class="number">0.5</span>,
-<a href=#375 id=375 data-nosnippet>375</a>            <span class="kw-2">&amp;</span>(<span class="number">0</span>..<span class="number">20</span>).filter(|b| b % <span class="number">2 </span>== <span class="number">1</span>).map(|b| (b, <span class="number">0.1</span>)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(),
-<a href=#376 id=376 data-nosnippet>376</a>            <span class="number">0.5</span>,
-<a href=#377 id=377 data-nosnippet>377</a>        );
-<a href=#378 id=378 data-nosnippet>378</a>        <span class="comment">// one side a single block
-<a href=#379 id=379 data-nosnippet>379</a>        </span>check(<span class="kw-2">&amp;</span>a, <span class="number">0.9</span>, <span class="kw-2">&amp;</span>[(<span class="number">7</span>, <span class="number">1.0</span>)], <span class="number">0.1</span>);
-<a href=#380 id=380 data-nosnippet>380</a>        check(<span class="kw-2">&amp;</span>[(<span class="number">7</span>, <span class="number">1.0</span>)], <span class="number">0.1</span>, <span class="kw-2">&amp;</span>a, <span class="number">0.9</span>);
-<a href=#381 id=381 data-nosnippet>381</a>    }
-<a href=#382 id=382 data-nosnippet>382</a>
-<a href=#383 id=383 data-nosnippet>383</a>    <span class="attr">#[test]
-<a href=#384 id=384 data-nosnippet>384</a>    </span><span class="kw">fn </span>combines_random_colors() {
-<a href=#385 id=385 data-nosnippet>385</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = <span class="number">0x2545_F491_4F6C_DD1Du64</span>;
-<a href=#386 id=386 data-nosnippet>386</a>        <span class="kw">let </span><span class="kw-2">mut </span>next = || {
-<a href=#387 id=387 data-nosnippet>387</a>            state ^= state &lt;&lt; <span class="number">13</span>;
-<a href=#388 id=388 data-nosnippet>388</a>            state ^= state &gt;&gt; <span class="number">7</span>;
-<a href=#389 id=389 data-nosnippet>389</a>            state ^= state &lt;&lt; <span class="number">17</span>;
-<a href=#390 id=390 data-nosnippet>390</a>            state
-<a href=#391 id=391 data-nosnippet>391</a>        };
-<a href=#392 id=392 data-nosnippet>392</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">2000 </span>{
-<a href=#393 id=393 data-nosnippet>393</a>            <span class="kw">let </span>universe = <span class="kw">if </span>next() % <span class="number">2 </span>== <span class="number">0 </span>{ <span class="number">24 </span>} <span class="kw">else </span>{ <span class="number">5000 </span>};
-<a href=#394 id=394 data-nosnippet>394</a>            <span class="kw">let </span>build = |n: u64, next: <span class="kw-2">&amp;mut </span><span class="kw">dyn </span>FnMut() -&gt; u64| {
-<a href=#395 id=395 data-nosnippet>395</a>                <span class="kw">let </span><span class="kw-2">mut </span>blocks: Vec&lt;u32&gt; =
-<a href=#396 id=396 data-nosnippet>396</a>                    (<span class="number">0</span>..n).map(|<span class="kw">_</span>| (next() % universe) <span class="kw">as </span>u32).collect();
-<a href=#397 id=397 data-nosnippet>397</a>                blocks.sort_unstable();
-<a href=#398 id=398 data-nosnippet>398</a>                blocks.dedup();
-<a href=#399 id=399 data-nosnippet>399</a>                <span class="kw">let </span>count = blocks.len() <span class="kw">as </span>f64;
-<a href=#400 id=400 data-nosnippet>400</a>                blocks.into_iter().map(|b| (b, <span class="number">1.0 </span>/ count)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
-<a href=#401 id=401 data-nosnippet>401</a>            };
-<a href=#402 id=402 data-nosnippet>402</a>            <span class="kw">let </span>na = next() % <span class="number">40</span>;
-<a href=#403 id=403 data-nosnippet>403</a>            <span class="kw">let </span>a = build(na, <span class="kw-2">&amp;mut </span>next);
-<a href=#404 id=404 data-nosnippet>404</a>            <span class="kw">let </span>nb = next() % <span class="number">40</span>;
-<a href=#405 id=405 data-nosnippet>405</a>            <span class="kw">let </span>b = build(nb, <span class="kw-2">&amp;mut </span>next);
-<a href=#406 id=406 data-nosnippet>406</a>            <span class="kw">let </span>wa = (next() % <span class="number">1000</span>) <span class="kw">as </span>f64 / <span class="number">1000.0</span>;
-<a href=#407 id=407 data-nosnippet>407</a>            check(<span class="kw-2">&amp;</span>a, wa, <span class="kw-2">&amp;</span>b, <span class="number">1.0 </span>- wa);
-<a href=#408 id=408 data-nosnippet>408</a>        }
-<a href=#409 id=409 data-nosnippet>409</a>    }
-<a href=#410 id=410 data-nosnippet>410</a>
-<a href=#411 id=411 data-nosnippet>411</a>    <span class="doccomment">/// The property the whole representation rests on.
-<a href=#412 id=412 data-nosnippet>412</a>    </span><span class="attr">#[test]
-<a href=#413 id=413 data-nosnippet>413</a>    </span><span class="kw">fn </span>a_convex_combination_of_distributions_is_a_distribution() {
-<a href=#414 id=414 data-nosnippet>414</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
-<a href=#415 id=415 data-nosnippet>415</a>        <span class="kw">let </span>a = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">1</span>, <span class="number">0.25</span>), (<span class="number">4</span>, <span class="number">0.75</span>)]);
-<a href=#416 id=416 data-nosnippet>416</a>        <span class="kw">let </span>b = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">4</span>, <span class="number">0.5</span>), (<span class="number">9</span>, <span class="number">0.5</span>)]);
-<a href=#417 id=417 data-nosnippet>417</a>        <span class="kw">for </span>wa <span class="kw">in </span>[<span class="number">0.0</span>, <span class="number">0.1</span>, <span class="number">0.5</span>, <span class="number">0.9</span>, <span class="number">1.0</span>] {
-<a href=#418 id=418 data-nosnippet>418</a>            <span class="kw">let </span>c = store.combine(<span class="kw-2">&amp;</span>a, wa, <span class="kw-2">&amp;</span>b, <span class="number">1.0 </span>- wa);
-<a href=#419 id=419 data-nosnippet>419</a>            <span class="kw">let </span>total: f64 = c.weights.iter().sum();
-<a href=#420 id=420 data-nosnippet>420</a>            <span class="macro">assert!</span>((total - <span class="number">1.0</span>).abs() &lt; <span class="number">1e-15</span>, <span class="string">"wa={} total={}"</span>, wa, total);
-<a href=#421 id=421 data-nosnippet>421</a>        }
-<a href=#422 id=422 data-nosnippet>422</a>    }
-<a href=#423 id=423 data-nosnippet>423</a>
-<a href=#424 id=424 data-nosnippet>424</a>    <span class="attr">#[test]
-<a href=#425 id=425 data-nosnippet>425</a>    </span><span class="kw">fn </span>scaling_by_one_shares_rather_than_rebuilding() {
-<a href=#426 id=426 data-nosnippet>426</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
-<a href=#427 id=427 data-nosnippet>427</a>        <span class="kw">let </span>a = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">1</span>, <span class="number">0.5</span>), (<span class="number">2</span>, <span class="number">0.5</span>)]);
-<a href=#428 id=428 data-nosnippet>428</a>        <span class="kw">let </span>same = store.scale(<span class="kw-2">&amp;</span>a, <span class="number">1.0</span>);
-<a href=#429 id=429 data-nosnippet>429</a>        <span class="macro">assert!</span>(Rc::ptr_eq(<span class="kw-2">&amp;</span>a, <span class="kw-2">&amp;</span>same), <span class="string">"weight 1 should not rebuild"</span>);
-<a href=#430 id=430 data-nosnippet>430</a>    }
-<a href=#431 id=431 data-nosnippet>431</a>
-<a href=#432 id=432 data-nosnippet>432</a>    <span class="attr">#[test]
-<a href=#433 id=433 data-nosnippet>433</a>    </span><span class="kw">fn </span>combining_a_color_with_itself_scales_it() {
-<a href=#434 id=434 data-nosnippet>434</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
-<a href=#435 id=435 data-nosnippet>435</a>        <span class="kw">let </span>a = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">1</span>, <span class="number">0.25</span>), (<span class="number">4</span>, <span class="number">0.75</span>)]);
-<a href=#436 id=436 data-nosnippet>436</a>        <span class="kw">let </span>c = store.combine(<span class="kw-2">&amp;</span>a, <span class="number">0.4</span>, <span class="kw-2">&amp;</span>a, <span class="number">0.6</span>);
-<a href=#437 id=437 data-nosnippet>437</a>        <span class="macro">assert_eq!</span>(dump(<span class="kw-2">&amp;</span>c), <span class="macro">vec!</span>[(<span class="number">1</span>, <span class="number">0.25</span>), (<span class="number">4</span>, <span class="number">0.75</span>)]);
-<a href=#438 id=438 data-nosnippet>438</a>    }
-<a href=#439 id=439 data-nosnippet>439</a>
-<a href=#440 id=440 data-nosnippet>440</a>    <span class="attr">#[test]
-<a href=#441 id=441 data-nosnippet>441</a>    </span><span class="kw">fn </span>terms_come_out_in_decreasing_block_order() {
-<a href=#442 id=442 data-nosnippet>442</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
-<a href=#443 id=443 data-nosnippet>443</a>        <span class="kw">let </span>a = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">2</span>, <span class="number">0.25</span>), (<span class="number">7</span>, <span class="number">0.75</span>)]);
-<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen = Vec::new();
-<a href=#445 id=445 data-nosnippet>445</a>        store.for_each_term(<span class="kw-2">&amp;</span>a, |exp, coeff| seen.push((exp, coeff)));
-<a href=#446 id=446 data-nosnippet>446</a>        <span class="macro">assert_eq!</span>(seen, <span class="macro">vec!</span>[(<span class="number">7</span>, <span class="number">0.75</span>), (<span class="number">2</span>, <span class="number">0.25</span>)]);
-<a href=#447 id=447 data-nosnippet>447</a>    }
-<a href=#448 id=448 data-nosnippet>448</a>}
+<a href=#285 id=285 data-nosnippet>285</a>    <span class="kw">fn </span>scale(<span class="kw-2">&amp;mut </span><span class="self">self</span>, color: <span class="kw-2">&amp;</span>Color, w: f64) -&gt; Color {
+<a href=#286 id=286 data-nosnippet>286</a>        <span class="comment">// Weight 1 changes nothing, and a transaction with a single input is
+<a href=#287 id=287 data-nosnippet>287</a>        // exactly that case -- its one ancestor contributes all of the value.
+<a href=#288 id=288 data-nosnippet>288</a>        // Sharing rather than rebuilding keeps the commonest shape free.
+<a href=#289 id=289 data-nosnippet>289</a>        </span><span class="kw">if </span>w == <span class="number">1.0 </span>{
+<a href=#290 id=290 data-nosnippet>290</a>            <span class="kw">return </span><span class="self">self</span>.share(color);
+<a href=#291 id=291 data-nosnippet>291</a>        }
+<a href=#292 id=292 data-nosnippet>292</a>        <span class="comment">// The length is known here, so both arrays are allocated exactly: the
+<a href=#293 id=293 data-nosnippet>293</a>        // blocks are a straight copy and the weights are scaled into place.
+<a href=#294 id=294 data-nosnippet>294</a>        </span><span class="kw">let </span>n = color.len();
+<a href=#295 id=295 data-nosnippet>295</a>        <span class="kw">let </span>blocks = color.blocks.to_vec();
+<a href=#296 id=296 data-nosnippet>296</a>        <span class="kw">let </span><span class="kw-2">mut </span>weights: Vec&lt;f64&gt; = Vec::with_capacity(n);
+<a href=#297 id=297 data-nosnippet>297</a>        simd::scale_into_uninit(weights.spare_capacity_mut(), <span class="kw-2">&amp;</span>color.weights, w);
+<a href=#298 id=298 data-nosnippet>298</a>        <span class="comment">// SAFETY: `scale_into_uninit` wrote all `n` elements.
+<a href=#299 id=299 data-nosnippet>299</a>        </span><span class="kw">unsafe </span>{ weights.set_len(n) };
+<a href=#300 id=300 data-nosnippet>300</a>        <span class="self">self</span>.intern(blocks, weights)
+<a href=#301 id=301 data-nosnippet>301</a>    }
+<a href=#302 id=302 data-nosnippet>302</a>
+<a href=#303 id=303 data-nosnippet>303</a>    <span class="kw">fn </span>share(<span class="kw-2">&amp;mut </span><span class="self">self</span>, color: <span class="kw-2">&amp;</span>Color) -&gt; Color {
+<a href=#304 id=304 data-nosnippet>304</a>        Rc::clone(color)
+<a href=#305 id=305 data-nosnippet>305</a>    }
+<a href=#306 id=306 data-nosnippet>306</a>
+<a href=#307 id=307 data-nosnippet>307</a>    <span class="doccomment">/// Every finished color is a distribution, so its weights sum to 1 and
+<a href=#308 id=308 data-nosnippet>308</a>    /// anything else is accumulated floating-point drift.  Tracking the worst of
+<a href=#309 id=309 data-nosnippet>309</a>    /// it turns the invariant into something a run can actually report.
+<a href=#310 id=310 data-nosnippet>310</a>    </span><span class="kw">fn </span>observe(<span class="kw-2">&amp;mut </span><span class="self">self</span>, color: <span class="kw-2">&amp;</span>Color) {
+<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>total: f64 = color.weights.iter().sum();
+<a href=#312 id=312 data-nosnippet>312</a>        <span class="self">self</span>.drift = <span class="self">self</span>.drift.max((total - <span class="number">1.0</span>).abs());
+<a href=#313 id=313 data-nosnippet>313</a>    }
+<a href=#314 id=314 data-nosnippet>314</a>
+<a href=#315 id=315 data-nosnippet>315</a>    <span class="kw">fn </span>release(<span class="kw-2">&amp;mut </span><span class="self">self</span>, color: Color) {
+<a href=#316 id=316 data-nosnippet>316</a>        <span class="kw">if </span>Rc::strong_count(<span class="kw-2">&amp;</span>color) == <span class="number">1 </span>{
+<a href=#317 id=317 data-nosnippet>317</a>            <span class="self">self</span>.live -= color.len();
+<a href=#318 id=318 data-nosnippet>318</a>        }
+<a href=#319 id=319 data-nosnippet>319</a>    }
+<a href=#320 id=320 data-nosnippet>320</a>
+<a href=#321 id=321 data-nosnippet>321</a>    <span class="kw">fn </span>for_each_term(<span class="kw-2">&amp;</span><span class="self">self</span>, color: <span class="kw-2">&amp;</span>Color, <span class="kw-2">mut </span>f: <span class="kw">impl </span>FnMut(usize, f64)) {
+<a href=#322 id=322 data-nosnippet>322</a>        <span class="comment">// Stored ascending because that is what a merge wants; printed in
+<a href=#323 id=323 data-nosnippet>323</a>        // decreasing exponent order, like the polynomial it stands in for.
+<a href=#324 id=324 data-nosnippet>324</a>        </span><span class="kw">for </span>k <span class="kw">in </span>(<span class="number">0</span>..color.len()).rev() {
+<a href=#325 id=325 data-nosnippet>325</a>            f(color.blocks[k] <span class="kw">as </span>usize, color.weights[k]);
+<a href=#326 id=326 data-nosnippet>326</a>        }
+<a href=#327 id=327 data-nosnippet>327</a>    }
+<a href=#328 id=328 data-nosnippet>328</a>
+<a href=#329 id=329 data-nosnippet>329</a>    <span class="kw">fn </span>usage(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (usize, usize) {
+<a href=#330 id=330 data-nosnippet>330</a>        (<span class="self">self</span>.live, <span class="self">self</span>.peak)
+<a href=#331 id=331 data-nosnippet>331</a>    }
+<a href=#332 id=332 data-nosnippet>332</a>
+<a href=#333 id=333 data-nosnippet>333</a>    <span class="kw">fn </span>usage_labels(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) {
+<a href=#334 id=334 data-nosnippet>334</a>        (<span class="string">"live terms"</span>, <span class="string">"peak terms"</span>)
+<a href=#335 id=335 data-nosnippet>335</a>    }
+<a href=#336 id=336 data-nosnippet>336</a>
+<a href=#337 id=337 data-nosnippet>337</a>    <span class="kw">fn </span>audit(<span class="kw-2">&amp;</span><span class="self">self</span>, live: <span class="kw-2">&amp;mut </span><span class="kw">dyn </span>Iterator&lt;Item = <span class="kw-2">&amp;</span>Color&gt;) -&gt; String {
+<a href=#338 id=338 data-nosnippet>338</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen: HashSet&lt;<span class="kw-2">*const </span>Terms&gt; = HashSet::new();
+<a href=#339 id=339 data-nosnippet>339</a>        <span class="kw">let </span><span class="kw-2">mut </span>reachable = <span class="number">0</span>;
+<a href=#340 id=340 data-nosnippet>340</a>        <span class="kw">for </span>color <span class="kw">in </span>live {
+<a href=#341 id=341 data-nosnippet>341</a>            <span class="kw">if </span>seen.insert(Rc::as_ptr(color)) {
+<a href=#342 id=342 data-nosnippet>342</a>                reachable += color.len();
+<a href=#343 id=343 data-nosnippet>343</a>            }
+<a href=#344 id=344 data-nosnippet>344</a>        }
+<a href=#345 id=345 data-nosnippet>345</a>        <span class="kw">let </span>leak = <span class="kw">if </span>reachable == <span class="self">self</span>.live {
+<a href=#346 id=346 data-nosnippet>346</a>            <span class="macro">format!</span>(<span class="string">"{} live terms, all reachable"</span>, <span class="self">self</span>.live)
+<a href=#347 id=347 data-nosnippet>347</a>        } <span class="kw">else </span>{
+<a href=#348 id=348 data-nosnippet>348</a>            <span class="macro">format!</span>(
+<a href=#349 id=349 data-nosnippet>349</a>                <span class="string">"LEAK -- {} live terms but only {} reachable"</span>,
+<a href=#350 id=350 data-nosnippet>350</a>                <span class="self">self</span>.live, reachable
+<a href=#351 id=351 data-nosnippet>351</a>            )
+<a href=#352 id=352 data-nosnippet>352</a>        };
+<a href=#353 id=353 data-nosnippet>353</a>        <span class="macro">format!</span>(<span class="string">"audit: {}, worst drift from sum 1 was {:.3e}"</span>, leak, <span class="self">self</span>.drift)
+<a href=#354 id=354 data-nosnippet>354</a>    }
+<a href=#355 id=355 data-nosnippet>355</a>}
+<a href=#356 id=356 data-nosnippet>356</a>
+<a href=#357 id=357 data-nosnippet>357</a><span class="attr">#[cfg(test)]
+<a href=#358 id=358 data-nosnippet>358</a></span><span class="kw">mod </span>tests {
+<a href=#359 id=359 data-nosnippet>359</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#360 id=360 data-nosnippet>360</a>
+<a href=#361 id=361 data-nosnippet>361</a>    <span class="kw">fn </span>color(store: <span class="kw-2">&amp;mut </span>WeightedSets, terms: <span class="kw-2">&amp;</span>[(u32, f64)]) -&gt; Color {
+<a href=#362 id=362 data-nosnippet>362</a>        <span class="kw">let </span>(blocks, weights): (Vec&lt;u32&gt;, Vec&lt;f64&gt;) = terms.iter().copied().unzip();
+<a href=#363 id=363 data-nosnippet>363</a>        store.intern(blocks, weights)
+<a href=#364 id=364 data-nosnippet>364</a>    }
+<a href=#365 id=365 data-nosnippet>365</a>
+<a href=#366 id=366 data-nosnippet>366</a>    <span class="kw">fn </span>dump(c: <span class="kw-2">&amp;</span>Color) -&gt; Vec&lt;(u32, f64)&gt; {
+<a href=#367 id=367 data-nosnippet>367</a>        c.blocks
+<a href=#368 id=368 data-nosnippet>368</a>            .iter()
+<a href=#369 id=369 data-nosnippet>369</a>            .copied()
+<a href=#370 id=370 data-nosnippet>370</a>            .zip(c.weights.iter().copied())
+<a href=#371 id=371 data-nosnippet>371</a>            .collect()
+<a href=#372 id=372 data-nosnippet>372</a>    }
+<a href=#373 id=373 data-nosnippet>373</a>
+<a href=#374 id=374 data-nosnippet>374</a>    <span class="doccomment">/// What a weighted union is, written out slowly: gather every block from
+<a href=#375 id=375 data-nosnippet>375</a>    /// both sides, scale, and add where they meet.
+<a href=#376 id=376 data-nosnippet>376</a>    </span><span class="kw">fn </span>oracle(a: <span class="kw-2">&amp;</span>[(u32, f64)], wa: f64, b: <span class="kw-2">&amp;</span>[(u32, f64)], wb: f64) -&gt; Vec&lt;(u32, f64)&gt; {
+<a href=#377 id=377 data-nosnippet>377</a>        <span class="kw">let </span><span class="kw-2">mut </span>all: std::collections::BTreeMap&lt;u32, f64&gt; = std::collections::BTreeMap::new();
+<a href=#378 id=378 data-nosnippet>378</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>(block, weight) <span class="kw">in </span>a {
+<a href=#379 id=379 data-nosnippet>379</a>            <span class="kw-2">*</span>all.entry(block).or_insert(<span class="number">0.0</span>) += weight * wa;
+<a href=#380 id=380 data-nosnippet>380</a>        }
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>(block, weight) <span class="kw">in </span>b {
+<a href=#382 id=382 data-nosnippet>382</a>            <span class="kw-2">*</span>all.entry(block).or_insert(<span class="number">0.0</span>) += weight * wb;
+<a href=#383 id=383 data-nosnippet>383</a>        }
+<a href=#384 id=384 data-nosnippet>384</a>        all.into_iter().collect()
+<a href=#385 id=385 data-nosnippet>385</a>    }
+<a href=#386 id=386 data-nosnippet>386</a>
+<a href=#387 id=387 data-nosnippet>387</a>    <span class="kw">fn </span>check(a: <span class="kw-2">&amp;</span>[(u32, f64)], wa: f64, b: <span class="kw-2">&amp;</span>[(u32, f64)], wb: f64) {
+<a href=#388 id=388 data-nosnippet>388</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="kw">let </span>ca = color(<span class="kw-2">&amp;mut </span>store, a);
+<a href=#390 id=390 data-nosnippet>390</a>        <span class="kw">let </span>cb = color(<span class="kw-2">&amp;mut </span>store, b);
+<a href=#391 id=391 data-nosnippet>391</a>        <span class="kw">let </span>combined = store.combine(<span class="kw-2">&amp;</span>ca, wa, <span class="kw-2">&amp;</span>cb, wb);
+<a href=#392 id=392 data-nosnippet>392</a>        <span class="kw">let </span>got = dump(<span class="kw-2">&amp;</span>combined);
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="kw">let </span>want = oracle(a, wa, b, wb);
+<a href=#394 id=394 data-nosnippet>394</a>        <span class="macro">assert_eq!</span>(got.len(), want.len(), <span class="string">"a={:?} b={:?}"</span>, a, b);
+<a href=#395 id=395 data-nosnippet>395</a>        <span class="kw">for </span>(g, w) <span class="kw">in </span>got.iter().zip(<span class="kw-2">&amp;</span>want) {
+<a href=#396 id=396 data-nosnippet>396</a>            <span class="macro">assert_eq!</span>(g.<span class="number">0</span>, w.<span class="number">0</span>, <span class="string">"blocks differ: {:?} vs {:?}"</span>, got, want);
+<a href=#397 id=397 data-nosnippet>397</a>            <span class="macro">assert!</span>(
+<a href=#398 id=398 data-nosnippet>398</a>                (g.<span class="number">1 </span>- w.<span class="number">1</span>).abs() &lt; <span class="number">1e-12</span>,
+<a href=#399 id=399 data-nosnippet>399</a>                <span class="string">"weight for block {} is {} not {}"</span>,
+<a href=#400 id=400 data-nosnippet>400</a>                g.<span class="number">0</span>,
+<a href=#401 id=401 data-nosnippet>401</a>                g.<span class="number">1</span>,
+<a href=#402 id=402 data-nosnippet>402</a>                w.<span class="number">1
+<a href=#403 id=403 data-nosnippet>403</a>            </span>);
+<a href=#404 id=404 data-nosnippet>404</a>        }
+<a href=#405 id=405 data-nosnippet>405</a>    }
+<a href=#406 id=406 data-nosnippet>406</a>
+<a href=#407 id=407 data-nosnippet>407</a>    <span class="attr">#[test]
+<a href=#408 id=408 data-nosnippet>408</a>    </span><span class="kw">fn </span>combines_the_shapes_the_run_finder_is_about() {
+<a href=#409 id=409 data-nosnippet>409</a>        <span class="kw">let </span>a: Vec&lt;(u32, f64)&gt; = (<span class="number">0</span>..<span class="number">10</span>).map(|b| (b, <span class="number">0.1</span>)).collect();
+<a href=#410 id=410 data-nosnippet>410</a>        <span class="kw">let </span>b: Vec&lt;(u32, f64)&gt; = (<span class="number">5</span>..<span class="number">15</span>).map(|b| (b, <span class="number">0.1</span>)).collect();
+<a href=#411 id=411 data-nosnippet>411</a>        <span class="comment">// fully shared, so one long matching run
+<a href=#412 id=412 data-nosnippet>412</a>        </span>check(<span class="kw-2">&amp;</span>a, <span class="number">0.25</span>, <span class="kw-2">&amp;</span>a, <span class="number">0.75</span>);
+<a href=#413 id=413 data-nosnippet>413</a>        <span class="comment">// partly shared
+<a href=#414 id=414 data-nosnippet>414</a>        </span>check(<span class="kw-2">&amp;</span>a, <span class="number">0.5</span>, <span class="kw-2">&amp;</span>b, <span class="number">0.5</span>);
+<a href=#415 id=415 data-nosnippet>415</a>        <span class="comment">// disjoint, either way round
+<a href=#416 id=416 data-nosnippet>416</a>        </span>check(<span class="kw-2">&amp;</span>a, <span class="number">0.3</span>, <span class="kw-2">&amp;</span>(<span class="number">100</span>..<span class="number">110</span>).map(|b| (b, <span class="number">0.1</span>)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="number">0.7</span>);
+<a href=#417 id=417 data-nosnippet>417</a>        check(<span class="kw-2">&amp;</span>(<span class="number">100</span>..<span class="number">110</span>).map(|b| (b, <span class="number">0.1</span>)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="number">0.7</span>, <span class="kw-2">&amp;</span>a, <span class="number">0.3</span>);
+<a href=#418 id=418 data-nosnippet>418</a>        <span class="comment">// interleaved, so every run is length one -- the worst case for the
+<a href=#419 id=419 data-nosnippet>419</a>        // vector helpers, and the one most likely to be mis-indexed
+<a href=#420 id=420 data-nosnippet>420</a>        </span>check(
+<a href=#421 id=421 data-nosnippet>421</a>            <span class="kw-2">&amp;</span>(<span class="number">0</span>..<span class="number">20</span>).filter(|b| b % <span class="number">2 </span>== <span class="number">0</span>).map(|b| (b, <span class="number">0.1</span>)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(),
+<a href=#422 id=422 data-nosnippet>422</a>            <span class="number">0.5</span>,
+<a href=#423 id=423 data-nosnippet>423</a>            <span class="kw-2">&amp;</span>(<span class="number">0</span>..<span class="number">20</span>).filter(|b| b % <span class="number">2 </span>== <span class="number">1</span>).map(|b| (b, <span class="number">0.1</span>)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(),
+<a href=#424 id=424 data-nosnippet>424</a>            <span class="number">0.5</span>,
+<a href=#425 id=425 data-nosnippet>425</a>        );
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="comment">// one side a single block
+<a href=#427 id=427 data-nosnippet>427</a>        </span>check(<span class="kw-2">&amp;</span>a, <span class="number">0.9</span>, <span class="kw-2">&amp;</span>[(<span class="number">7</span>, <span class="number">1.0</span>)], <span class="number">0.1</span>);
+<a href=#428 id=428 data-nosnippet>428</a>        check(<span class="kw-2">&amp;</span>[(<span class="number">7</span>, <span class="number">1.0</span>)], <span class="number">0.1</span>, <span class="kw-2">&amp;</span>a, <span class="number">0.9</span>);
+<a href=#429 id=429 data-nosnippet>429</a>    }
+<a href=#430 id=430 data-nosnippet>430</a>
+<a href=#431 id=431 data-nosnippet>431</a>    <span class="attr">#[test]
+<a href=#432 id=432 data-nosnippet>432</a>    </span><span class="kw">fn </span>combines_random_colors() {
+<a href=#433 id=433 data-nosnippet>433</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = <span class="number">0x2545_F491_4F6C_DD1Du64</span>;
+<a href=#434 id=434 data-nosnippet>434</a>        <span class="kw">let </span><span class="kw-2">mut </span>next = || {
+<a href=#435 id=435 data-nosnippet>435</a>            state ^= state &lt;&lt; <span class="number">13</span>;
+<a href=#436 id=436 data-nosnippet>436</a>            state ^= state &gt;&gt; <span class="number">7</span>;
+<a href=#437 id=437 data-nosnippet>437</a>            state ^= state &lt;&lt; <span class="number">17</span>;
+<a href=#438 id=438 data-nosnippet>438</a>            state
+<a href=#439 id=439 data-nosnippet>439</a>        };
+<a href=#440 id=440 data-nosnippet>440</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">2000 </span>{
+<a href=#441 id=441 data-nosnippet>441</a>            <span class="kw">let </span>universe = <span class="kw">if </span>next() % <span class="number">2 </span>== <span class="number">0 </span>{ <span class="number">24 </span>} <span class="kw">else </span>{ <span class="number">5000 </span>};
+<a href=#442 id=442 data-nosnippet>442</a>            <span class="kw">let </span>build = |n: u64, next: <span class="kw-2">&amp;mut </span><span class="kw">dyn </span>FnMut() -&gt; u64| {
+<a href=#443 id=443 data-nosnippet>443</a>                <span class="kw">let </span><span class="kw-2">mut </span>blocks: Vec&lt;u32&gt; =
+<a href=#444 id=444 data-nosnippet>444</a>                    (<span class="number">0</span>..n).map(|<span class="kw">_</span>| (next() % universe) <span class="kw">as </span>u32).collect();
+<a href=#445 id=445 data-nosnippet>445</a>                blocks.sort_unstable();
+<a href=#446 id=446 data-nosnippet>446</a>                blocks.dedup();
+<a href=#447 id=447 data-nosnippet>447</a>                <span class="kw">let </span>count = blocks.len() <span class="kw">as </span>f64;
+<a href=#448 id=448 data-nosnippet>448</a>                blocks.into_iter().map(|b| (b, <span class="number">1.0 </span>/ count)).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
+<a href=#449 id=449 data-nosnippet>449</a>            };
+<a href=#450 id=450 data-nosnippet>450</a>            <span class="kw">let </span>na = next() % <span class="number">40</span>;
+<a href=#451 id=451 data-nosnippet>451</a>            <span class="kw">let </span>a = build(na, <span class="kw-2">&amp;mut </span>next);
+<a href=#452 id=452 data-nosnippet>452</a>            <span class="kw">let </span>nb = next() % <span class="number">40</span>;
+<a href=#453 id=453 data-nosnippet>453</a>            <span class="kw">let </span>b = build(nb, <span class="kw-2">&amp;mut </span>next);
+<a href=#454 id=454 data-nosnippet>454</a>            <span class="kw">let </span>wa = (next() % <span class="number">1000</span>) <span class="kw">as </span>f64 / <span class="number">1000.0</span>;
+<a href=#455 id=455 data-nosnippet>455</a>            check(<span class="kw-2">&amp;</span>a, wa, <span class="kw-2">&amp;</span>b, <span class="number">1.0 </span>- wa);
+<a href=#456 id=456 data-nosnippet>456</a>        }
+<a href=#457 id=457 data-nosnippet>457</a>    }
+<a href=#458 id=458 data-nosnippet>458</a>
+<a href=#459 id=459 data-nosnippet>459</a>    <span class="doccomment">/// Long enough, and dense enough, that every run length the finders see
+<a href=#460 id=460 data-nosnippet>460</a>    /// shows up: runs of one where the two sides interleave, long one-sided
+<a href=#461 id=461 data-nosnippet>461</a>    /// stretches, long shared ones.  The oracle knows nothing about runs, which
+<a href=#462 id=462 data-nosnippet>462</a>    /// is what makes it an oracle.
+<a href=#463 id=463 data-nosnippet>463</a>    </span><span class="attr">#[test]
+<a href=#464 id=464 data-nosnippet>464</a>    </span><span class="kw">fn </span>combines_random_colors_of_every_run_length() {
+<a href=#465 id=465 data-nosnippet>465</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = <span class="number">0x9E37_79B9_7F4A_7C15u64</span>;
+<a href=#466 id=466 data-nosnippet>466</a>        <span class="kw">let </span><span class="kw-2">mut </span>next = || {
+<a href=#467 id=467 data-nosnippet>467</a>            state ^= state &lt;&lt; <span class="number">13</span>;
+<a href=#468 id=468 data-nosnippet>468</a>            state ^= state &gt;&gt; <span class="number">7</span>;
+<a href=#469 id=469 data-nosnippet>469</a>            state ^= state &lt;&lt; <span class="number">17</span>;
+<a href=#470 id=470 data-nosnippet>470</a>            state
+<a href=#471 id=471 data-nosnippet>471</a>        };
+<a href=#472 id=472 data-nosnippet>472</a>        <span class="kw">for </span>round <span class="kw">in </span><span class="number">0</span>..<span class="number">300 </span>{
+<a href=#473 id=473 data-nosnippet>473</a>            <span class="comment">// A block is kept with probability `p`, and `p` sweeps from sparse
+<a href=#474 id=474 data-nosnippet>474</a>            // to nearly full so every run length shows up.
+<a href=#475 id=475 data-nosnippet>475</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>build = |universe: u64, p: u64| -&gt; Vec&lt;(u32, f64)&gt; {
+<a href=#476 id=476 data-nosnippet>476</a>                <span class="kw">let </span>blocks: Vec&lt;u32&gt; = (<span class="number">0</span>..universe)
+<a href=#477 id=477 data-nosnippet>477</a>                    .filter(|<span class="kw">_</span>| next() % <span class="number">100 </span>&lt; p)
+<a href=#478 id=478 data-nosnippet>478</a>                    .map(|b| b <span class="kw">as </span>u32)
+<a href=#479 id=479 data-nosnippet>479</a>                    .collect();
+<a href=#480 id=480 data-nosnippet>480</a>                <span class="kw">let </span>count = blocks.len().max(<span class="number">1</span>) <span class="kw">as </span>f64;
+<a href=#481 id=481 data-nosnippet>481</a>                blocks.into_iter().map(|b| (b, <span class="number">1.0 </span>/ count)).collect()
+<a href=#482 id=482 data-nosnippet>482</a>            };
+<a href=#483 id=483 data-nosnippet>483</a>            <span class="kw">let </span>universe = <span class="number">200 </span>+ (round % <span class="number">7</span>) * <span class="number">61</span>;
+<a href=#484 id=484 data-nosnippet>484</a>            <span class="kw">let </span>a = build(universe, <span class="number">5 </span>+ (round * <span class="number">13</span>) % <span class="number">95</span>);
+<a href=#485 id=485 data-nosnippet>485</a>            <span class="kw">let </span>b = build(universe, <span class="number">5 </span>+ (round * <span class="number">29</span>) % <span class="number">95</span>);
+<a href=#486 id=486 data-nosnippet>486</a>            <span class="kw">let </span>wa = (next() % <span class="number">1000</span>) <span class="kw">as </span>f64 / <span class="number">1000.0</span>;
+<a href=#487 id=487 data-nosnippet>487</a>            check(<span class="kw-2">&amp;</span>a, wa, <span class="kw-2">&amp;</span>b, <span class="number">1.0 </span>- wa);
+<a href=#488 id=488 data-nosnippet>488</a>        }
+<a href=#489 id=489 data-nosnippet>489</a>    }
+<a href=#490 id=490 data-nosnippet>490</a>
+<a href=#491 id=491 data-nosnippet>491</a>    <span class="doccomment">/// The property the whole representation rests on.
+<a href=#492 id=492 data-nosnippet>492</a>    </span><span class="attr">#[test]
+<a href=#493 id=493 data-nosnippet>493</a>    </span><span class="kw">fn </span>a_convex_combination_of_distributions_is_a_distribution() {
+<a href=#494 id=494 data-nosnippet>494</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
+<a href=#495 id=495 data-nosnippet>495</a>        <span class="kw">let </span>a = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">1</span>, <span class="number">0.25</span>), (<span class="number">4</span>, <span class="number">0.75</span>)]);
+<a href=#496 id=496 data-nosnippet>496</a>        <span class="kw">let </span>b = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">4</span>, <span class="number">0.5</span>), (<span class="number">9</span>, <span class="number">0.5</span>)]);
+<a href=#497 id=497 data-nosnippet>497</a>        <span class="kw">for </span>wa <span class="kw">in </span>[<span class="number">0.0</span>, <span class="number">0.1</span>, <span class="number">0.5</span>, <span class="number">0.9</span>, <span class="number">1.0</span>] {
+<a href=#498 id=498 data-nosnippet>498</a>            <span class="kw">let </span>c = store.combine(<span class="kw-2">&amp;</span>a, wa, <span class="kw-2">&amp;</span>b, <span class="number">1.0 </span>- wa);
+<a href=#499 id=499 data-nosnippet>499</a>            <span class="kw">let </span>total: f64 = c.weights.iter().sum();
+<a href=#500 id=500 data-nosnippet>500</a>            <span class="macro">assert!</span>((total - <span class="number">1.0</span>).abs() &lt; <span class="number">1e-15</span>, <span class="string">"wa={} total={}"</span>, wa, total);
+<a href=#501 id=501 data-nosnippet>501</a>        }
+<a href=#502 id=502 data-nosnippet>502</a>    }
+<a href=#503 id=503 data-nosnippet>503</a>
+<a href=#504 id=504 data-nosnippet>504</a>    <span class="attr">#[test]
+<a href=#505 id=505 data-nosnippet>505</a>    </span><span class="kw">fn </span>scaling_by_one_shares_rather_than_rebuilding() {
+<a href=#506 id=506 data-nosnippet>506</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
+<a href=#507 id=507 data-nosnippet>507</a>        <span class="kw">let </span>a = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">1</span>, <span class="number">0.5</span>), (<span class="number">2</span>, <span class="number">0.5</span>)]);
+<a href=#508 id=508 data-nosnippet>508</a>        <span class="kw">let </span>same = store.scale(<span class="kw-2">&amp;</span>a, <span class="number">1.0</span>);
+<a href=#509 id=509 data-nosnippet>509</a>        <span class="macro">assert!</span>(Rc::ptr_eq(<span class="kw-2">&amp;</span>a, <span class="kw-2">&amp;</span>same), <span class="string">"weight 1 should not rebuild"</span>);
+<a href=#510 id=510 data-nosnippet>510</a>    }
+<a href=#511 id=511 data-nosnippet>511</a>
+<a href=#512 id=512 data-nosnippet>512</a>    <span class="attr">#[test]
+<a href=#513 id=513 data-nosnippet>513</a>    </span><span class="kw">fn </span>combining_a_color_with_itself_scales_it() {
+<a href=#514 id=514 data-nosnippet>514</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
+<a href=#515 id=515 data-nosnippet>515</a>        <span class="kw">let </span>a = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">1</span>, <span class="number">0.25</span>), (<span class="number">4</span>, <span class="number">0.75</span>)]);
+<a href=#516 id=516 data-nosnippet>516</a>        <span class="kw">let </span>c = store.combine(<span class="kw-2">&amp;</span>a, <span class="number">0.4</span>, <span class="kw-2">&amp;</span>a, <span class="number">0.6</span>);
+<a href=#517 id=517 data-nosnippet>517</a>        <span class="macro">assert_eq!</span>(dump(<span class="kw-2">&amp;</span>c), <span class="macro">vec!</span>[(<span class="number">1</span>, <span class="number">0.25</span>), (<span class="number">4</span>, <span class="number">0.75</span>)]);
+<a href=#518 id=518 data-nosnippet>518</a>    }
+<a href=#519 id=519 data-nosnippet>519</a>
+<a href=#520 id=520 data-nosnippet>520</a>    <span class="attr">#[test]
+<a href=#521 id=521 data-nosnippet>521</a>    </span><span class="kw">fn </span>terms_come_out_in_decreasing_block_order() {
+<a href=#522 id=522 data-nosnippet>522</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
+<a href=#523 id=523 data-nosnippet>523</a>        <span class="kw">let </span>a = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>[(<span class="number">2</span>, <span class="number">0.25</span>), (<span class="number">7</span>, <span class="number">0.75</span>)]);
+<a href=#524 id=524 data-nosnippet>524</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen = Vec::new();
+<a href=#525 id=525 data-nosnippet>525</a>        store.for_each_term(<span class="kw-2">&amp;</span>a, |exp, coeff| seen.push((exp, coeff)));
+<a href=#526 id=526 data-nosnippet>526</a>        <span class="macro">assert_eq!</span>(seen, <span class="macro">vec!</span>[(<span class="number">7</span>, <span class="number">0.75</span>), (<span class="number">2</span>, <span class="number">0.25</span>)]);
+<a href=#527 id=527 data-nosnippet>527</a>    }
+<a href=#528 id=528 data-nosnippet>528</a>
+<a href=#529 id=529 data-nosnippet>529</a>    <span class="doccomment">/// Not a test: a microbenchmark of `combine` on the shapes the run finders
+<a href=#530 id=530 data-nosnippet>530</a>    /// see, so that a change to them can be timed without a four-minute run
+<a href=#531 id=531 data-nosnippet>531</a>    /// over the real chain -- and on a machine other people are using, whose
+<a href=#532 id=532 data-nosnippet>532</a>    /// wall clock is noisy where this is not.  `cargo test --release
+<a href=#533 id=533 data-nosnippet>533</a>    /// merge_bench -- --ignored --nocapture`, before and after.  Prints the
+<a href=#534 id=534 data-nosnippet>534</a>    /// best of several repeats in nanoseconds per output term.
+<a href=#535 id=535 data-nosnippet>535</a>    </span><span class="attr">#[test]
+<a href=#536 id=536 data-nosnippet>536</a>    #[ignore]
+<a href=#537 id=537 data-nosnippet>537</a>    </span><span class="kw">fn </span>merge_bench() {
+<a href=#538 id=538 data-nosnippet>538</a>        <span class="kw">use </span>std::time::Instant;
+<a href=#539 id=539 data-nosnippet>539</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = <span class="number">0x2545_F491_4F6C_DD1Du64</span>;
+<a href=#540 id=540 data-nosnippet>540</a>        <span class="kw">let </span><span class="kw-2">mut </span>next = <span class="kw">move </span>|| {
+<a href=#541 id=541 data-nosnippet>541</a>            state ^= state &lt;&lt; <span class="number">13</span>;
+<a href=#542 id=542 data-nosnippet>542</a>            state ^= state &gt;&gt; <span class="number">7</span>;
+<a href=#543 id=543 data-nosnippet>543</a>            state ^= state &lt;&lt; <span class="number">17</span>;
+<a href=#544 id=544 data-nosnippet>544</a>            state
+<a href=#545 id=545 data-nosnippet>545</a>        };
+<a href=#546 id=546 data-nosnippet>546</a>        <span class="comment">// Every block of `0..universe` kept with probability `density`.
+<a href=#547 id=547 data-nosnippet>547</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>dense = |universe: u32, density: f64| -&gt; Vec&lt;(u32, f64)&gt; {
+<a href=#548 id=548 data-nosnippet>548</a>            <span class="kw">let </span>kept: Vec&lt;u32&gt; = (<span class="number">0</span>..universe)
+<a href=#549 id=549 data-nosnippet>549</a>                .filter(|<span class="kw">_</span>| (next() % <span class="number">1_000_000</span>) <span class="kw">as </span>f64 / <span class="number">1_000_000.0 </span>&lt; density)
+<a href=#550 id=550 data-nosnippet>550</a>                .collect();
+<a href=#551 id=551 data-nosnippet>551</a>            <span class="kw">let </span>w = <span class="number">1.0 </span>/ kept.len() <span class="kw">as </span>f64;
+<a href=#552 id=552 data-nosnippet>552</a>            kept.into_iter().map(|b| (b, w)).collect()
+<a href=#553 id=553 data-nosnippet>553</a>        };
+<a href=#554 id=554 data-nosnippet>554</a>        <span class="kw">let </span>shapes: Vec&lt;(<span class="kw-2">&amp;</span>str, Vec&lt;(u32, f64)&gt;, Vec&lt;(u32, f64)&gt;)&gt; = <span class="macro">vec!</span>[
+<a href=#555 id=555 data-nosnippet>555</a>            (<span class="string">"two mixed colours, 77% of 130k blocks each (L3)"</span>, dense(<span class="number">130_000</span>, <span class="number">0.77</span>), dense(<span class="number">130_000</span>, <span class="number">0.77</span>)),
+<a href=#556 id=556 data-nosnippet>556</a>            (<span class="string">"two mixed colours, 77% of 40k blocks each (L2)"</span>, dense(<span class="number">40_000</span>, <span class="number">0.77</span>), dense(<span class="number">40_000</span>, <span class="number">0.77</span>)),
+<a href=#557 id=557 data-nosnippet>557</a>            (<span class="string">"two well-mixed colours, 92% of 130k blocks each (runs ~5)"</span>, dense(<span class="number">130_000</span>, <span class="number">0.92</span>), dense(<span class="number">130_000</span>, <span class="number">0.92</span>)),
+<a href=#558 id=558 data-nosnippet>558</a>            (<span class="string">"mixed 77% of 130k against a half-dense 50% one"</span>, dense(<span class="number">130_000</span>, <span class="number">0.77</span>), dense(<span class="number">130_000</span>, <span class="number">0.5</span>)),
+<a href=#559 id=559 data-nosnippet>559</a>            (<span class="string">"mixed 77% of 130k against a sparse 4% one"</span>, dense(<span class="number">130_000</span>, <span class="number">0.77</span>), dense(<span class="number">130_000</span>, <span class="number">0.04</span>)),
+<a href=#560 id=560 data-nosnippet>560</a>            (<span class="string">"nearly identical 100k-block colours (long shared runs)"</span>, dense(<span class="number">130_000</span>, <span class="number">0.77</span>), Vec::new()),
+<a href=#561 id=561 data-nosnippet>561</a>            (<span class="string">"disjoint interleaved 50k each (runs of one)"</span>, (<span class="number">0</span>..<span class="number">100_000</span>).filter(|b| b % <span class="number">2 </span>== <span class="number">0</span>).map(|b| (b, <span class="number">2e-5</span>)).collect(), (<span class="number">0</span>..<span class="number">100_000</span>).filter(|b| b % <span class="number">2 </span>== <span class="number">1</span>).map(|b| (b, <span class="number">2e-5</span>)).collect()),
+<a href=#562 id=562 data-nosnippet>562</a>        ];
+<a href=#563 id=563 data-nosnippet>563</a>        <span class="kw">for </span>(name, a, b) <span class="kw">in </span>shapes {
+<a href=#564 id=564 data-nosnippet>564</a>            <span class="kw">let </span>b = <span class="kw">if </span>b.is_empty() {
+<a href=#565 id=565 data-nosnippet>565</a>                <span class="comment">// Nearly identical: drop every 500th block of `a`.
+<a href=#566 id=566 data-nosnippet>566</a>                </span>a.iter().enumerate().filter(|(k, <span class="kw">_</span>)| k % <span class="number">500 </span>!= <span class="number">0</span>).map(|(<span class="kw">_</span>, t)| <span class="kw-2">*</span>t).collect()
+<a href=#567 id=567 data-nosnippet>567</a>            } <span class="kw">else </span>{
+<a href=#568 id=568 data-nosnippet>568</a>                b
+<a href=#569 id=569 data-nosnippet>569</a>            };
+<a href=#570 id=570 data-nosnippet>570</a>            <span class="kw">let </span><span class="kw-2">mut </span>store = WeightedSets::new();
+<a href=#571 id=571 data-nosnippet>571</a>            <span class="kw">let </span>ca = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>a);
+<a href=#572 id=572 data-nosnippet>572</a>            <span class="kw">let </span>cb = color(<span class="kw-2">&amp;mut </span>store, <span class="kw-2">&amp;</span>b);
+<a href=#573 id=573 data-nosnippet>573</a>            <span class="kw">let </span><span class="kw-2">mut </span>best = f64::INFINITY;
+<a href=#574 id=574 data-nosnippet>574</a>            <span class="kw">let </span><span class="kw-2">mut </span>out_len = <span class="number">0</span>;
+<a href=#575 id=575 data-nosnippet>575</a>            <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">7 </span>{
+<a href=#576 id=576 data-nosnippet>576</a>                <span class="kw">let </span>started = Instant::now();
+<a href=#577 id=577 data-nosnippet>577</a>                <span class="kw">let </span>reps = <span class="number">20</span>;
+<a href=#578 id=578 data-nosnippet>578</a>                <span class="kw">for _ in </span><span class="number">0</span>..reps {
+<a href=#579 id=579 data-nosnippet>579</a>                    <span class="kw">let </span>c = store.combine(<span class="kw-2">&amp;</span>ca, <span class="number">0.6</span>, <span class="kw-2">&amp;</span>cb, <span class="number">0.4</span>);
+<a href=#580 id=580 data-nosnippet>580</a>                    out_len = c.len();
+<a href=#581 id=581 data-nosnippet>581</a>                    store.release(c);
+<a href=#582 id=582 data-nosnippet>582</a>                }
+<a href=#583 id=583 data-nosnippet>583</a>                <span class="kw">let </span>per_term = started.elapsed().as_secs_f64() * <span class="number">1e9 </span>/ (reps * out_len) <span class="kw">as </span>f64;
+<a href=#584 id=584 data-nosnippet>584</a>                best = best.min(per_term);
+<a href=#585 id=585 data-nosnippet>585</a>            }
+<a href=#586 id=586 data-nosnippet>586</a>            <span class="macro">eprintln!</span>(
+<a href=#587 id=587 data-nosnippet>587</a>                <span class="string">"merge_bench: {:&lt;58} a={:&gt;7} b={:&gt;7} out={:&gt;7}  {:.3} ns/term"</span>,
+<a href=#588 id=588 data-nosnippet>588</a>                name, a.len(), b.len(), out_len, best
+<a href=#589 id=589 data-nosnippet>589</a>            );
+<a href=#590 id=590 data-nosnippet>590</a>        }
+<a href=#591 id=591 data-nosnippet>591</a>    }
+<a href=#592 id=592 data-nosnippet>592</a>}
 </code></pre></div></section></main></body></html>

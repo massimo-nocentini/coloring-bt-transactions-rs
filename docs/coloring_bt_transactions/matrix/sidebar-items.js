@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["FILLED_AMOUNT","FLAGS_KNOWN","FLAG_AMOUNTS","FLAG_DEDUPED_PARENTS","FLAG_SORTED_COLUMNS","GROUP","HEADER_BYTES","MAGIC","MAGIC_IN_FLIGHT","RESERVE"],"fn":["bad","hash_record","put_varint","put_zigzag","unzigzag","zigzag"],"struct":["Bytes","Encoder","Fnv","Header","Reader","Sections","Verified","Writer"]};

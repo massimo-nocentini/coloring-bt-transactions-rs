@@ -1,0 +1,195 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="The matrix, written once and swept over"><title>coloring_bt_transactions::matrix - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-0c87338a.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.99.0 (b940084d7 2026-09-28)" data-channel="1.99.0" data-search-js="search-cf4fc35e.js" data-stringdex-js="stringdex-b5109af9.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-9f56287d.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module matrix</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module matrix</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#the-matrix-written-once-and-swept-over" title="The matrix, written once and swept over">The matrix, written once and swept over</a><ul><li><a href="#what-the-fold-actually-reads" title="What the fold actually reads">What the fold actually reads</a></li><li><a href="#why-not-the-csr-the-article-costed" title="Why not the CSR the article costed">Why not the CSR the article costed</a></li><li><a href="#two-transforms-that-were-measured-and-refused" title="Two transforms that were measured and refused">Two transforms that were measured and refused</a></li><li><a href="#only-a-coinbase-row-carries-a-block" title="Only a coinbase row carries a block">Only a coinbase row carries a block</a></li><li><a href="#a-single-input-row-stores-no-amount" title="A single-input row stores no amount">A single-input row stores no amount</a></li><li><a href="#the-in-flight-magic" title="The in-flight magic">The in-flight magic</a></li><li><a href="#one-pass-and-the-copy-it-costs" title="One pass, and the copy it costs">One pass, and the copy it costs</a></li><li><a href="#groups-is-for-the-thread-that-is-already-there" title="GROUPS is for the thread that is already there">GROUPS is for the thread that is already there</a></li><li><a href="#what-the-prefix-runs-said" title="What the prefix runs said">What the prefix runs said</a></li><li><a href="#what-checks-the-matrix-when-the-records-are-not-there" title="What checks the matrix when the records are not there">What checks the matrix when the records are not there</a></li><li><a href="#use" title="Use">Use</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate coloring_<wbr>bt_<wbr>transactions</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">coloring_bt_transactions</a></div><h1>Module <span>matrix</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/coloring_bt_transactions/matrix.rs.html#1-2726">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="the-matrix-written-once-and-swept-over"><a class="doc-anchor" href="#the-matrix-written-once-and-swept-over">§</a>The matrix, written once and swept over</h2>
+<p>The article ends on a promise: <em>“a binary CSR of A, about 19.5 GB, would
+make every future solve a sweep over it rather than a re-parse of 150 GB.”</em>
+At 200 MB/s that re-parse is twelve and a half minutes of nothing but
+reading, before a single colour is merged, and it is paid again by every run
+— every <code>--bands</code>, every projection, every experiment that changes what is
+emitted and not what is folded.</p>
+<p>This is that file.  It is called FOLDMAT, it holds exactly what the fold
+reads and nothing else, and over the 2022 chain it is about <strong>10.6 GB</strong> —
+not 19.5, and exact where the CSR is not.</p>
+<h3 id="what-the-fold-actually-reads"><a class="doc-anchor" href="#what-the-fold-actually-reads">§</a>What the fold actually reads</h3>
+<p>Five things, and <a href="../sexp/index.html" title="mod coloring_bt_transactions::sexp"><code>sexp</code></a> says so in its own doc comment: the
+header’s <code>block-id</code> and <code>tx-id</code>, each input’s <code>amount</code> and <code>prev-tx-id</code>, and
+how many outputs there are.  A record is 193 bytes of text on average —
+149,968,404,213 bytes over 778,613,440 records is 192.61 — and four of those
+five are a small minority of it.  So the budget, measured over the whole
+chain rather than guessed:</p>
+<div><table><thead><tr><th>section</th><th style="text-align: right">bytes</th><th>what it is</th></tr></thead><tbody>
+<tr><td>columns</td><td style="text-align: right">5,317,886,057</td><td>2,044,897,328 parents, as within-row zigzag chain deltas in file order</td></tr>
+<tr><td>amounts</td><td style="text-align: right">4,475,343,790</td><td>1,475,397,681 satoshi values (rows with &gt;= 2 inputs), zigzag deltas</td></tr>
+<tr><td>heads</td><td style="text-align: right">778,613,440 + escapes</td><td>one byte a row: input count and output count, a nibble each</td></tr>
+<tr><td>blocks</td><td style="text-align: right">~762,261</td><td>one varint a coinbase row, and nothing on the other 777.8 million</td></tr>
+<tr><td>groups</td><td style="text-align: right">3,041,472</td><td>16 bytes per 4096 rows, 0.03%</td></tr>
+</tbody></table>
+</div><h3 id="why-not-the-csr-the-article-costed"><a class="doc-anchor" href="#why-not-the-csr-the-article-costed">§</a>Why not the CSR the article costed</h3>
+<p><code>u32 row_ptr[n+1] + u32 col + f32 val</code> over 778,613,438 transactions and
+2,044,897,328 nonzeros is 19,473,632,380 bytes, and every one of those
+numbers was checked by writing it — <code>--csr</code> below writes it still, because
+an argument about lossiness that is never run is just an argument.  What the
+run says:</p>
+<ul>
+<li>an <code>f32</code> weight has a worst relative error of 5.96e-8, and only <strong>28.10%</strong>
+of the chain’s weights round-trip at all;</li>
+<li>a row’s weights are supposed to sum to one, and <code>|sum(w) - 1|</code> degrades
+from 1.02e-13 to 5.96e-8;</li>
+<li>replaying the fold with <code>f32</code> weights changes <strong>44.71%</strong> of <code>--sum</code> lines
+and <strong>98.92%</strong> of <code>--terms</code> coefficients.</li>
+</ul>
+<p>A colour is a distribution, and 44.71% of the answers moving is not a
+rounding difference, it is a different file.  The fix is not a wider float:
+it is to stop storing the weight at all.  The weight is <code>amount / total</code>,
+both integers, and storing the raw <code>u64</code> satoshi amounts is <strong>exact and
+smaller</strong> — 4.48 GB of zigzag deltas against 8.18 GB of <code>f32</code> — because a
+chain of amounts inside one row is nothing like uniformly distributed and a
+float is 32 bits of entropy by construction.  Ten decimal digits of a
+satoshi amount cost fewer bits than a float that cannot represent it.</p>
+<h3 id="two-transforms-that-were-measured-and-refused"><a class="doc-anchor" href="#two-transforms-that-were-measured-and-refused">§</a>Two transforms that were measured and refused</h3>
+<p>Both would have made the file smaller.  Both are reserved as flag bits that
+a reader must refuse, so that nobody re-derives them later and quietly gets
+different colours:</p>
+<ul>
+<li><strong>Sorted columns.</strong> Sorting each row’s parents ascending would shorten the
+delta chain.  It also changes the output: the fold walks a row’s inputs
+from the last to the first (<code>src/main.rs</code>, <code>for i in (0..inputs.len()).rev()</code>)
+and reassociating an <code>f64</code> sum is not a no-op — <strong>4.06%</strong> of <code>--sum</code> lines
+change.  File order and multiplicity are part of the answer.</li>
+<li><strong>Deduplicated parents.</strong> A row that spends the same transaction twice
+could store it once with a count.  But the multiplicity is what the fold
+counts down: without an oracle a colour is freed when its unspent count
+reaches zero, and with one <a href="../oracle/struct.Oracle.html#method.last_reads" title="method coloring_bt_transactions::oracle::Oracle::last_reads"><code>oracle::Oracle::last_reads</code></a>
+frees on the <em>lowest</em> input index naming a transaction precisely because
+the reverse walk reaches it last.  Collapsing the duplicates frees the
+colour at the wrong instant, which is a lookup failure at best.</li>
+</ul>
+<h3 id="only-a-coinbase-row-carries-a-block"><a class="doc-anchor" href="#only-a-coinbase-row-carries-a-block">§</a>Only a coinbase row carries a block</h3>
+<p>There are 762,261 blocks and 762,261 zero-input rows, one per block, records
+arrive in block order and <code>block_id</code> never decreases — so every other
+record’s block is simply the block the last coinbase opened.  Storing it per
+record would cost a varint on 777.8 million rows to repeat what the reader
+already knows.  The writer refuses a record whose block is not the open one
+rather than dropping it silently, and <code>--check</code> proves the reconstruction
+field for field against the source.</p>
+<h3 id="a-single-input-row-stores-no-amount"><a class="doc-anchor" href="#a-single-input-row-stores-no-amount">§</a>A single-input row stores no amount</h3>
+<p>73.14% of rows have exactly one input, and for those the amount is dead
+weight.  The <code>share</code> closure in <code>run</code> (<code>src/main.rs</code>) computes it as —
+named rather than pointed at with a line range, which rots the next time
+anything above it moves:</p>
+<div class="example-wrap"><pre class="language-text"><code>let total = inputs.iter().map(|i| i.amount as f64).sum();
+if total &gt; 0.0 { input.amount / total } else { 1.0 / inputs.len() as f64 }</code></pre></div>
+<p>With one input, <code>total</code> <em>is</em> that input’s amount: a non-zero amount takes
+the first branch and gives <code>a / a == 1.0</code> exactly, and a zero amount takes
+the second and gives <code>1.0 / 1.0 == 1.0</code>.  Both branches are exactly 1.0, for
+every amount, so the value is not recoverable and does not need to be.  The
+reader fills <a href="constant.FILLED_AMOUNT.html" title="constant coloring_bt_transactions::matrix::FILLED_AMOUNT"><code>FILLED_AMOUNT</code></a> — 1, not 0, so that anything else summing a
+row’s amounts sees a total it can divide by rather than falling into the
+equal-share branch by accident.  This saves 569,499,647 values, the majority
+of the file’s inputs, at the cost of one claim that <code>--check</code> re-tests on
+every record it verifies.</p>
+<h3 id="the-in-flight-magic"><a class="doc-anchor" href="#the-in-flight-magic">§</a>The in-flight magic</h3>
+<p>The magic is written <code>FOLDMATW</code> and overwritten with <code>FOLDMAT1</code> as the
+writer’s last act, so a killed write is refused rather than half-trusted.
+<code>examples/lastspend.rs</code> writes a 3.11 GB file and does no such thing, and
+that is not an inconsistency:</p>
+<ul>
+<li><code>lastspend</code> knows its counts before it writes anything, writes the header
+first and then a fixed-size array, and <a href="../oracle/struct.Oracle.html#method.load" title="associated function coloring_bt_transactions::oracle::Oracle::load"><code>oracle::Oracle::load</code></a>
+reads that array with one <code>read_exact</code> — a truncated oracle fails on the
+spot, in the first millisecond, by construction.</li>
+<li>FOLDMAT is a stream of self-delimiting rows.  A truncated one parses
+perfectly for however many million rows did get written and fails at the
+byte where they stop, which may be an hour into a fold, and its counts and
+its <code>GROUPS</code> index will all look plausible until then.</li>
+<li>And it costs 20 minutes and 10.6 GB to make, which is exactly the pressure
+that makes someone want to believe a file that is nearly right.</li>
+</ul>
+<h3 id="one-pass-and-the-copy-it-costs"><a class="doc-anchor" href="#one-pass-and-the-copy-it-costs">§</a>One pass, and the copy it costs</h3>
+<p><code>TXFIX</code> and <code>GROUPS</code> are indexes over the rows, and they sit <em>before</em> the
+rows — that is what the header’s rows offset is for.  Neither is knowable
+until the last record has been read, and the record count is not known in
+advance either (the input is a pipe), so the two honest choices are:</p>
+<ul>
+<li>read the 150 GB twice, once to size the indexes and once to write the
+rows: 12.5 minutes of extra reading; or</li>
+<li>write the rows to a spill file beside the destination, then write the
+header and the indexes and copy the rows in behind them.</li>
+</ul>
+<p><a href="struct.Writer.html" title="struct coloring_bt_transactions::matrix::Writer"><code>Writer</code></a> does the second.  The copy is <code>std::io::copy</code> between two <code>File</code>s,
+which on Linux is <code>copy_file_range</code> and never leaves the kernel.  On the
+20,000,000-record prefix below it moves 207,073,872 bytes — the spill alone,
+which is the finished file’s 207,152,079 less the 78,207 bytes of header and
+indexes written in front of it — and the same file
+through <code>cp(1)</code> on the same filesystem takes 0.19s, 0.43s and 0.63s over
+three runs — so the whole chain’s 10.6 GB is on the order of ten to thirty
+seconds, against a pass whose parse alone took 7.0s for 3.19 GB.  What it
+does cost is disk: the rows exist twice for the length of the copy, 21.2 GB
+at the peak, and the spill is removed only on success — a killed run leaves
+<code>&lt;file&gt;.rows</code> behind on purpose, next to a destination that still says
+<code>FOLDMATW</code>.</p>
+<h3 id="groups-is-for-the-thread-that-is-already-there"><a class="doc-anchor" href="#groups-is-for-the-thread-that-is-already-there">§</a>GROUPS is for the thread that is already there</h3>
+<p>Varints are serial: byte <em>n</em> cannot be decoded without knowing where row
+<em>r</em> began.  <code>GROUPS</code> breaks that every 4096 rows, giving the byte offset of
+the group’s first row and the nonzeros before it, for 16 bytes a group — 3
+MB over the chain, 0.03% of the file.  With it the decode can be split
+across threads, or hidden entirely on the one thread
+<a href="../prefetch/index.html" title="mod coloring_bt_transactions::prefetch"><code>prefetch</code></a> already spends on parsing: a batch boundary
+falls between records there, and a group boundary is a record boundary with
+its offsets written down.  Every group’s offset and nonzero count is also
+<em>asserted</em> on the way past by <a href="struct.Reader.html#method.next_record" title="method coloring_bt_transactions::matrix::Reader::next_record"><code>Reader::next_record</code></a>, so the index is
+checked by the sweep that does not need it rather than trusted by the one
+that does.</p>
+<h3 id="what-the-prefix-runs-said"><a class="doc-anchor" href="#what-the-prefix-runs-said">§</a>What the prefix runs said</h3>
+<p>Everything above was written against the whole-chain survey’s numbers and
+then run on prefixes of the file it surveyed, <code>head -n &lt;n&gt;</code> of
+<code>finalBCUTXO_2022.scm</code>, because the 150 GB pass is not this module’s to
+launch.  What those runs printed:</p>
+<ul>
+<li><strong>20,000,000 records</strong>, 3,189,416,993 bytes of text, written in 8.8s:
+<strong>207,152,079 bytes</strong>, 10.36 a record and 4.90 a nonzero, 15.4x smaller
+than the text it came from.  Columns are 40.7% of it, amounts 49.3%,
+heads 9.8%, blocks 0.1%.  <code>GROUPS</code> is 4,883 entries and 78,128 bytes,
+0.038%.</li>
+<li><code>--check</code> over the same 20,000,000 records: <strong>field for field in 10.4s</strong>,
+every block id reconstructed from the coinbase rows alone agreeing with
+the file’s own, and the content hash agreeing with the header’s.</li>
+<li><code>TXFIX</code> on any prefix past record 142,842 is <strong>4 entries</strong>, at rows
+142,783, 142,784, 142,841 and 142,842 — the two BIP-30 duplicate
+coinbases and the two steps back onto the sequence.  That is the whole
+chain’s four non-consecutive steps, in 12 bytes.</li>
+<li><code>--structure</code> over 5,000,000 records is 24,417,836 bytes against the
+compact form’s 47,267,272: the amounts really are half of it.</li>
+<li><code>--csr</code> over the same 20,000,000: 418,253,692 bytes, <strong>2.02x this
+format</strong>, with 31.87% of its weights round-tripping, a worst relative
+error of 5.960e-8, and a row’s weights drifting from 1.976e-14 off one in
+<code>f64</code> to 5.914e-8 in <code>f32</code>.  The chain-wide figure is 28.10%; a prefix is
+kinder because early rows have fewer inputs and simpler ratios.</li>
+<li>The parse is most of the cost and always was: <code>examples/lastspend.rs</code>,
+which parses the same 20,000,000 records and does almost nothing with
+them, takes 7.0s against this writer’s 8.8s.  The encoding, the spill and
+the copy together are 1.8s on top of a 7.0s parse.</li>
+<li>Killed 2s into a write with <code>SIGKILL</code>: a 64-byte destination reading
+<code>FOLDMATW</code>, a 46,137,244-byte <code>&lt;file&gt;.rows</code> beside it, and both <code>--stats</code>
+and <code>--check</code> refusing it by name.</li>
+</ul>
+<h3 id="what-checks-the-matrix-when-the-records-are-not-there"><a class="doc-anchor" href="#what-checks-the-matrix-when-the-records-are-not-there">§</a>What checks the matrix when the records are not there</h3>
+<p><code>--check</code> is field for field against the source, and it needs the source:
+150 GB and twelve and a half minutes of reading, which is the cost this file
+exists to stop paying.  A run that folds a matrix pays none of it and, until
+<a href="struct.Reader.html#method.verify" title="method coloring_bt_transactions::matrix::Reader::verify"><code>Reader::verify</code></a>, checked none of it either — the header has carried a
+content hash since the first version and no reader ever read it.  Measured on
+a 20,000-record matrix: <strong>102,220 of the 347,416 single-bit flips inside
+<code>ROWS</code></strong> are accepted by the reader, folded, and answered with exit 0, an
+empty standard error and a different answer.  <code>--verify</code> is the sweep that
+closes that with the matrix alone, and it refuses all 102,220; over the whole
+chain it is 110s and 5.4 MB resident against <code>--check</code>’s 150 GB.
+<a href="struct.Reader.html#method.verify" title="method coloring_bt_transactions::matrix::Reader::verify"><code>Reader::verify</code></a> says what the hashing costs and why the fold does not pay
+it.</p>
+<h3 id="use"><a class="doc-anchor" href="#use">§</a>Use</h3><div class="example-wrap"><pre class="language-text"><code>cargo run --release --example matrix -- /data/bitcoin/2022/A.foldmat \
+  &lt; /data/bitcoin/2022/finalBCUTXO_2022.scm
+cargo run --release --example matrix -- --check /data/bitcoin/2022/A.foldmat \
+  &lt; /data/bitcoin/2022/finalBCUTXO_2022.scm
+cargo run --release --example matrix -- --verify /data/bitcoin/2022/A.foldmat</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Bytes.html" title="struct coloring_bt_transactions::matrix::Bytes">Bytes</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A window onto the file, and the varints read out of it.</dd><dt><a class="struct" href="struct.Encoder.html" title="struct coloring_bt_transactions::matrix::Encoder">Encoder</a></dt><dd>The rows, and the two indexes over them, built in one pass.</dd><dt><a class="struct" href="struct.Fnv.html" title="struct coloring_bt_transactions::matrix::Fnv">Fnv</a></dt><dd>FNV-1a over 64-bit fields.</dd><dt><a class="struct" href="struct.Header.html" title="struct coloring_bt_transactions::matrix::Header">Header</a></dt><dd>The 64 bytes at the front, and everything a file says about itself.</dd><dt><a class="struct" href="struct.Reader.html" title="struct coloring_bt_transactions::matrix::Reader">Reader</a></dt><dd>A FOLDMAT file, read the way the records were.</dd><dt><a class="struct" href="struct.Sections.html" title="struct coloring_bt_transactions::matrix::Sections">Sections</a></dt><dd>Where the rows’ bytes went.</dd><dt><a class="struct" href="struct.Verified.html" title="struct coloring_bt_transactions::matrix::Verified">Verified</a></dt><dd>What a sweep of a matrix alone found in it.</dd><dt><a class="struct" href="struct.Writer.html" title="struct coloring_bt_transactions::matrix::Writer">Writer</a></dt><dd>A FOLDMAT file, written in one pass over the records.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.FILLED_AMOUNT.html" title="constant coloring_bt_transactions::matrix::FILLED_AMOUNT">FILLED_<wbr>AMOUNT</a></dt><dd>The amount a reader fills in for an input whose row stored none.</dd><dt><a class="constant" href="constant.FLAGS_KNOWN.html" title="constant coloring_bt_transactions::matrix::FLAGS_KNOWN">FLAGS_<wbr>KNOWN</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Everything a reader here knows how to honour.  A file setting anything else
+is refused whole; see <a href="struct.Header.html#method.decode" title="associated function coloring_bt_transactions::matrix::Header::decode"><code>Header::decode</code></a>.</dd><dt><a class="constant" href="constant.FLAG_AMOUNTS.html" title="constant coloring_bt_transactions::matrix::FLAG_AMOUNTS">FLAG_<wbr>AMOUNTS</a></dt><dd>Bit 0 of the flags: amounts are stored.  Clear under <code>--structure</code>.</dd><dt><a class="constant" href="constant.FLAG_DEDUPED_PARENTS.html" title="constant coloring_bt_transactions::matrix::FLAG_DEDUPED_PARENTS">FLAG_<wbr>DEDUPED_<wbr>PARENTS</a></dt><dd>Bit 2, reserved and refused: repeated parents collapsed to one column with a
+multiplicity.  Measured, and it frees colours at the wrong instant.</dd><dt><a class="constant" href="constant.FLAG_SORTED_COLUMNS.html" title="constant coloring_bt_transactions::matrix::FLAG_SORTED_COLUMNS">FLAG_<wbr>SORTED_<wbr>COLUMNS</a></dt><dd>Bit 1, reserved and refused: a row’s columns sorted ascending rather than in
+file order.  Measured, and it changes 4.06% of <code>--sum</code> lines.</dd><dt><a class="constant" href="constant.GROUP.html" title="constant coloring_bt_transactions::matrix::GROUP">GROUP</a></dt><dd>Rows per entry of the <code>GROUPS</code> index.</dd><dt><a class="constant" href="constant.HEADER_BYTES.html" title="constant coloring_bt_transactions::matrix::HEADER_BYTES">HEADER_<wbr>BYTES</a></dt><dd>The header, fixed.</dd><dt><a class="constant" href="constant.MAGIC.html" title="constant coloring_bt_transactions::matrix::MAGIC">MAGIC</a></dt><dd>What a reader looks for before believing a byte of the file.</dd><dt><a class="constant" href="constant.MAGIC_IN_FLIGHT.html" title="constant coloring_bt_transactions::matrix::MAGIC_IN_FLIGHT">MAGIC_<wbr>IN_<wbr>FLIGHT</a></dt><dd>What the file says while it is being written.</dd><dt><a class="constant" href="constant.RESERVE.html" title="constant coloring_bt_transactions::matrix::RESERVE">RESERVE</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>The most a reader will reserve up front on a count the file handed it.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.bad.html" title="fn coloring_bt_transactions::matrix::bad">bad</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dt><a class="fn" href="fn.hash_record.html" title="fn coloring_bt_transactions::matrix::hash_record">hash_<wbr>record</a></dt><dd>Absorb one record’s stored fields, in the order a row stores them.</dd><dt><a class="fn" href="fn.put_varint.html" title="fn coloring_bt_transactions::matrix::put_varint">put_<wbr>varint</a></dt><dd>Append <code>v</code> as unsigned LEB128.</dd><dt><a class="fn" href="fn.put_zigzag.html" title="fn coloring_bt_transactions::matrix::put_zigzag">put_<wbr>zigzag</a></dt><dd>Append <code>v</code> zigzagged and then as a varint.</dd><dt><a class="fn" href="fn.unzigzag.html" title="fn coloring_bt_transactions::matrix::unzigzag">unzigzag</a></dt><dd>The inverse of <a href="fn.zigzag.html" title="fn coloring_bt_transactions::matrix::zigzag"><code>zigzag</code></a>.</dd><dt><a class="fn" href="fn.zigzag.html" title="fn coloring_bt_transactions::matrix::zigzag">zigzag</a></dt><dd>Fold a signed value onto the non-negative ones, so that a small negative
+delta is a small number: <code>(n &lt;&lt; 1) ^ (n &gt;&gt; 63)</code>.</dd></dl></section></div></main></body></html>

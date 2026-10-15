@@ -1,0 +1,76 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="The `TINTS_LEN` colours a `tint_index` byte points at."><title>tints in coloring_bt_transactions::oklch - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-0c87338a.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.99.0 (b940084d7 2026-09-28)" data-channel="1.99.0" data-search-js="search-cf4fc35e.js" data-stringdex-js="stringdex-b5109af9.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-9f56287d.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">tints</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../coloring_bt_transactions/index.html">coloring_<wbr>bt_<wbr>transactions</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">tints</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#why-32-by-8-and-what-it-costs" title="Why 32 by 8, and what it costs">Why 32 by 8, and what it costs</a></li><li><a href="#the-mix-ladder-that-was-rejected" title="The mix ladder that was rejected">The mix ladder that was rejected</a></li><li><a href="#the-32-entries-that-never-come-up" title="The 32 entries that never come up">The 32 entries that never come up</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In coloring_<wbr>bt_<wbr>transactions::<wbr>oklch</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">coloring_bt_transactions</a>::<wbr><a href="index.html">oklch</a></div><h1>Function <span class="fn">tints</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/coloring_bt_transactions/oklch.rs.html#380-393">Source</a> </span></div><pre class="rust item-decl"><code>pub fn tints() -&gt; [[<a class="primitive" href="https://doc.rust-lang.org/1.99.0/std/primitive.u8.html">u8</a>; <a class="primitive" href="https://doc.rust-lang.org/1.99.0/std/primitive.array.html">3</a>]; <a class="primitive" href="https://doc.rust-lang.org/1.99.0/std/primitive.array.html">256</a>]</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>The <a href="constant.TINTS_LEN.html" title="constant coloring_bt_transactions::oklch::TINTS_LEN"><code>TINTS_LEN</code></a> colours a <a href="fn.tint_index.html" title="fn coloring_bt_transactions::oklch::tint_index"><code>tint_index</code></a> byte points at.</p>
+<p><strong>This is not <a href="fn.ramp.html" title="fn coloring_bt_transactions::oklch::ramp"><code>ramp</code></a> and must not be confused with it.</strong>  <code>ramp</code> is keyed
+by a <em>weight</em> sample on the block axis and is what the <code>PLTE</code> of the
+(transaction, block) picture holds; this is keyed by a <em>whole colour</em>
+quantised on two axes, and there is no block axis in it at all.  A tint
+index fed through <code>ramp</code> would draw a legend that lies about what every
+pixel means, which is why this is a second table under a second name rather
+than a second use of the first.</p>
+<p>Every entry is <a href="fn.tint.html" title="fn coloring_bt_transactions::oklch::tint"><code>tint</code></a> evaluated at the centre of its bin, so there stays
+exactly one definition of the colour: change <a href="constant.HUE_ARC.html" title="constant coloring_bt_transactions::oklch::HUE_ARC"><code>HUE_ARC</code></a> or <a href="constant.LIGHTNESS.html" title="constant coloring_bt_transactions::oklch::LIGHTNESS"><code>LIGHTNESS</code></a>
+and the table moves with it, because the table is not a table — it is the
+same arithmetic, run 256 times at startup.  It takes no <code>chain_blocks</code>,
+because <code>tint</code> reads the mean block only as a fraction of the chain: the
+height moves which transactions land in which bin, never what a bin looks
+like.</p>
+<h3 id="why-32-by-8-and-what-it-costs"><a class="doc-anchor" href="#why-32-by-8-and-what-it-costs">§</a>Why 32 by 8, and what it costs</h3>
+<p>The two axes compete for one byte, and half a bin of either is worth about
+the same thing in Oklab, so the split that minimises the worst case is the
+one that balances them.  A hue bin is <code>250 / H</code> degrees wide, so half of one
+is <code>125 / H</code>, and at the full chroma of 0.15 that is a distance of
+<code>0.15 * (125 / H) * pi / 180 = 0.327 / H</code>.  A mix bin is <code>1 / M</code> of the
+concentration, so half of one is <code>0.15 / (2 M) = 0.075 / M</code> of chroma
+directly.  With <code>H * M = 256</code> the two are equal at <code>H = 33.4</code>, predicting a
+worst case of 0.0139 in quadrature; 32 is the power of two beside it.</p>
+<p>Measured over the first 60,000,000 records of the 2022 chain
+(<code>--bands 1024 --moments</code>, 4m23s, 11.3 GB peak), as the mean and the worst
+Oklab distance between a transaction’s true <code>tint</code> and the entry its index
+points at:</p>
+<div class="example-wrap"><pre class="language-text"><code>      H    M   mix axis         mean dE    worst dE
+    128    2   concentration   0.020889    0.039607
+     85    3   concentration   0.014990    0.027193
+     64    4   concentration   0.007640    0.021206
+     51    5   concentration   0.007976    0.017383
+     42    6   concentration   0.007443    0.015563
+     32    8   concentration   0.005328    0.014707
+     25   10   concentration   0.005081    0.015956
+     16   16   concentration   0.005891    0.023166
+     64    4   doublings       0.009728    0.039572
+     32    8   doublings       0.007344    0.015578
+     16   16   doublings       0.008407    0.023166</code></pre></div>
+<p>32 by 8 has the smallest worst case of the lot, and 0.0139 predicted against
+0.014707 measured says the balance argument is the reason rather than a
+coincidence.  Only 25 by 10 beats it on the mean, by 0.0002, and pays 0.0012
+of worst case for it.  It matters that the <em>worst</em> case is what was
+minimised: 0.02 in Oklab is about a just-noticeable difference, a picture is
+read one transaction at a time, and at 32 by 8 no transaction anywhere moves
+by a difference an eye can find.</p>
+<p>The same table over 2,000,000 records of <code>--weighted --moments</code>, where the
+moments are exact rather than binned into 1024 bands — 936,288 of those
+2,000,000 lines carry a different mean or spread from the binned run over
+the same records — puts 32 by 8 at 0.004765 mean and <strong>0.014703</strong> worst.
+The same worst case to five digits off half a million different numbers is
+the point: it is a property of the geometry and not of the data, so it is a
+guarantee and not an observation.</p>
+<h3 id="the-mix-ladder-that-was-rejected"><a class="doc-anchor" href="#the-mix-ladder-that-was-rejected">§</a>The mix ladder that was rejected</h3>
+<p><code>src/bin/tx-view.rs</code> gives one slot per doubling — 1 block, 2 or 3, 4 to 7 —
+which is the right ladder for a <em>count of blocks</em> starting at one.  Tried
+here as bins doubling out from <code>SPREAD_HALF / 2^(M-4)</code>, it is worse on both
+statistics at every split that fits in a byte: 0.007344 mean and 0.015578
+worst at 32 by 8, against 0.005328 and 0.014707.  The reason is in the
+paragraph above <code>tint_index</code>.  A doubling ladder is compressive in the
+spread; the chroma is not a function of the spread but of the
+<a href="fn.concentration.html" title="fn coloring_bt_transactions::oklch::concentration"><code>concentration</code></a>, which is compressive already.  Compressing a compressed
+axis crowds the concentrated end — where 5.78% of those 60,000,000 records
+sit at a spread of exactly zero — and stretches the mixed end, where there
+is nothing.</p>
+<h3 id="the-32-entries-that-never-come-up"><a class="doc-anchor" href="#the-32-entries-that-never-come-up">§</a>The 32 entries that never come up</h3>
+<p>Mix slot 7 is every concentration under 1/8, which needs a spread past
+315,000 blocks; the largest in the 2022 chain is about 260,000, so 32 of the
+256 entries stand for a colour that chain never shows.  They are kept.
+Fitting the axis to the widest spread actually seen would buy about an
+eighth of the mix error and would make the byte a function of the file it
+was computed over — the same transaction would get one index in a run over a
+prefix and another in a run over the whole chain, which is exactly the
+property that makes a byte stream unreadable six months later.</p>
+</div></details></section></div></main></body></html>

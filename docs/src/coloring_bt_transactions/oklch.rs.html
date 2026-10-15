@@ -1,0 +1,833 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/oklch.rs`."><title>oklch.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-0c87338a.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="coloring_bt_transactions" data-themes="" data-resource-suffix="" data-rustdoc-version="1.99.0 (b940084d7 2026-09-28)" data-channel="1.99.0" data-search-js="search-cf4fc35e.js" data-stringdex-js="stringdex-b5109af9.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-9f56287d.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">coloring_bt_transactions/</div>oklch.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! # A perceptual colour space, and the ramp the picture is drawn in
+<a href=#2 id=2 data-nosnippet>2</a>//!
+<a href=#3 id=3 data-nosnippet>3</a>//! [`crate::image`]'s weighted pixel is a grey: `weight^(1/2.2)`, dark for a
+<a href=#4 id=4 data-nosnippet>4</a>//! block that carried most of a transaction's value and pale for one that
+<a href=#5 id=5 data-nosnippet>5</a>//! carried a trace.  Grey has 254 steps between paper and ink and the eye reads
+<a href=#6 id=6 data-nosnippet>6</a>//! perhaps thirty of them, which for a quantity whose interesting range is a
+<a href=#7 id=7 data-nosnippet>7</a>//! fraction of a percent is most of the picture thrown away.
+<a href=#8 id=8 data-nosnippet>8</a>//!
+<a href=#9 id=9 data-nosnippet>9</a>//! A colour ramp reads further, but only if it is built in a space where equal
+<a href=#10 id=10 data-nosnippet>10</a>//! steps *look* equal.  That is the whole reason this module exists and the
+<a href=#11 id=11 data-nosnippet>11</a>//! reason it is not HSL: HSL's "lightness" is not luminance and its hue circle
+<a href=#12 id=12 data-nosnippet>12</a>//! is wildly non-uniform — yellow at 60° and blue at 240° are nominally the
+<a href=#13 id=13 data-nosnippet>13</a>//! same lightness and are nothing of the sort — so a ramp built in it has
+<a href=#14 id=14 data-nosnippet>14</a>//! bands where the eye sees a step that is not there and stretches where it
+<a href=#15 id=15 data-nosnippet>15</a>//! misses steps that are.  For a picture whose whole purpose is comparing
+<a href=#16 id=16 data-nosnippet>16</a>//! magnitudes that is not a cosmetic problem.
+<a href=#17 id=17 data-nosnippet>17</a>//!
+<a href=#18 id=18 data-nosnippet>18</a>//! [Oklab](https://bottosson.github.io/posts/oklab/) is a perceptual space of
+<a href=#19 id=19 data-nosnippet>19</a>//! the CIELAB family, fitted to modern colour-matching data and cheap: two 3x3
+<a href=#20 id=20 data-nosnippet>20</a>//! matrices and a cube root each way.  `OkLCh` is its polar form — lightness,
+<a href=#21 id=21 data-nosnippet>21</a>//! chroma, hue — which is the one to build a ramp in, since those are the three
+<a href=#22 id=22 data-nosnippet>22</a>//! things a ramp wants to vary independently.
+<a href=#23 id=23 data-nosnippet>23</a>//!
+<a href=#24 id=24 data-nosnippet>24</a>//! ## Lightness carries the magnitude
+<a href=#25 id=25 data-nosnippet>25</a>//!
+<a href=#26 id=26 data-nosnippet>26</a>//! [`ramp`] varies all three, but the load is on lightness, monotonically.
+<a href=#27 id=27 data-nosnippet>27</a>//! That is what makes it readable photocopied, readable by the eight percent of
+<a href=#28 id=28 data-nosnippet>28</a>//! men with a colour deficiency, and readable at all where the picture is
+<a href=#29 id=29 data-nosnippet>29</a>//! folded so small that a cell is a sample rather than a shape.  Hue and chroma
+<a href=#30 id=30 data-nosnippet>30</a>//! come along to separate levels that lightness alone leaves adjacent; they are
+<a href=#31 id=31 data-nosnippet>31</a>//! not carrying the signal on their own.
+<a href=#32 id=32 data-nosnippet>32</a>//!
+<a href=#33 id=33 data-nosnippet>33</a>//! ## Gamut
+<a href=#34 id=34 data-nosnippet>34</a>//!
+<a href=#35 id=35 data-nosnippet>35</a>//! `OkLCh` can name colours sRGB cannot show, and most of the chroma one would
+<a href=#36 id=36 data-nosnippet>36</a>//! like at the dark end is outside it.  Clamping the channels afterwards is the
+<a href=#37 id=37 data-nosnippet>37</a>//! obvious fix and the wrong one: it shifts the hue, so a ramp meant to sweep
+<a href=#38 id=38 data-nosnippet>38</a>//! evenly gets a flat spot where several entries clamp to the same face of the
+<a href=#39 id=39 data-nosnippet>39</a>//! cube.  [`in_gamut`] instead keeps the lightness and the hue and takes the
+<a href=#40 id=40 data-nosnippet>40</a>//! chroma down until the colour fits, by bisection — the standard move, and it
+<a href=#41 id=41 data-nosnippet>41</a>//! is 256 colours computed once at startup, so its cost is nothing.
+<a href=#42 id=42 data-nosnippet>42</a>
+<a href=#43 id=43 data-nosnippet>43</a>/// Entries in the ramp, which is one for every value a sample can take.
+<a href=#44 id=44 data-nosnippet>44</a></span><span class="kw">pub const </span>RAMP_LEN: usize = <span class="number">256</span>;
+<a href=#45 id=45 data-nosnippet>45</a>
+<a href=#46 id=46 data-nosnippet>46</a><span class="doccomment">/// An sRGB colour, gamma-encoded, as a PNG palette holds it.
+<a href=#47 id=47 data-nosnippet>47</a></span><span class="kw">pub type </span>Rgb = [u8; <span class="number">3</span>];
+<a href=#48 id=48 data-nosnippet>48</a>
+<a href=#49 id=49 data-nosnippet>49</a><span class="doccomment">/// `OkLCh` to sRGB: lightness in `0..=1`, chroma from 0, hue in degrees.
+<a href=#50 id=50 data-nosnippet>50</a>///
+<a href=#51 id=51 data-nosnippet>51</a>/// Answers `None` when the colour is outside what sRGB can show, which is what
+<a href=#52 id=52 data-nosnippet>52</a>/// [`in_gamut`] bisects on.
+<a href=#53 id=53 data-nosnippet>53</a></span><span class="kw">fn </span>oklch_to_srgb(lightness: f64, chroma: f64, hue_degrees: f64) -&gt; <span class="prelude-ty">Option</span>&lt;Rgb&gt; {
+<a href=#54 id=54 data-nosnippet>54</a>    <span class="kw">let </span>hue = hue_degrees.to_radians();
+<a href=#55 id=55 data-nosnippet>55</a>    <span class="kw">let </span>(a, b) = (chroma * hue.cos(), chroma * hue.sin());
+<a href=#56 id=56 data-nosnippet>56</a>
+<a href=#57 id=57 data-nosnippet>57</a>    <span class="comment">// Oklab to LMS, cubed back out of the cube root the forward direction takes.
+<a href=#58 id=58 data-nosnippet>58</a>    </span><span class="kw">let </span>l_ = lightness + <span class="number">0.396_337_777_4 </span>* a + <span class="number">0.215_803_757_3 </span>* b;
+<a href=#59 id=59 data-nosnippet>59</a>    <span class="kw">let </span>m_ = lightness - <span class="number">0.105_561_345_8 </span>* a - <span class="number">0.063_854_172_8 </span>* b;
+<a href=#60 id=60 data-nosnippet>60</a>    <span class="kw">let </span>s_ = lightness - <span class="number">0.089_484_177_5 </span>* a - <span class="number">1.291_485_548_0 </span>* b;
+<a href=#61 id=61 data-nosnippet>61</a>    <span class="kw">let </span>(l, m, s) = (l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_);
+<a href=#62 id=62 data-nosnippet>62</a>
+<a href=#63 id=63 data-nosnippet>63</a>    <span class="comment">// LMS to linear sRGB.
+<a href=#64 id=64 data-nosnippet>64</a>    </span><span class="kw">let </span>linear = [
+<a href=#65 id=65 data-nosnippet>65</a>        <span class="number">4.076_741_662_1 </span>* l - <span class="number">3.307_711_591_3 </span>* m + <span class="number">0.230_969_929_2 </span>* s,
+<a href=#66 id=66 data-nosnippet>66</a>        -<span class="number">1.268_438_004_6 </span>* l + <span class="number">2.609_757_401_1 </span>* m - <span class="number">0.341_319_396_5 </span>* s,
+<a href=#67 id=67 data-nosnippet>67</a>        -<span class="number">0.004_196_086_3 </span>* l - <span class="number">0.703_418_614_7 </span>* m + <span class="number">1.707_614_701_0 </span>* s,
+<a href=#68 id=68 data-nosnippet>68</a>    ];
+<a href=#69 id=69 data-nosnippet>69</a>
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = [<span class="number">0u8</span>; <span class="number">3</span>];
+<a href=#71 id=71 data-nosnippet>71</a>    <span class="kw">for </span>(slot, <span class="kw-2">&amp;</span>value) <span class="kw">in </span>out.iter_mut().zip(<span class="kw-2">&amp;</span>linear) {
+<a href=#72 id=72 data-nosnippet>72</a>        <span class="comment">// Outside the cube is outside the gamut.  A hair of tolerance, because
+<a href=#73 id=73 data-nosnippet>73</a>        // the matrices are a fit and the primaries themselves land a few
+<a href=#74 id=74 data-nosnippet>74</a>        // billionths past 0 and 1.
+<a href=#75 id=75 data-nosnippet>75</a>        </span><span class="kw">if </span>!(-<span class="number">1e-6</span>..=<span class="number">1.0 </span>+ <span class="number">1e-6</span>).contains(<span class="kw-2">&amp;</span>value) {
+<a href=#76 id=76 data-nosnippet>76</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#77 id=77 data-nosnippet>77</a>        }
+<a href=#78 id=78 data-nosnippet>78</a>        <span class="kw">let </span>clamped = value.clamp(<span class="number">0.0</span>, <span class="number">1.0</span>);
+<a href=#79 id=79 data-nosnippet>79</a>        <span class="comment">// The sRGB transfer function, which is a straight line near black and a
+<a href=#80 id=80 data-nosnippet>80</a>        // 2.4 power above it.
+<a href=#81 id=81 data-nosnippet>81</a>        </span><span class="kw">let </span>encoded = <span class="kw">if </span>clamped &lt;= <span class="number">0.003_130_8 </span>{
+<a href=#82 id=82 data-nosnippet>82</a>            <span class="number">12.92 </span>* clamped
+<a href=#83 id=83 data-nosnippet>83</a>        } <span class="kw">else </span>{
+<a href=#84 id=84 data-nosnippet>84</a>            <span class="number">1.055 </span>* clamped.powf(<span class="number">1.0 </span>/ <span class="number">2.4</span>) - <span class="number">0.055
+<a href=#85 id=85 data-nosnippet>85</a>        </span>};
+<a href=#86 id=86 data-nosnippet>86</a>        <span class="kw-2">*</span>slot = (encoded * <span class="number">255.0</span>).round().clamp(<span class="number">0.0</span>, <span class="number">255.0</span>) <span class="kw">as </span>u8;
+<a href=#87 id=87 data-nosnippet>87</a>    }
+<a href=#88 id=88 data-nosnippet>88</a>    <span class="prelude-val">Some</span>(out)
+<a href=#89 id=89 data-nosnippet>89</a>}
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a><span class="doccomment">/// The colour at this lightness and hue with as much of `chroma` as sRGB can
+<a href=#92 id=92 data-nosnippet>92</a>/// show.
+<a href=#93 id=93 data-nosnippet>93</a>///
+<a href=#94 id=94 data-nosnippet>94</a>/// Bisection on the chroma, keeping lightness and hue exactly: sixteen steps
+<a href=#95 id=95 data-nosnippet>95</a>/// take the interval below a thousandth, which is far under a step of the
+<a href=#96 id=96 data-nosnippet>96</a>/// 8-bit channels this ends up in.  A lightness of 0 or 1 is black or white and
+<a href=#97 id=97 data-nosnippet>97</a>/// admits no chroma at all, which falls out of the same search rather than
+<a href=#98 id=98 data-nosnippet>98</a>/// needing a case.
+<a href=#99 id=99 data-nosnippet>99</a></span><span class="kw">fn </span>in_gamut(lightness: f64, chroma: f64, hue_degrees: f64) -&gt; Rgb {
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(rgb) = oklch_to_srgb(lightness, chroma, hue_degrees) {
+<a href=#101 id=101 data-nosnippet>101</a>        <span class="kw">return </span>rgb;
+<a href=#102 id=102 data-nosnippet>102</a>    }
+<a href=#103 id=103 data-nosnippet>103</a>    <span class="kw">let </span>(<span class="kw-2">mut </span>low, <span class="kw-2">mut </span>high) = (<span class="number">0.0</span>, chroma);
+<a href=#104 id=104 data-nosnippet>104</a>    <span class="comment">// Grey is always inside, so this is the answer if every step fails.
+<a href=#105 id=105 data-nosnippet>105</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>best = oklch_to_srgb(lightness, <span class="number">0.0</span>, hue_degrees)
+<a href=#106 id=106 data-nosnippet>106</a>        .unwrap_or([<span class="kw">if </span>lightness &gt; <span class="number">0.5 </span>{ <span class="number">255 </span>} <span class="kw">else </span>{ <span class="number">0 </span>}; <span class="number">3</span>]);
+<a href=#107 id=107 data-nosnippet>107</a>    <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">16 </span>{
+<a href=#108 id=108 data-nosnippet>108</a>        <span class="kw">let </span>middle = <span class="number">0.5 </span>* (low + high);
+<a href=#109 id=109 data-nosnippet>109</a>        <span class="kw">match </span>oklch_to_srgb(lightness, middle, hue_degrees) {
+<a href=#110 id=110 data-nosnippet>110</a>            <span class="prelude-val">Some</span>(rgb) =&gt; {
+<a href=#111 id=111 data-nosnippet>111</a>                best = rgb;
+<a href=#112 id=112 data-nosnippet>112</a>                low = middle;
+<a href=#113 id=113 data-nosnippet>113</a>            }
+<a href=#114 id=114 data-nosnippet>114</a>            <span class="prelude-val">None </span>=&gt; high = middle,
+<a href=#115 id=115 data-nosnippet>115</a>        }
+<a href=#116 id=116 data-nosnippet>116</a>    }
+<a href=#117 id=117 data-nosnippet>117</a>    best
+<a href=#118 id=118 data-nosnippet>118</a>}
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a><span class="doccomment">/// The ramp, from paper to the heaviest ink, as [`RAMP_LEN`] sRGB colours.
+<a href=#121 id=121 data-nosnippet>121</a>///
+<a href=#122 id=122 data-nosnippet>122</a>/// `ramp()[0]` is what a sample of 0 draws and `ramp()[255]` what a sample of
+<a href=#123 id=123 data-nosnippet>123</a>/// 255 draws.  [`crate::image`] counts *up* to paper — a heavier pixel is a
+<a href=#124 id=124 data-nosnippet>124</a>/// smaller sample, so that the union of two transactions is the smaller of
+<a href=#125 id=125 data-nosnippet>125</a>/// their samples and a row can be blanked to all 1s — so index 255 is the paper
+<a href=#126 id=126 data-nosnippet>126</a>/// and index 0 the heaviest ink.  The ramp is written in that direction.
+<a href=#127 id=127 data-nosnippet>127</a>///
+<a href=#128 id=128 data-nosnippet>128</a>/// What it does between them:
+<a href=#129 id=129 data-nosnippet>129</a>///
+<a href=#130 id=130 data-nosnippet>130</a>/// - **lightness** falls from very nearly white to a dark that still has room
+<a href=#131 id=131 data-nosnippet>131</a>///   for chroma, and falls monotonically, which is the property the whole ramp
+<a href=#132 id=132 data-nosnippet>132</a>///   rests on. See the module docs.
+<a href=#133 id=133 data-nosnippet>133</a>/// - **hue** sweeps 250° of the circle and no more, from a cold blue through
+<a href=#134 id=134 data-nosnippet>134</a>///   green and gold to a warm red. It is an arc rather than the full circle
+<a href=#135 id=135 data-nosnippet>135</a>///   because the ends have to stay apart: a ramp that wraps puts its lightest
+<a href=#136 id=136 data-nosnippet>136</a>///   and darkest entries at the same hue, which is exactly the confusion it is
+<a href=#137 id=137 data-nosnippet>137</a>///   there to prevent.
+<a href=#138 id=138 data-nosnippet>138</a>/// - **chroma** rises off the paper and falls again into the dark, since
+<a href=#139 id=139 data-nosnippet>139</a>///   neither end of the lightness axis has gamut to spare. The peak sits
+<a href=#140 id=140 data-nosnippet>140</a>///   towards the heavy end, where the levels most need separating.
+<a href=#141 id=141 data-nosnippet>141</a></span><span class="kw">pub fn </span>ramp() -&gt; [Rgb; RAMP_LEN] {
+<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = [[<span class="number">0u8</span>; <span class="number">3</span>]; RAMP_LEN];
+<a href=#143 id=143 data-nosnippet>143</a>    <span class="kw">for </span>(index, slot) <span class="kw">in </span>out.iter_mut().enumerate() {
+<a href=#144 id=144 data-nosnippet>144</a>        <span class="comment">// 0 at paper, 1 at the heaviest ink -- the reverse of the index.
+<a href=#145 id=145 data-nosnippet>145</a>        </span><span class="kw">let </span>t = (RAMP_LEN - <span class="number">1 </span>- index) <span class="kw">as </span>f64 / (RAMP_LEN - <span class="number">1</span>) <span class="kw">as </span>f64;
+<a href=#146 id=146 data-nosnippet>146</a>
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="kw">let </span>lightness = <span class="number">0.985 </span>- <span class="number">0.66 </span>* t;
+<a href=#148 id=148 data-nosnippet>148</a>        <span class="kw">let </span>hue = <span class="number">250.0 </span>- <span class="number">250.0 </span>* t.powf(<span class="number">0.85</span>);
+<a href=#149 id=149 data-nosnippet>149</a>        <span class="comment">// Zero at the paper end so the lightest entries are true neutrals, and
+<a href=#150 id=150 data-nosnippet>150</a>        // eased off again into the dark where there is no gamut for it.
+<a href=#151 id=151 data-nosnippet>151</a>        </span><span class="kw">let </span>chroma = <span class="number">0.16 </span>* (t.powf(<span class="number">0.55</span>)) * (<span class="number">1.0 </span>- <span class="number">0.45 </span>* t * t);
+<a href=#152 id=152 data-nosnippet>152</a>
+<a href=#153 id=153 data-nosnippet>153</a>        <span class="kw-2">*</span>slot = in_gamut(lightness, chroma, hue);
+<a href=#154 id=154 data-nosnippet>154</a>    }
+<a href=#155 id=155 data-nosnippet>155</a>    out
+<a href=#156 id=156 data-nosnippet>156</a>}
+<a href=#157 id=157 data-nosnippet>157</a>
+<a href=#158 id=158 data-nosnippet>158</a><span class="doccomment">/// The spread, in blocks, at which half the chroma is gone.  About 6% of the
+<a href=#159 id=159 data-nosnippet>159</a>/// 2022 chain: measured colours run from 0 for a coinbase to some 260,000 at
+<a href=#160 id=160 data-nosnippet>160</a>/// the tip, so this puts the interesting range across the whole saturation
+<a href=#161 id=161 data-nosnippet>161</a>/// axis rather than crushing it at one end.
+<a href=#162 id=162 data-nosnippet>162</a></span><span class="kw">pub const </span>SPREAD_HALF: f64 = <span class="number">45_000.0</span>;
+<a href=#163 id=163 data-nosnippet>163</a>
+<a href=#164 id=164 data-nosnippet>164</a><span class="doccomment">/// Held constant across every tint, so neither thing being shown is confounded
+<a href=#165 id=165 data-nosnippet>165</a>/// with lightness and the picture is readable at any size.
+<a href=#166 id=166 data-nosnippet>166</a></span><span class="kw">pub const </span>LIGHTNESS: f64 = <span class="number">0.72</span>;
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a><span class="doccomment">/// The chroma of a perfectly concentrated colour, before the gamut mapping.
+<a href=#169 id=169 data-nosnippet>169</a></span><span class="kw">pub const </span>CHROMA: f64 = <span class="number">0.15</span>;
+<a href=#170 id=170 data-nosnippet>170</a>
+<a href=#171 id=171 data-nosnippet>171</a><span class="doccomment">/// The hue of block 0, in degrees: cold, and the start of the arc.
+<a href=#172 id=172 data-nosnippet>172</a></span><span class="kw">pub const </span>HUE_FROM: f64 = <span class="number">250.0</span>;
+<a href=#173 id=173 data-nosnippet>173</a>
+<a href=#174 id=174 data-nosnippet>174</a><span class="doccomment">/// How far round the circle the chain runs, stopping short of a full turn so
+<a href=#175 id=175 data-nosnippet>175</a>/// the ends stay apart.
+<a href=#176 id=176 data-nosnippet>176</a></span><span class="kw">pub const </span>HUE_ARC: f64 = <span class="number">250.0</span>;
+<a href=#177 id=177 data-nosnippet>177</a>
+<a href=#178 id=178 data-nosnippet>178</a><span class="doccomment">/// How concentrated a colour is, in `(0, 1]`: 1 for a coinbase, a half at
+<a href=#179 id=179 data-nosnippet>179</a>/// [`SPREAD_HALF`], and never quite 0.
+<a href=#180 id=180 data-nosnippet>180</a>///
+<a href=#181 id=181 data-nosnippet>181</a>/// This is the mix axis, and the reason one division has a name is that
+<a href=#182 id=182 data-nosnippet>182</a>/// [`tint`], [`tint_index`] and [`tints`] must agree about it exactly, or a
+<a href=#183 id=183 data-nosnippet>183</a>/// quantised colour is not a quantisation of anything.
+<a href=#184 id=184 data-nosnippet>184</a></span><span class="attr">#[allow(dead_code)]
+<a href=#185 id=185 data-nosnippet>185</a></span><span class="kw">pub fn </span>concentration(spread_blocks: f64) -&gt; f64 {
+<a href=#186 id=186 data-nosnippet>186</a>    <span class="number">1.0 </span>/ (<span class="number">1.0 </span>+ spread_blocks.max(<span class="number">0.0</span>) / SPREAD_HALF)
+<a href=#187 id=187 data-nosnippet>187</a>}
+<a href=#188 id=188 data-nosnippet>188</a>
+<a href=#189 id=189 data-nosnippet>189</a><span class="doccomment">/// The spread [`concentration`] answers `wanted` for — its inverse, and the
+<a href=#190 id=190 data-nosnippet>190</a>/// only reason it exists is so [`tints`] can evaluate [`tint`] at a bin centre
+<a href=#191 id=191 data-nosnippet>191</a>/// rather than keep a second copy of the colour.
+<a href=#192 id=192 data-nosnippet>192</a></span><span class="kw">fn </span>spread_at(wanted: f64) -&gt; f64 {
+<a href=#193 id=193 data-nosnippet>193</a>    SPREAD_HALF * (<span class="number">1.0 </span>/ wanted.clamp(f64::MIN_POSITIVE, <span class="number">1.0</span>) - <span class="number">1.0</span>)
+<a href=#194 id=194 data-nosnippet>194</a>}
+<a href=#195 id=195 data-nosnippet>195</a>
+<a href=#196 id=196 data-nosnippet>196</a><span class="doccomment">/// The colour of a transaction, from the three numbers `--moments` prints.
+<a href=#197 id=197 data-nosnippet>197</a>///
+<a href=#198 id=198 data-nosnippet>198</a>/// Used by `examples/tint.rs` rather than by the driver, which draws pictures
+<a href=#199 id=199 data-nosnippet>199</a>/// pixel-per-block through [`ramp`] instead; a binary crate cannot see an
+<a href=#200 id=200 data-nosnippet>200</a>/// example's use of its modules, hence the allow.
+<a href=#201 id=201 data-nosnippet>201</a>///
+<a href=#202 id=202 data-nosnippet>202</a>/// A colour in this crate has always been a distribution over block ids, and
+<a href=#203 id=203 data-nosnippet>203</a>/// this is the obvious picture of one: *when* the coins came from, and *how
+<a href=#204 id=204 data-nosnippet>204</a>/// concentrated* that was.
+<a href=#205 id=205 data-nosnippet>205</a>///
+<a href=#206 id=206 data-nosnippet>206</a>/// - **hue** carries the mean block over a 250 degree arc — early chain cold,
+<a href=#207 id=207 data-nosnippet>207</a>///   late chain warm.  An arc rather than the circle so that block 0 and the
+<a href=#208 id=208 data-nosnippet>208</a>///   chain tip do not land on the same hue, which is the one confusion a
+<a href=#209 id=209 data-nosnippet>209</a>///   cyclic channel invites.
+<a href=#210 id=210 data-nosnippet>210</a>/// - **chroma** carries the [`concentration`], `1 / (1 + spread /
+<a href=#211 id=211 data-nosnippet>211</a>///   SPREAD_HALF)`.  A coinbase has a spread of zero and comes out fully
+<a href=#212 id=212 data-nosnippet>212</a>///   saturated; a colour smeared across a third of chain history comes out
+<a href=#213 id=213 data-nosnippet>213</a>///   nearly grey.  Mixing literally desaturates, which is the property worth
+<a href=#214 id=214 data-nosnippet>214</a>///   having: a washed-out pixel is a transaction whose coins have been through
+<a href=#215 id=215 data-nosnippet>215</a>///   everything.
+<a href=#216 id=216 data-nosnippet>216</a>/// - **lightness** is held constant, so neither of the two things being shown
+<a href=#217 id=217 data-nosnippet>217</a>///   is confounded with it and the picture is readable at any size.
+<a href=#218 id=218 data-nosnippet>218</a>///
+<a href=#219 id=219 data-nosnippet>219</a>/// Gamut-mapped by [`in_gamut`], so a saturated hue keeps its hue.
+<a href=#220 id=220 data-nosnippet>220</a></span><span class="attr">#[allow(dead_code)]
+<a href=#221 id=221 data-nosnippet>221</a></span><span class="kw">pub fn </span>tint(mean_block: f64, spread_blocks: f64, chain_blocks: f64) -&gt; Rgb {
+<a href=#222 id=222 data-nosnippet>222</a>    <span class="kw">let </span>where_ = <span class="kw">if </span>chain_blocks &gt; <span class="number">0.0 </span>{
+<a href=#223 id=223 data-nosnippet>223</a>        (mean_block / chain_blocks).clamp(<span class="number">0.0</span>, <span class="number">1.0</span>)
+<a href=#224 id=224 data-nosnippet>224</a>    } <span class="kw">else </span>{
+<a href=#225 id=225 data-nosnippet>225</a>        <span class="number">0.0
+<a href=#226 id=226 data-nosnippet>226</a>    </span>};
+<a href=#227 id=227 data-nosnippet>227</a>    in_gamut(
+<a href=#228 id=228 data-nosnippet>228</a>        LIGHTNESS,
+<a href=#229 id=229 data-nosnippet>229</a>        CHROMA * concentration(spread_blocks),
+<a href=#230 id=230 data-nosnippet>230</a>        HUE_FROM - HUE_ARC * where_,
+<a href=#231 id=231 data-nosnippet>231</a>    )
+<a href=#232 id=232 data-nosnippet>232</a>}
+<a href=#233 id=233 data-nosnippet>233</a>
+<a href=#234 id=234 data-nosnippet>234</a><span class="doccomment">/// Hue bins along the chain.  See [`tints`] for why it is 32.
+<a href=#235 id=235 data-nosnippet>235</a></span><span class="kw">pub const </span>TINT_HUES: usize = <span class="number">32</span>;
+<a href=#236 id=236 data-nosnippet>236</a>
+<a href=#237 id=237 data-nosnippet>237</a><span class="doccomment">/// Mixing levels across the [`concentration`] axis, counting *up* with mixing:
+<a href=#238 id=238 data-nosnippet>238</a>/// slot 0 is a coinbase and slot 7 a colour that has been through everything.
+<a href=#239 id=239 data-nosnippet>239</a>/// That is the direction `src/bin/tx-view.rs`'s `slot` counts in, and keeping
+<a href=#240 id=240 data-nosnippet>240</a>/// it means the two pictures cannot be read backwards against each other.
+<a href=#241 id=241 data-nosnippet>241</a></span><span class="kw">pub const </span>TINT_MIXES: usize = <span class="number">8</span>;
+<a href=#242 id=242 data-nosnippet>242</a>
+<a href=#243 id=243 data-nosnippet>243</a><span class="doccomment">/// Entries in the tint table, which has to fit in a byte.
+<a href=#244 id=244 data-nosnippet>244</a></span><span class="kw">pub const </span>TINTS_LEN: usize = TINT_HUES * TINT_MIXES;
+<a href=#245 id=245 data-nosnippet>245</a>
+<a href=#246 id=246 data-nosnippet>246</a><span class="doccomment">/// Which entry of [`tints`] stands for this transaction's colour.
+<a href=#247 id=247 data-nosnippet>247</a>///
+<a href=#248 id=248 data-nosnippet>248</a>/// The hue axis is cut into [`TINT_HUES`] equal slices of the chain and the mix
+<a href=#249 id=249 data-nosnippet>249</a>/// axis into [`TINT_MIXES`] equal slices of the [`concentration`] — *not* of
+<a href=#250 id=250 data-nosnippet>250</a>/// the spread.
+<a href=#251 id=251 data-nosnippet>251</a>///
+<a href=#252 id=252 data-nosnippet>252</a>/// Spread is the wrong thing to cut evenly, and not by a little.  The chroma is
+<a href=#253 id=253 data-nosnippet>253</a>/// proportional to `1 / (1 + spread / 45000)`, so the first eighth of a spread
+<a href=#254 id=254 data-nosnippet>254</a>/// axis running to 260,000 blocks — 0 to 32,500 — covers chroma from 0.150 down
+<a href=#255 id=255 data-nosnippet>255</a>/// to 0.087, which is *half of the whole colour axis in one bin*: a worst case
+<a href=#256 id=256 data-nosnippet>256</a>/// of 0.031 in Oklab, past the 0.02 an eye can find, before the other seven
+<a href=#257 id=257 data-nosnippet>257</a>/// bins have said anything.  The measurements agree from the other side: over
+<a href=#258 id=258 data-nosnippet>258</a>/// the first 60,000,000 records of the 2022 chain, 87.70% of transactions have
+<a href=#259 id=259 data-nosnippet>259</a>/// a spread between 16,384 and 262,144 blocks and 5.78% have none at all, so
+<a href=#260 id=260 data-nosnippet>260</a>/// even bins of spread would sort almost the whole chain into two of them.  The
+<a href=#261 id=261 data-nosnippet>261</a>/// concentration is the compressive coordinate already, and it is exactly the
+<a href=#262 id=262 data-nosnippet>262</a>/// one the chroma is linear in, so equal slices of it are equal slices of what
+<a href=#263 id=263 data-nosnippet>263</a>/// the eye is shown.
+<a href=#264 id=264 data-nosnippet>264</a>///
+<a href=#265 id=265 data-nosnippet>265</a>/// The index is `hue * TINT_MIXES + mix`, so consecutive entries are one hue at
+<a href=#266 id=266 data-nosnippet>266</a>/// eight degrees of mixing — the order [`tints`] writes them in, and the order
+<a href=#267 id=267 data-nosnippet>267</a>/// a PNG `PLTE` chunk wants them.
+<a href=#268 id=268 data-nosnippet>268</a></span><span class="attr">#[allow(dead_code)]
+<a href=#269 id=269 data-nosnippet>269</a></span><span class="kw">pub fn </span>tint_index(mean_block: f64, spread_blocks: f64, chain_blocks: f64) -&gt; u8 {
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">let </span>where_ = <span class="kw">if </span>chain_blocks &gt; <span class="number">0.0 </span>{
+<a href=#271 id=271 data-nosnippet>271</a>        (mean_block / chain_blocks).clamp(<span class="number">0.0</span>, <span class="number">1.0</span>)
+<a href=#272 id=272 data-nosnippet>272</a>    } <span class="kw">else </span>{
+<a href=#273 id=273 data-nosnippet>273</a>        <span class="number">0.0
+<a href=#274 id=274 data-nosnippet>274</a>    </span>};
+<a href=#275 id=275 data-nosnippet>275</a>    <span class="kw">let </span>hue = ((where_ * TINT_HUES <span class="kw">as </span>f64) <span class="kw">as </span>usize).min(TINT_HUES - <span class="number">1</span>);
+<a href=#276 id=276 data-nosnippet>276</a>    <span class="comment">// Rounds down, so a concentration of exactly 1 -- which takes a spread of
+<a href=#277 id=277 data-nosnippet>277</a>    // exactly zero, nothing near it -- would fall one past the end without the
+<a href=#278 id=278 data-nosnippet>278</a>    // clamp.  That is 5.78% of the first 60,000,000 records: 3,466,043 of them
+<a href=#279 id=279 data-nosnippet>279</a>    // in the `--bands 1024 --moments` run cited below.  It is not the coinbase
+<a href=#280 id=280 data-nosnippet>280</a>    // count, which is 344,032 lines with no inputs at all, 0.5734% of the same
+<a href=#281 id=281 data-nosnippet>281</a>    // prefix; the rest of the 5.78% is every other transaction that drew all
+<a href=#282 id=282 data-nosnippet>282</a>    // of its value from a single block.  Nor is it the 6.02% whose spread is
+<a href=#283 id=283 data-nosnippet>283</a>    // under one block: the 147,561 records between the two come out at a
+<a href=#284 id=284 data-nosnippet>284</a>    // concentration just short of 1, land in the last slot unaided, and are no
+<a href=#285 id=285 data-nosnippet>285</a>    // part of what the clamp is for.
+<a href=#286 id=286 data-nosnippet>286</a>    </span><span class="kw">let </span>step = ((concentration(spread_blocks) * TINT_MIXES <span class="kw">as </span>f64) <span class="kw">as </span>usize).min(TINT_MIXES - <span class="number">1</span>);
+<a href=#287 id=287 data-nosnippet>287</a>    (hue * TINT_MIXES + (TINT_MIXES - <span class="number">1 </span>- step)) <span class="kw">as </span>u8
+<a href=#288 id=288 data-nosnippet>288</a>}
+<a href=#289 id=289 data-nosnippet>289</a>
+<a href=#290 id=290 data-nosnippet>290</a><span class="doccomment">/// The [`TINTS_LEN`] colours a [`tint_index`] byte points at.
+<a href=#291 id=291 data-nosnippet>291</a>///
+<a href=#292 id=292 data-nosnippet>292</a>/// **This is not [`ramp`] and must not be confused with it.**  `ramp` is keyed
+<a href=#293 id=293 data-nosnippet>293</a>/// by a *weight* sample on the block axis and is what the `PLTE` of the
+<a href=#294 id=294 data-nosnippet>294</a>/// (transaction, block) picture holds; this is keyed by a *whole colour*
+<a href=#295 id=295 data-nosnippet>295</a>/// quantised on two axes, and there is no block axis in it at all.  A tint
+<a href=#296 id=296 data-nosnippet>296</a>/// index fed through `ramp` would draw a legend that lies about what every
+<a href=#297 id=297 data-nosnippet>297</a>/// pixel means, which is why this is a second table under a second name rather
+<a href=#298 id=298 data-nosnippet>298</a>/// than a second use of the first.
+<a href=#299 id=299 data-nosnippet>299</a>///
+<a href=#300 id=300 data-nosnippet>300</a>/// Every entry is [`tint`] evaluated at the centre of its bin, so there stays
+<a href=#301 id=301 data-nosnippet>301</a>/// exactly one definition of the colour: change [`HUE_ARC`] or [`LIGHTNESS`]
+<a href=#302 id=302 data-nosnippet>302</a>/// and the table moves with it, because the table is not a table — it is the
+<a href=#303 id=303 data-nosnippet>303</a>/// same arithmetic, run 256 times at startup.  It takes no `chain_blocks`,
+<a href=#304 id=304 data-nosnippet>304</a>/// because `tint` reads the mean block only as a fraction of the chain: the
+<a href=#305 id=305 data-nosnippet>305</a>/// height moves which transactions land in which bin, never what a bin looks
+<a href=#306 id=306 data-nosnippet>306</a>/// like.
+<a href=#307 id=307 data-nosnippet>307</a>///
+<a href=#308 id=308 data-nosnippet>308</a>/// ## Why 32 by 8, and what it costs
+<a href=#309 id=309 data-nosnippet>309</a>///
+<a href=#310 id=310 data-nosnippet>310</a>/// The two axes compete for one byte, and half a bin of either is worth about
+<a href=#311 id=311 data-nosnippet>311</a>/// the same thing in Oklab, so the split that minimises the worst case is the
+<a href=#312 id=312 data-nosnippet>312</a>/// one that balances them.  A hue bin is `250 / H` degrees wide, so half of one
+<a href=#313 id=313 data-nosnippet>313</a>/// is `125 / H`, and at the full chroma of 0.15 that is a distance of
+<a href=#314 id=314 data-nosnippet>314</a>/// `0.15 * (125 / H) * pi / 180 = 0.327 / H`.  A mix bin is `1 / M` of the
+<a href=#315 id=315 data-nosnippet>315</a>/// concentration, so half of one is `0.15 / (2 M) = 0.075 / M` of chroma
+<a href=#316 id=316 data-nosnippet>316</a>/// directly.  With `H * M = 256` the two are equal at `H = 33.4`, predicting a
+<a href=#317 id=317 data-nosnippet>317</a>/// worst case of 0.0139 in quadrature; 32 is the power of two beside it.
+<a href=#318 id=318 data-nosnippet>318</a>///
+<a href=#319 id=319 data-nosnippet>319</a>/// Measured over the first 60,000,000 records of the 2022 chain
+<a href=#320 id=320 data-nosnippet>320</a>/// (`--bands 1024 --moments`, 4m23s, 11.3 GB peak), as the mean and the worst
+<a href=#321 id=321 data-nosnippet>321</a>/// Oklab distance between a transaction's true `tint` and the entry its index
+<a href=#322 id=322 data-nosnippet>322</a>/// points at:
+<a href=#323 id=323 data-nosnippet>323</a>///
+<a href=#324 id=324 data-nosnippet>324</a>/// ```text
+<a href=#325 id=325 data-nosnippet>325</a>///       H    M   mix axis         mean dE    worst dE
+<a href=#326 id=326 data-nosnippet>326</a>///     128    2   concentration   0.020889    0.039607
+<a href=#327 id=327 data-nosnippet>327</a>///      85    3   concentration   0.014990    0.027193
+<a href=#328 id=328 data-nosnippet>328</a>///      64    4   concentration   0.007640    0.021206
+<a href=#329 id=329 data-nosnippet>329</a>///      51    5   concentration   0.007976    0.017383
+<a href=#330 id=330 data-nosnippet>330</a>///      42    6   concentration   0.007443    0.015563
+<a href=#331 id=331 data-nosnippet>331</a>///      32    8   concentration   0.005328    0.014707
+<a href=#332 id=332 data-nosnippet>332</a>///      25   10   concentration   0.005081    0.015956
+<a href=#333 id=333 data-nosnippet>333</a>///      16   16   concentration   0.005891    0.023166
+<a href=#334 id=334 data-nosnippet>334</a>///      64    4   doublings       0.009728    0.039572
+<a href=#335 id=335 data-nosnippet>335</a>///      32    8   doublings       0.007344    0.015578
+<a href=#336 id=336 data-nosnippet>336</a>///      16   16   doublings       0.008407    0.023166
+<a href=#337 id=337 data-nosnippet>337</a>/// ```
+<a href=#338 id=338 data-nosnippet>338</a>///
+<a href=#339 id=339 data-nosnippet>339</a>/// 32 by 8 has the smallest worst case of the lot, and 0.0139 predicted against
+<a href=#340 id=340 data-nosnippet>340</a>/// 0.014707 measured says the balance argument is the reason rather than a
+<a href=#341 id=341 data-nosnippet>341</a>/// coincidence.  Only 25 by 10 beats it on the mean, by 0.0002, and pays 0.0012
+<a href=#342 id=342 data-nosnippet>342</a>/// of worst case for it.  It matters that the *worst* case is what was
+<a href=#343 id=343 data-nosnippet>343</a>/// minimised: 0.02 in Oklab is about a just-noticeable difference, a picture is
+<a href=#344 id=344 data-nosnippet>344</a>/// read one transaction at a time, and at 32 by 8 no transaction anywhere moves
+<a href=#345 id=345 data-nosnippet>345</a>/// by a difference an eye can find.
+<a href=#346 id=346 data-nosnippet>346</a>///
+<a href=#347 id=347 data-nosnippet>347</a>/// The same table over 2,000,000 records of `--weighted --moments`, where the
+<a href=#348 id=348 data-nosnippet>348</a>/// moments are exact rather than binned into 1024 bands — 936,288 of those
+<a href=#349 id=349 data-nosnippet>349</a>/// 2,000,000 lines carry a different mean or spread from the binned run over
+<a href=#350 id=350 data-nosnippet>350</a>/// the same records — puts 32 by 8 at 0.004765 mean and **0.014703** worst.
+<a href=#351 id=351 data-nosnippet>351</a>/// The same worst case to five digits off half a million different numbers is
+<a href=#352 id=352 data-nosnippet>352</a>/// the point: it is a property of the geometry and not of the data, so it is a
+<a href=#353 id=353 data-nosnippet>353</a>/// guarantee and not an observation.
+<a href=#354 id=354 data-nosnippet>354</a>///
+<a href=#355 id=355 data-nosnippet>355</a>/// ## The mix ladder that was rejected
+<a href=#356 id=356 data-nosnippet>356</a>///
+<a href=#357 id=357 data-nosnippet>357</a>/// `src/bin/tx-view.rs` gives one slot per doubling — 1 block, 2 or 3, 4 to 7 —
+<a href=#358 id=358 data-nosnippet>358</a>/// which is the right ladder for a *count of blocks* starting at one.  Tried
+<a href=#359 id=359 data-nosnippet>359</a>/// here as bins doubling out from `SPREAD_HALF / 2^(M-4)`, it is worse on both
+<a href=#360 id=360 data-nosnippet>360</a>/// statistics at every split that fits in a byte: 0.007344 mean and 0.015578
+<a href=#361 id=361 data-nosnippet>361</a>/// worst at 32 by 8, against 0.005328 and 0.014707.  The reason is in the
+<a href=#362 id=362 data-nosnippet>362</a>/// paragraph above `tint_index`.  A doubling ladder is compressive in the
+<a href=#363 id=363 data-nosnippet>363</a>/// spread; the chroma is not a function of the spread but of the
+<a href=#364 id=364 data-nosnippet>364</a>/// [`concentration`], which is compressive already.  Compressing a compressed
+<a href=#365 id=365 data-nosnippet>365</a>/// axis crowds the concentrated end — where 5.78% of those 60,000,000 records
+<a href=#366 id=366 data-nosnippet>366</a>/// sit at a spread of exactly zero — and stretches the mixed end, where there
+<a href=#367 id=367 data-nosnippet>367</a>/// is nothing.
+<a href=#368 id=368 data-nosnippet>368</a>///
+<a href=#369 id=369 data-nosnippet>369</a>/// ## The 32 entries that never come up
+<a href=#370 id=370 data-nosnippet>370</a>///
+<a href=#371 id=371 data-nosnippet>371</a>/// Mix slot 7 is every concentration under 1/8, which needs a spread past
+<a href=#372 id=372 data-nosnippet>372</a>/// 315,000 blocks; the largest in the 2022 chain is about 260,000, so 32 of the
+<a href=#373 id=373 data-nosnippet>373</a>/// 256 entries stand for a colour that chain never shows.  They are kept.
+<a href=#374 id=374 data-nosnippet>374</a>/// Fitting the axis to the widest spread actually seen would buy about an
+<a href=#375 id=375 data-nosnippet>375</a>/// eighth of the mix error and would make the byte a function of the file it
+<a href=#376 id=376 data-nosnippet>376</a>/// was computed over — the same transaction would get one index in a run over a
+<a href=#377 id=377 data-nosnippet>377</a>/// prefix and another in a run over the whole chain, which is exactly the
+<a href=#378 id=378 data-nosnippet>378</a>/// property that makes a byte stream unreadable six months later.
+<a href=#379 id=379 data-nosnippet>379</a></span><span class="attr">#[allow(dead_code)]
+<a href=#380 id=380 data-nosnippet>380</a></span><span class="kw">pub fn </span>tints() -&gt; [Rgb; TINTS_LEN] {
+<a href=#381 id=381 data-nosnippet>381</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = [[<span class="number">0u8</span>; <span class="number">3</span>]; TINTS_LEN];
+<a href=#382 id=382 data-nosnippet>382</a>    <span class="kw">for </span>(index, slot) <span class="kw">in </span>out.iter_mut().enumerate() {
+<a href=#383 id=383 data-nosnippet>383</a>        <span class="kw">let </span>(hue, mix) = (index / TINT_MIXES, index % TINT_MIXES);
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="comment">// The centre of the bin, on both axes.  `tint` reads its first argument
+<a href=#385 id=385 data-nosnippet>385</a>        // only as `mean / chain`, so a chain of 1 makes that argument the
+<a href=#386 id=386 data-nosnippet>386</a>        // fraction itself and the table independent of the chain height.
+<a href=#387 id=387 data-nosnippet>387</a>        </span><span class="kw">let </span>where_ = (hue <span class="kw">as </span>f64 + <span class="number">0.5</span>) / TINT_HUES <span class="kw">as </span>f64;
+<a href=#388 id=388 data-nosnippet>388</a>        <span class="kw">let </span>step = TINT_MIXES - <span class="number">1 </span>- mix;
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="kw">let </span>middle = (step <span class="kw">as </span>f64 + <span class="number">0.5</span>) / TINT_MIXES <span class="kw">as </span>f64;
+<a href=#390 id=390 data-nosnippet>390</a>        <span class="kw-2">*</span>slot = tint(where_, spread_at(middle), <span class="number">1.0</span>);
+<a href=#391 id=391 data-nosnippet>391</a>    }
+<a href=#392 id=392 data-nosnippet>392</a>    out
+<a href=#393 id=393 data-nosnippet>393</a>}
+<a href=#394 id=394 data-nosnippet>394</a>
+<a href=#395 id=395 data-nosnippet>395</a><span class="doccomment">/// An sRGB colour as Oklab: lightness, then the two opponent axes.
+<a href=#396 id=396 data-nosnippet>396</a>///
+<a href=#397 id=397 data-nosnippet>397</a>/// The forward half of what [`oklch_to_srgb`] undoes, and it is here so that
+<a href=#398 id=398 data-nosnippet>398</a>/// the cost of quantising a colour can be *measured* rather than asserted — a
+<a href=#399 id=399 data-nosnippet>399</a>/// distance in this space is the only number available that means "how
+<a href=#400 id=400 data-nosnippet>400</a>/// different do these look".
+<a href=#401 id=401 data-nosnippet>401</a></span><span class="attr">#[allow(dead_code)]
+<a href=#402 id=402 data-nosnippet>402</a></span><span class="kw">pub fn </span>oklab(rgb: Rgb) -&gt; [f64; <span class="number">3</span>] {
+<a href=#403 id=403 data-nosnippet>403</a>    <span class="kw">let </span>linear = |c: u8| {
+<a href=#404 id=404 data-nosnippet>404</a>        <span class="kw">let </span>c = c <span class="kw">as </span>f64 / <span class="number">255.0</span>;
+<a href=#405 id=405 data-nosnippet>405</a>        <span class="kw">if </span>c &lt;= <span class="number">0.040_45 </span>{
+<a href=#406 id=406 data-nosnippet>406</a>            c / <span class="number">12.92
+<a href=#407 id=407 data-nosnippet>407</a>        </span>} <span class="kw">else </span>{
+<a href=#408 id=408 data-nosnippet>408</a>            ((c + <span class="number">0.055</span>) / <span class="number">1.055</span>).powf(<span class="number">2.4</span>)
+<a href=#409 id=409 data-nosnippet>409</a>        }
+<a href=#410 id=410 data-nosnippet>410</a>    };
+<a href=#411 id=411 data-nosnippet>411</a>    <span class="kw">let </span>(r, g, b) = (linear(rgb[<span class="number">0</span>]), linear(rgb[<span class="number">1</span>]), linear(rgb[<span class="number">2</span>]));
+<a href=#412 id=412 data-nosnippet>412</a>    <span class="kw">let </span>l = (<span class="number">0.412_221_470_8 </span>* r + <span class="number">0.536_332_536_3 </span>* g + <span class="number">0.051_445_992_9 </span>* b).cbrt();
+<a href=#413 id=413 data-nosnippet>413</a>    <span class="kw">let </span>m = (<span class="number">0.211_903_498_2 </span>* r + <span class="number">0.680_699_545_1 </span>* g + <span class="number">0.107_396_956_6 </span>* b).cbrt();
+<a href=#414 id=414 data-nosnippet>414</a>    <span class="kw">let </span>s = (<span class="number">0.088_302_461_9 </span>* r + <span class="number">0.281_718_837_6 </span>* g + <span class="number">0.629_978_700_5 </span>* b).cbrt();
+<a href=#415 id=415 data-nosnippet>415</a>    [
+<a href=#416 id=416 data-nosnippet>416</a>        <span class="number">0.210_454_255_3 </span>* l + <span class="number">0.793_617_785_0 </span>* m - <span class="number">0.004_072_046_8 </span>* s,
+<a href=#417 id=417 data-nosnippet>417</a>        <span class="number">1.977_998_495_1 </span>* l - <span class="number">2.428_592_205_0 </span>* m + <span class="number">0.450_593_709_9 </span>* s,
+<a href=#418 id=418 data-nosnippet>418</a>        <span class="number">0.025_904_037_1 </span>* l + <span class="number">0.782_771_766_2 </span>* m - <span class="number">0.808_675_766_0 </span>* s,
+<a href=#419 id=419 data-nosnippet>419</a>    ]
+<a href=#420 id=420 data-nosnippet>420</a>}
+<a href=#421 id=421 data-nosnippet>421</a>
+<a href=#422 id=422 data-nosnippet>422</a><span class="doccomment">/// How far apart two colours look: the Euclidean distance in [`oklab`], which
+<a href=#423 id=423 data-nosnippet>423</a>/// is the whole reason for being in that space.
+<a href=#424 id=424 data-nosnippet>424</a>///
+<a href=#425 id=425 data-nosnippet>425</a>/// About 0.02 is a just-noticeable difference for a pair of large patches, and
+<a href=#426 id=426 data-nosnippet>426</a>/// rather less for two colours touching.  The quantisation [`tints`] does is
+<a href=#427 id=427 data-nosnippet>427</a>/// held under it, which is what the numbers on that page are.
+<a href=#428 id=428 data-nosnippet>428</a></span><span class="attr">#[allow(dead_code)]
+<a href=#429 id=429 data-nosnippet>429</a></span><span class="kw">pub fn </span>difference(one: Rgb, other: Rgb) -&gt; f64 {
+<a href=#430 id=430 data-nosnippet>430</a>    <span class="kw">let </span>(a, b) = (oklab(one), oklab(other));
+<a href=#431 id=431 data-nosnippet>431</a>    ((a[<span class="number">0</span>] - b[<span class="number">0</span>]).powi(<span class="number">2</span>) + (a[<span class="number">1</span>] - b[<span class="number">1</span>]).powi(<span class="number">2</span>) + (a[<span class="number">2</span>] - b[<span class="number">2</span>]).powi(<span class="number">2</span>)).sqrt()
+<a href=#432 id=432 data-nosnippet>432</a>}
+<a href=#433 id=433 data-nosnippet>433</a>
+<a href=#434 id=434 data-nosnippet>434</a><span class="doccomment">/// `#rrggbb`, which is what a colour is usually wanted as.
+<a href=#435 id=435 data-nosnippet>435</a></span><span class="attr">#[allow(dead_code)]
+<a href=#436 id=436 data-nosnippet>436</a></span><span class="kw">pub fn </span>hex(rgb: Rgb) -&gt; String {
+<a href=#437 id=437 data-nosnippet>437</a>    <span class="macro">format!</span>(<span class="string">"#{:02x}{:02x}{:02x}"</span>, rgb[<span class="number">0</span>], rgb[<span class="number">1</span>], rgb[<span class="number">2</span>])
+<a href=#438 id=438 data-nosnippet>438</a>}
+<a href=#439 id=439 data-nosnippet>439</a>
+<a href=#440 id=440 data-nosnippet>440</a><span class="attr">#[cfg(test)]
+<a href=#441 id=441 data-nosnippet>441</a></span><span class="kw">mod </span>tests {
+<a href=#442 id=442 data-nosnippet>442</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#443 id=443 data-nosnippet>443</a>
+<a href=#444 id=444 data-nosnippet>444</a>    <span class="doccomment">/// Relative luminance, which is what "lighter" means to an eye and what the
+<a href=#445 id=445 data-nosnippet>445</a>    /// ramp has to be monotone in.  Not the mean of the channels: green carries
+<a href=#446 id=446 data-nosnippet>446</a>    /// most of the luminance and blue almost none.
+<a href=#447 id=447 data-nosnippet>447</a>    </span><span class="kw">fn </span>luminance(rgb: Rgb) -&gt; f64 {
+<a href=#448 id=448 data-nosnippet>448</a>        <span class="kw">let </span>linear = |c: u8| {
+<a href=#449 id=449 data-nosnippet>449</a>            <span class="kw">let </span>c = c <span class="kw">as </span>f64 / <span class="number">255.0</span>;
+<a href=#450 id=450 data-nosnippet>450</a>            <span class="kw">if </span>c &lt;= <span class="number">0.040_45 </span>{
+<a href=#451 id=451 data-nosnippet>451</a>                c / <span class="number">12.92
+<a href=#452 id=452 data-nosnippet>452</a>            </span>} <span class="kw">else </span>{
+<a href=#453 id=453 data-nosnippet>453</a>                ((c + <span class="number">0.055</span>) / <span class="number">1.055</span>).powf(<span class="number">2.4</span>)
+<a href=#454 id=454 data-nosnippet>454</a>            }
+<a href=#455 id=455 data-nosnippet>455</a>        };
+<a href=#456 id=456 data-nosnippet>456</a>        <span class="number">0.2126 </span>* linear(rgb[<span class="number">0</span>]) + <span class="number">0.7152 </span>* linear(rgb[<span class="number">1</span>]) + <span class="number">0.0722 </span>* linear(rgb[<span class="number">2</span>])
+<a href=#457 id=457 data-nosnippet>457</a>    }
+<a href=#458 id=458 data-nosnippet>458</a>
+<a href=#459 id=459 data-nosnippet>459</a>    <span class="doccomment">/// The property the ramp rests on: heavier is darker, every single step.
+<a href=#460 id=460 data-nosnippet>460</a>    /// Without it the picture cannot be read photocopied, by a colour-deficient
+<a href=#461 id=461 data-nosnippet>461</a>    /// eye, or where it is folded small enough that a cell is one sample.
+<a href=#462 id=462 data-nosnippet>462</a>    </span><span class="attr">#[test]
+<a href=#463 id=463 data-nosnippet>463</a>    </span><span class="kw">fn </span>the_ramp_darkens_monotonically_from_paper_to_ink() {
+<a href=#464 id=464 data-nosnippet>464</a>        <span class="kw">let </span>ramp = ramp();
+<a href=#465 id=465 data-nosnippet>465</a>        <span class="kw">for </span>index <span class="kw">in </span>(<span class="number">1</span>..RAMP_LEN).rev() {
+<a href=#466 id=466 data-nosnippet>466</a>            <span class="kw">let </span>lighter = luminance(ramp[index]);
+<a href=#467 id=467 data-nosnippet>467</a>            <span class="kw">let </span>darker = luminance(ramp[index - <span class="number">1</span>]);
+<a href=#468 id=468 data-nosnippet>468</a>            <span class="macro">assert!</span>(
+<a href=#469 id=469 data-nosnippet>469</a>                darker &lt;= lighter + <span class="number">1e-9</span>,
+<a href=#470 id=470 data-nosnippet>470</a>                <span class="string">"entry {} is lighter than {}: {:?} against {:?}"</span>,
+<a href=#471 id=471 data-nosnippet>471</a>                index - <span class="number">1</span>,
+<a href=#472 id=472 data-nosnippet>472</a>                index,
+<a href=#473 id=473 data-nosnippet>473</a>                ramp[index - <span class="number">1</span>],
+<a href=#474 id=474 data-nosnippet>474</a>                ramp[index]
+<a href=#475 id=475 data-nosnippet>475</a>            );
+<a href=#476 id=476 data-nosnippet>476</a>        }
+<a href=#477 id=477 data-nosnippet>477</a>        <span class="comment">// And it actually travels: paper to ink is most of the way down.
+<a href=#478 id=478 data-nosnippet>478</a>        </span><span class="macro">assert!</span>(luminance(ramp[RAMP_LEN - <span class="number">1</span>]) &gt; <span class="number">0.9</span>, <span class="string">"the paper end is nearly white"</span>);
+<a href=#479 id=479 data-nosnippet>479</a>        <span class="macro">assert!</span>(luminance(ramp[<span class="number">0</span>]) &lt; <span class="number">0.1</span>, <span class="string">"the ink end is properly dark"</span>);
+<a href=#480 id=480 data-nosnippet>480</a>    }
+<a href=#481 id=481 data-nosnippet>481</a>
+<a href=#482 id=482 data-nosnippet>482</a>    <span class="doccomment">/// Adjacent entries have to differ, or the ramp is not using the levels it
+<a href=#483 id=483 data-nosnippet>483</a>    /// has and the picture cannot show what the samples distinguish.
+<a href=#484 id=484 data-nosnippet>484</a>    </span><span class="attr">#[test]
+<a href=#485 id=485 data-nosnippet>485</a>    </span><span class="kw">fn </span>the_ramp_spends_the_levels_it_has() {
+<a href=#486 id=486 data-nosnippet>486</a>        <span class="kw">let </span>ramp = ramp();
+<a href=#487 id=487 data-nosnippet>487</a>        <span class="kw">let </span>distinct: std::collections::HashSet&lt;Rgb&gt; = ramp.iter().copied().collect();
+<a href=#488 id=488 data-nosnippet>488</a>        <span class="macro">assert!</span>(
+<a href=#489 id=489 data-nosnippet>489</a>            distinct.len() &gt; <span class="number">240</span>,
+<a href=#490 id=490 data-nosnippet>490</a>            <span class="string">"only {} of {} entries are distinct"</span>,
+<a href=#491 id=491 data-nosnippet>491</a>            distinct.len(),
+<a href=#492 id=492 data-nosnippet>492</a>            RAMP_LEN
+<a href=#493 id=493 data-nosnippet>493</a>        );
+<a href=#494 id=494 data-nosnippet>494</a>    }
+<a href=#495 id=495 data-nosnippet>495</a>
+<a href=#496 id=496 data-nosnippet>496</a>    <span class="doccomment">/// What [`in_gamut`] owes its caller, in both directions.
+<a href=#497 id=497 data-nosnippet>497</a>    ///
+<a href=#498 id=498 data-nosnippet>498</a>    /// The loop this replaces asserted that every channel of every entry was
+<a href=#499 id=499 data-nosnippet>499</a>    /// `&lt;= 255` -- of a `u8`, so it was true of any three bytes whatever and
+<a href=#500 id=500 data-nosnippet>500</a>    /// the compiler said so (`comparison is useless due to type limits`).  It
+<a href=#501 id=501 data-nosnippet>501</a>    /// would have passed for a ramp of pure grey, for a ramp of one repeated
+<a href=#502 id=502 data-nosnippet>502</a>    /// colour, and for an `in_gamut` that ignored its arguments.  These are the
+<a href=#503 id=503 data-nosnippet>503</a>    /// properties it was meant to be about.
+<a href=#504 id=504 data-nosnippet>504</a>    </span><span class="attr">#[test]
+<a href=#505 id=505 data-nosnippet>505</a>    </span><span class="kw">fn </span>the_gamut_mapping_only_moves_what_it_has_to() {
+<a href=#506 id=506 data-nosnippet>506</a>        <span class="comment">// A colour that fits is returned untouched: the mapping must not cost
+<a href=#507 id=507 data-nosnippet>507</a>        // chroma it did not have to.
+<a href=#508 id=508 data-nosnippet>508</a>        </span><span class="kw">for </span><span class="kw-2">&amp;</span>(l, c, h) <span class="kw">in </span><span class="kw-2">&amp;</span>[(<span class="number">0.6</span>, <span class="number">0.02</span>, <span class="number">30.0</span>), (<span class="number">0.5</span>, <span class="number">0.05</span>, <span class="number">150.0</span>), (<span class="number">0.7</span>, <span class="number">0.01</span>, <span class="number">250.0</span>)] {
+<a href=#509 id=509 data-nosnippet>509</a>            <span class="kw">let </span>direct = oklch_to_srgb(l, c, h).expect(<span class="string">"chosen to be inside sRGB"</span>);
+<a href=#510 id=510 data-nosnippet>510</a>            <span class="macro">assert_eq!</span>(
+<a href=#511 id=511 data-nosnippet>511</a>                in_gamut(l, c, h),
+<a href=#512 id=512 data-nosnippet>512</a>                direct,
+<a href=#513 id=513 data-nosnippet>513</a>                <span class="string">"an in-gamut colour was moved anyway: L={} C={} h={}"</span>,
+<a href=#514 id=514 data-nosnippet>514</a>                l,
+<a href=#515 id=515 data-nosnippet>515</a>                c,
+<a href=#516 id=516 data-nosnippet>516</a>                h
+<a href=#517 id=517 data-nosnippet>517</a>            );
+<a href=#518 id=518 data-nosnippet>518</a>        }
+<a href=#519 id=519 data-nosnippet>519</a>
+<a href=#520 id=520 data-nosnippet>520</a>        <span class="comment">// And a colour that does not fit is brought in without losing what it
+<a href=#521 id=521 data-nosnippet>521</a>        // was: at full chroma the dark end of this ramp is outside sRGB, so a
+<a href=#522 id=522 data-nosnippet>522</a>        // build whose `in_gamut` silently answered grey would pass every other
+<a href=#523 id=523 data-nosnippet>523</a>        // assertion in this file and fail here.
+<a href=#524 id=524 data-nosnippet>524</a>        </span><span class="macro">assert!</span>(
+<a href=#525 id=525 data-nosnippet>525</a>            oklch_to_srgb(<span class="number">0.35</span>, <span class="number">0.16</span>, <span class="number">30.0</span>).is_none(),
+<a href=#526 id=526 data-nosnippet>526</a>            <span class="string">"this test is only about anything if that colour is out of gamut"
+<a href=#527 id=527 data-nosnippet>527</a>        </span>);
+<a href=#528 id=528 data-nosnippet>528</a>        <span class="kw">let </span>mapped = in_gamut(<span class="number">0.35</span>, <span class="number">0.16</span>, <span class="number">30.0</span>);
+<a href=#529 id=529 data-nosnippet>529</a>        <span class="macro">assert!</span>(
+<a href=#530 id=530 data-nosnippet>530</a>            mapped[<span class="number">0</span>] &gt; mapped[<span class="number">2</span>],
+<a href=#531 id=531 data-nosnippet>531</a>            <span class="string">"a warm hue has to stay warm through the gamut mapping: {:?}"</span>,
+<a href=#532 id=532 data-nosnippet>532</a>            mapped
+<a href=#533 id=533 data-nosnippet>533</a>        );
+<a href=#534 id=534 data-nosnippet>534</a>    }
+<a href=#535 id=535 data-nosnippet>535</a>
+<a href=#536 id=536 data-nosnippet>536</a>    <span class="doccomment">/// The ramp has to be coloured.  Lightness carries the magnitude, but the
+<a href=#537 id=537 data-nosnippet>537</a>    /// whole reason for a palette over a grey is the chroma beside it, and
+<a href=#538 id=538 data-nosnippet>538</a>    /// nothing else here would notice if the gamut mapping took all of it.
+<a href=#539 id=539 data-nosnippet>539</a>    </span><span class="attr">#[test]
+<a href=#540 id=540 data-nosnippet>540</a>    </span><span class="kw">fn </span>the_ramp_is_not_a_row_of_greys() {
+<a href=#541 id=541 data-nosnippet>541</a>        <span class="kw">let </span>ramp = ramp();
+<a href=#542 id=542 data-nosnippet>542</a>        <span class="kw">let </span>spread = |c: Rgb| {
+<a href=#543 id=543 data-nosnippet>543</a>            <span class="kw">let </span>(hi, lo) = (
+<a href=#544 id=544 data-nosnippet>544</a>                c.iter().copied().max().unwrap() <span class="kw">as </span>i32,
+<a href=#545 id=545 data-nosnippet>545</a>                c.iter().copied().min().unwrap() <span class="kw">as </span>i32,
+<a href=#546 id=546 data-nosnippet>546</a>            );
+<a href=#547 id=547 data-nosnippet>547</a>            hi - lo
+<a href=#548 id=548 data-nosnippet>548</a>        };
+<a href=#549 id=549 data-nosnippet>549</a>        <span class="kw">let </span>coloured = ramp.iter().filter(|&amp;&amp;c| spread(c) &gt; <span class="number">24</span>).count();
+<a href=#550 id=550 data-nosnippet>550</a>        <span class="macro">assert!</span>(
+<a href=#551 id=551 data-nosnippet>551</a>            coloured &gt; RAMP_LEN / <span class="number">2</span>,
+<a href=#552 id=552 data-nosnippet>552</a>            <span class="string">"only {} of {} entries carry real chroma"</span>,
+<a href=#553 id=553 data-nosnippet>553</a>            coloured,
+<a href=#554 id=554 data-nosnippet>554</a>            RAMP_LEN
+<a href=#555 id=555 data-nosnippet>555</a>        );
+<a href=#556 id=556 data-nosnippet>556</a>        <span class="comment">// The paper end is deliberately neutral, so that is where the greys
+<a href=#557 id=557 data-nosnippet>557</a>        // belong and nowhere else.
+<a href=#558 id=558 data-nosnippet>558</a>        </span><span class="macro">assert!</span>(
+<a href=#559 id=559 data-nosnippet>559</a>            spread(ramp[RAMP_LEN - <span class="number">1</span>]) &lt;= <span class="number">8</span>,
+<a href=#560 id=560 data-nosnippet>560</a>            <span class="string">"the paper end should be very nearly neutral: {:?}"</span>,
+<a href=#561 id=561 data-nosnippet>561</a>            ramp[RAMP_LEN - <span class="number">1</span>]
+<a href=#562 id=562 data-nosnippet>562</a>        );
+<a href=#563 id=563 data-nosnippet>563</a>    }
+<a href=#564 id=564 data-nosnippet>564</a>
+<a href=#565 id=565 data-nosnippet>565</a>    <span class="doccomment">/// The corners, against values that can be checked by hand: Oklab's
+<a href=#566 id=566 data-nosnippet>566</a>    /// lightness is 0 at black and 1 at white, with no chroma at either.
+<a href=#567 id=567 data-nosnippet>567</a>    </span><span class="attr">#[test]
+<a href=#568 id=568 data-nosnippet>568</a>    </span><span class="kw">fn </span>the_ends_of_the_lightness_axis_are_black_and_white() {
+<a href=#569 id=569 data-nosnippet>569</a>        <span class="macro">assert_eq!</span>(oklch_to_srgb(<span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>), <span class="prelude-val">Some</span>([<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>]));
+<a href=#570 id=570 data-nosnippet>570</a>        <span class="macro">assert_eq!</span>(oklch_to_srgb(<span class="number">1.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>), <span class="prelude-val">Some</span>([<span class="number">255</span>, <span class="number">255</span>, <span class="number">255</span>]));
+<a href=#571 id=571 data-nosnippet>571</a>    }
+<a href=#572 id=572 data-nosnippet>572</a>
+<a href=#573 id=573 data-nosnippet>573</a>    <span class="doccomment">/// The two things a tint is meant to show, shown separately.
+<a href=#574 id=574 data-nosnippet>574</a>    </span><span class="attr">#[test]
+<a href=#575 id=575 data-nosnippet>575</a>    </span><span class="kw">fn </span>a_tint_reads_when_as_hue_and_how_mixed_as_chroma() {
+<a href=#576 id=576 data-nosnippet>576</a>        <span class="kw">let </span>chain = <span class="number">762_261.0</span>;
+<a href=#577 id=577 data-nosnippet>577</a>        <span class="kw">let </span>spread_of = |c: Rgb| {
+<a href=#578 id=578 data-nosnippet>578</a>            <span class="kw">let </span>(hi, lo) = (
+<a href=#579 id=579 data-nosnippet>579</a>                c.iter().copied().max().unwrap() <span class="kw">as </span>i32,
+<a href=#580 id=580 data-nosnippet>580</a>                c.iter().copied().min().unwrap() <span class="kw">as </span>i32,
+<a href=#581 id=581 data-nosnippet>581</a>            );
+<a href=#582 id=582 data-nosnippet>582</a>            hi - lo
+<a href=#583 id=583 data-nosnippet>583</a>        };
+<a href=#584 id=584 data-nosnippet>584</a>
+<a href=#585 id=585 data-nosnippet>585</a>        <span class="comment">// Early and late, both perfectly concentrated: different hues, cold and
+<a href=#586 id=586 data-nosnippet>586</a>        // warm, and both vivid.
+<a href=#587 id=587 data-nosnippet>587</a>        </span><span class="kw">let </span>early = tint(<span class="number">1_000.0</span>, <span class="number">0.0</span>, chain);
+<a href=#588 id=588 data-nosnippet>588</a>        <span class="kw">let </span>late = tint(<span class="number">750_000.0</span>, <span class="number">0.0</span>, chain);
+<a href=#589 id=589 data-nosnippet>589</a>        <span class="macro">assert!</span>(early[<span class="number">2</span>] &gt; early[<span class="number">0</span>], <span class="string">"the early chain is cold: {:?}"</span>, early);
+<a href=#590 id=590 data-nosnippet>590</a>        <span class="macro">assert!</span>(late[<span class="number">0</span>] &gt; late[<span class="number">2</span>], <span class="string">"the late chain is warm: {:?}"</span>, late);
+<a href=#591 id=591 data-nosnippet>591</a>        <span class="macro">assert!</span>(spread_of(early) &gt; <span class="number">24 </span>&amp;&amp; spread_of(late) &gt; <span class="number">24</span>, <span class="string">"both are vivid"</span>);
+<a href=#592 id=592 data-nosnippet>592</a>
+<a href=#593 id=593 data-nosnippet>593</a>        <span class="comment">// The same instant in history, thoroughly mixed: the hue survives but
+<a href=#594 id=594 data-nosnippet>594</a>        // the colour washes out.
+<a href=#595 id=595 data-nosnippet>595</a>        </span><span class="kw">let </span>mixed = tint(<span class="number">750_000.0</span>, <span class="number">300_000.0</span>, chain);
+<a href=#596 id=596 data-nosnippet>596</a>        <span class="macro">assert!</span>(
+<a href=#597 id=597 data-nosnippet>597</a>            spread_of(mixed) &lt; spread_of(late),
+<a href=#598 id=598 data-nosnippet>598</a>            <span class="string">"mixing has to desaturate: {:?} against {:?}"</span>,
+<a href=#599 id=599 data-nosnippet>599</a>            mixed,
+<a href=#600 id=600 data-nosnippet>600</a>            late
+<a href=#601 id=601 data-nosnippet>601</a>        );
+<a href=#602 id=602 data-nosnippet>602</a>        <span class="macro">assert!</span>(mixed[<span class="number">0</span>] &gt;= mixed[<span class="number">2</span>], <span class="string">"and it must not change which way it leans"</span>);
+<a href=#603 id=603 data-nosnippet>603</a>    }
+<a href=#604 id=604 data-nosnippet>604</a>
+<a href=#605 id=605 data-nosnippet>605</a>    <span class="doccomment">/// A coinbase is the extreme case and the one a reader will check by eye:
+<a href=#606 id=606 data-nosnippet>606</a>    /// one block, no spread, so as vivid as the ramp goes.
+<a href=#607 id=607 data-nosnippet>607</a>    </span><span class="attr">#[test]
+<a href=#608 id=608 data-nosnippet>608</a>    </span><span class="kw">fn </span>a_coinbase_is_the_most_saturated_thing_in_the_picture() {
+<a href=#609 id=609 data-nosnippet>609</a>        <span class="kw">let </span>chain = <span class="number">762_261.0</span>;
+<a href=#610 id=610 data-nosnippet>610</a>        <span class="kw">let </span>pure = tint(<span class="number">400_000.0</span>, <span class="number">0.0</span>, chain);
+<a href=#611 id=611 data-nosnippet>611</a>        <span class="kw">for </span>spread <span class="kw">in </span>[<span class="number">1_000.0</span>, <span class="number">10_000.0</span>, <span class="number">100_000.0</span>] {
+<a href=#612 id=612 data-nosnippet>612</a>            <span class="kw">let </span>washed = tint(<span class="number">400_000.0</span>, spread, chain);
+<a href=#613 id=613 data-nosnippet>613</a>            <span class="kw">let </span>vivid = |c: Rgb| {
+<a href=#614 id=614 data-nosnippet>614</a>                c.iter().copied().max().unwrap() <span class="kw">as </span>i32 - c.iter().copied().min().unwrap() <span class="kw">as </span>i32
+<a href=#615 id=615 data-nosnippet>615</a>            };
+<a href=#616 id=616 data-nosnippet>616</a>            <span class="macro">assert!</span>(
+<a href=#617 id=617 data-nosnippet>617</a>                vivid(pure) &gt;= vivid(washed),
+<a href=#618 id=618 data-nosnippet>618</a>                <span class="string">"spread {} should not be more saturated than none"</span>,
+<a href=#619 id=619 data-nosnippet>619</a>                spread
+<a href=#620 id=620 data-nosnippet>620</a>            );
+<a href=#621 id=621 data-nosnippet>621</a>        }
+<a href=#622 id=622 data-nosnippet>622</a>    }
+<a href=#623 id=623 data-nosnippet>623</a>
+<a href=#624 id=624 data-nosnippet>624</a>    <span class="doccomment">/// The one property the whole byte rests on: the entry a transaction's
+<a href=#625 id=625 data-nosnippet>625</a>    /// index points at is a colour it can be mistaken for.
+<a href=#626 id=626 data-nosnippet>626</a>    ///
+<a href=#627 id=627 data-nosnippet>627</a>    /// The bound is the worst case `tints` claims -- 0.014707 measured over
+<a href=#628 id=628 data-nosnippet>628</a>    /// 60,000,000 real records, 0.014703 over 2,000,000 exact ones -- and this
+<a href=#629 id=629 data-nosnippet>629</a>    /// sweeps a grid finer than the bins to catch the corners the chain never
+<a href=#630 id=630 data-nosnippet>630</a>    /// happened to visit.  A change to `TINT_HUES`, `TINT_MIXES`, `HUE_ARC` or
+<a href=#631 id=631 data-nosnippet>631</a>    /// `CHROMA` that spent more than a just-noticeable difference would fail
+<a href=#632 id=632 data-nosnippet>632</a>    /// here rather than in six months in a picture.
+<a href=#633 id=633 data-nosnippet>633</a>    </span><span class="attr">#[test]
+<a href=#634 id=634 data-nosnippet>634</a>    </span><span class="kw">fn </span>a_tint_index_points_at_a_colour_the_tint_can_be_mistaken_for() {
+<a href=#635 id=635 data-nosnippet>635</a>        <span class="kw">let </span>chain = <span class="number">762_261.0</span>;
+<a href=#636 id=636 data-nosnippet>636</a>        <span class="kw">let </span>table = tints();
+<a href=#637 id=637 data-nosnippet>637</a>        <span class="kw">let </span><span class="kw-2">mut </span>worst = <span class="number">0.0f64</span>;
+<a href=#638 id=638 data-nosnippet>638</a>        <span class="kw">let </span>(<span class="kw-2">mut </span>where_worst, <span class="kw-2">mut </span>spread_worst) = (<span class="number">0.0</span>, <span class="number">0.0</span>);
+<a href=#639 id=639 data-nosnippet>639</a>        <span class="kw">for </span>step <span class="kw">in </span><span class="number">0</span>..=<span class="number">400 </span>{
+<a href=#640 id=640 data-nosnippet>640</a>            <span class="kw">let </span>mean = chain * step <span class="kw">as </span>f64 / <span class="number">400.0</span>;
+<a href=#641 id=641 data-nosnippet>641</a>            <span class="comment">// Zero, then out past the widest spread the 2022 chain shows.
+<a href=#642 id=642 data-nosnippet>642</a>            </span><span class="kw">for </span>spread <span class="kw">in </span>[<span class="number">0.0</span>, <span class="number">1.0</span>, <span class="number">500.0</span>, <span class="number">5_000.0</span>, <span class="number">22_500.0</span>, <span class="number">45_000.0</span>, <span class="number">90_000.0</span>,
+<a href=#643 id=643 data-nosnippet>643</a>                           <span class="number">150_000.0</span>, <span class="number">260_000.0</span>, <span class="number">315_000.0</span>, <span class="number">1_000_000.0</span>] {
+<a href=#644 id=644 data-nosnippet>644</a>                <span class="kw">let </span>index = tint_index(mean, spread, chain) <span class="kw">as </span>usize;
+<a href=#645 id=645 data-nosnippet>645</a>                <span class="kw">let </span>d = difference(tint(mean, spread, chain), table[index]);
+<a href=#646 id=646 data-nosnippet>646</a>                <span class="kw">if </span>d &gt; worst {
+<a href=#647 id=647 data-nosnippet>647</a>                    worst = d;
+<a href=#648 id=648 data-nosnippet>648</a>                    where_worst = mean;
+<a href=#649 id=649 data-nosnippet>649</a>                    spread_worst = spread;
+<a href=#650 id=650 data-nosnippet>650</a>                }
+<a href=#651 id=651 data-nosnippet>651</a>            }
+<a href=#652 id=652 data-nosnippet>652</a>        }
+<a href=#653 id=653 data-nosnippet>653</a>        <span class="macro">assert!</span>(
+<a href=#654 id=654 data-nosnippet>654</a>            worst &lt;= <span class="number">0.0148</span>,
+<a href=#655 id=655 data-nosnippet>655</a>            <span class="string">"quantising cost {} at mean {} spread {}, past the 0.014707 the docs claim"</span>,
+<a href=#656 id=656 data-nosnippet>656</a>            worst,
+<a href=#657 id=657 data-nosnippet>657</a>            where_worst,
+<a href=#658 id=658 data-nosnippet>658</a>            spread_worst
+<a href=#659 id=659 data-nosnippet>659</a>        );
+<a href=#660 id=660 data-nosnippet>660</a>    }
+<a href=#661 id=661 data-nosnippet>661</a>
+<a href=#662 id=662 data-nosnippet>662</a>    <span class="doccomment">/// Each entry is the tint of its own bin's centre, so the centre has to map
+<a href=#663 id=663 data-nosnippet>663</a>    /// back to the entry.  Without this the table and the index are two
+<a href=#664 id=664 data-nosnippet>664</a>    /// descriptions of two different partitions and every byte is off by one
+<a href=#665 id=665 data-nosnippet>665</a>    /// somewhere.
+<a href=#666 id=666 data-nosnippet>666</a>    </span><span class="attr">#[test]
+<a href=#667 id=667 data-nosnippet>667</a>    </span><span class="kw">fn </span>every_entry_is_the_colour_of_a_bin_that_indexes_back_to_it() {
+<a href=#668 id=668 data-nosnippet>668</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..TINTS_LEN {
+<a href=#669 id=669 data-nosnippet>669</a>            <span class="kw">let </span>(hue, mix) = (index / TINT_MIXES, index % TINT_MIXES);
+<a href=#670 id=670 data-nosnippet>670</a>            <span class="kw">let </span>where_ = (hue <span class="kw">as </span>f64 + <span class="number">0.5</span>) / TINT_HUES <span class="kw">as </span>f64;
+<a href=#671 id=671 data-nosnippet>671</a>            <span class="kw">let </span>middle = ((TINT_MIXES - <span class="number">1 </span>- mix) <span class="kw">as </span>f64 + <span class="number">0.5</span>) / TINT_MIXES <span class="kw">as </span>f64;
+<a href=#672 id=672 data-nosnippet>672</a>            <span class="macro">assert_eq!</span>(
+<a href=#673 id=673 data-nosnippet>673</a>                tint_index(where_, spread_at(middle), <span class="number">1.0</span>) <span class="kw">as </span>usize,
+<a href=#674 id=674 data-nosnippet>674</a>                index,
+<a href=#675 id=675 data-nosnippet>675</a>                <span class="string">"entry {} is drawn for a bin that indexes elsewhere"</span>,
+<a href=#676 id=676 data-nosnippet>676</a>                index
+<a href=#677 id=677 data-nosnippet>677</a>            );
+<a href=#678 id=678 data-nosnippet>678</a>        }
+<a href=#679 id=679 data-nosnippet>679</a>    }
+<a href=#680 id=680 data-nosnippet>680</a>
+<a href=#681 id=681 data-nosnippet>681</a>    <span class="doccomment">/// [`concentration`] and [`spread_at`] are the mix axis and its inverse, and
+<a href=#682 id=682 data-nosnippet>682</a>    /// `tints` evaluates `tint` through the pair.  A drift between them would
+<a href=#683 id=683 data-nosnippet>683</a>    /// move every entry off its bin centre without moving the index, which the
+<a href=#684 id=684 data-nosnippet>684</a>    /// test above would catch only once it had grown past half a bin.
+<a href=#685 id=685 data-nosnippet>685</a>    </span><span class="attr">#[test]
+<a href=#686 id=686 data-nosnippet>686</a>    </span><span class="kw">fn </span>the_mix_axis_and_its_inverse_are_the_same_axis() {
+<a href=#687 id=687 data-nosnippet>687</a>        <span class="kw">for </span>spread <span class="kw">in </span>[<span class="number">0.0</span>, <span class="number">1.0</span>, <span class="number">45_000.0</span>, <span class="number">260_000.0</span>, <span class="number">1e9</span>] {
+<a href=#688 id=688 data-nosnippet>688</a>            <span class="kw">let </span>there_and_back = spread_at(concentration(spread));
+<a href=#689 id=689 data-nosnippet>689</a>            <span class="macro">assert!</span>(
+<a href=#690 id=690 data-nosnippet>690</a>                (there_and_back - spread).abs() &lt;= <span class="number">1e-6 </span>* spread.max(<span class="number">1.0</span>),
+<a href=#691 id=691 data-nosnippet>691</a>                <span class="string">"spread {} came back as {}"</span>,
+<a href=#692 id=692 data-nosnippet>692</a>                spread,
+<a href=#693 id=693 data-nosnippet>693</a>                there_and_back
+<a href=#694 id=694 data-nosnippet>694</a>            );
+<a href=#695 id=695 data-nosnippet>695</a>        }
+<a href=#696 id=696 data-nosnippet>696</a>        <span class="macro">assert_eq!</span>(concentration(<span class="number">0.0</span>), <span class="number">1.0</span>, <span class="string">"a coinbase is perfectly concentrated"</span>);
+<a href=#697 id=697 data-nosnippet>697</a>        <span class="macro">assert!</span>(concentration(SPREAD_HALF) - <span class="number">0.5 </span>&lt; <span class="number">1e-12</span>, <span class="string">"half the chroma at SPREAD_HALF"</span>);
+<a href=#698 id=698 data-nosnippet>698</a>        <span class="comment">// Monotone, which is what makes an ordered cut of it an ordered cut of
+<a href=#699 id=699 data-nosnippet>699</a>        // the mixing.
+<a href=#700 id=700 data-nosnippet>700</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>previous = f64::INFINITY;
+<a href=#701 id=701 data-nosnippet>701</a>        <span class="kw">for </span>k <span class="kw">in </span><span class="number">0</span>..<span class="number">1000 </span>{
+<a href=#702 id=702 data-nosnippet>702</a>            <span class="kw">let </span>c = concentration(k <span class="kw">as </span>f64 * <span class="number">500.0</span>);
+<a href=#703 id=703 data-nosnippet>703</a>            <span class="macro">assert!</span>(c &lt; previous, <span class="string">"concentration must fall with spread"</span>);
+<a href=#704 id=704 data-nosnippet>704</a>            previous = c;
+<a href=#705 id=705 data-nosnippet>705</a>        }
+<a href=#706 id=706 data-nosnippet>706</a>    }
+<a href=#707 id=707 data-nosnippet>707</a>
+<a href=#708 id=708 data-nosnippet>708</a>    <span class="doccomment">/// The byte's two axes read the way the tint's two channels do: slot 0 of
+<a href=#709 id=709 data-nosnippet>709</a>    /// the mix axis is a coinbase, the last slot is a colour that has been
+<a href=#710 id=710 data-nosnippet>710</a>    /// everywhere, and the hue slot climbs with the chain.
+<a href=#711 id=711 data-nosnippet>711</a>    </span><span class="attr">#[test]
+<a href=#712 id=712 data-nosnippet>712</a>    </span><span class="kw">fn </span>the_index_counts_the_way_the_colour_does() {
+<a href=#713 id=713 data-nosnippet>713</a>        <span class="kw">let </span>chain = <span class="number">762_261.0</span>;
+<a href=#714 id=714 data-nosnippet>714</a>        <span class="kw">let </span>mix = |mean, spread| tint_index(mean, spread, chain) <span class="kw">as </span>usize % TINT_MIXES;
+<a href=#715 id=715 data-nosnippet>715</a>        <span class="kw">let </span>hue = |mean, spread| tint_index(mean, spread, chain) <span class="kw">as </span>usize / TINT_MIXES;
+<a href=#716 id=716 data-nosnippet>716</a>
+<a href=#717 id=717 data-nosnippet>717</a>        <span class="macro">assert_eq!</span>(mix(<span class="number">400_000.0</span>, <span class="number">0.0</span>), <span class="number">0</span>, <span class="string">"a coinbase is the unmixed end"</span>);
+<a href=#718 id=718 data-nosnippet>718</a>        <span class="macro">assert!</span>(mix(<span class="number">400_000.0</span>, <span class="number">45_000.0</span>) &gt; <span class="number">0</span>, <span class="string">"a spread of SPREAD_HALF is mixed"</span>);
+<a href=#719 id=719 data-nosnippet>719</a>        <span class="macro">assert!</span>(
+<a href=#720 id=720 data-nosnippet>720</a>            mix(<span class="number">400_000.0</span>, <span class="number">260_000.0</span>) &gt; mix(<span class="number">400_000.0</span>, <span class="number">45_000.0</span>),
+<a href=#721 id=721 data-nosnippet>721</a>            <span class="string">"more spread is more mixed"
+<a href=#722 id=722 data-nosnippet>722</a>        </span>);
+<a href=#723 id=723 data-nosnippet>723</a>        <span class="macro">assert_eq!</span>(
+<a href=#724 id=724 data-nosnippet>724</a>            mix(<span class="number">400_000.0</span>, <span class="number">1e12</span>),
+<a href=#725 id=725 data-nosnippet>725</a>            TINT_MIXES - <span class="number">1</span>,
+<a href=#726 id=726 data-nosnippet>726</a>            <span class="string">"and it saturates rather than overflowing"
+<a href=#727 id=727 data-nosnippet>727</a>        </span>);
+<a href=#728 id=728 data-nosnippet>728</a>
+<a href=#729 id=729 data-nosnippet>729</a>        <span class="macro">assert_eq!</span>(hue(<span class="number">0.0</span>, <span class="number">0.0</span>), <span class="number">0</span>, <span class="string">"block 0 is the cold end"</span>);
+<a href=#730 id=730 data-nosnippet>730</a>        <span class="macro">assert_eq!</span>(hue(chain, <span class="number">0.0</span>), TINT_HUES - <span class="number">1</span>, <span class="string">"the tip is the warm end"</span>);
+<a href=#731 id=731 data-nosnippet>731</a>        <span class="macro">assert_eq!</span>(
+<a href=#732 id=732 data-nosnippet>732</a>            hue(chain * <span class="number">10.0</span>, <span class="number">0.0</span>),
+<a href=#733 id=733 data-nosnippet>733</a>            TINT_HUES - <span class="number">1</span>,
+<a href=#734 id=734 data-nosnippet>734</a>            <span class="string">"past the tip clamps rather than wrapping"
+<a href=#735 id=735 data-nosnippet>735</a>        </span>);
+<a href=#736 id=736 data-nosnippet>736</a>        <span class="kw">let </span><span class="kw-2">mut </span>previous = <span class="number">0</span>;
+<a href=#737 id=737 data-nosnippet>737</a>        <span class="kw">for </span>k <span class="kw">in </span><span class="number">0</span>..=<span class="number">100 </span>{
+<a href=#738 id=738 data-nosnippet>738</a>            <span class="kw">let </span>h = hue(chain * k <span class="kw">as </span>f64 / <span class="number">100.0</span>, <span class="number">0.0</span>);
+<a href=#739 id=739 data-nosnippet>739</a>            <span class="macro">assert!</span>(h &gt;= previous, <span class="string">"the hue slot must not go backwards along the chain"</span>);
+<a href=#740 id=740 data-nosnippet>740</a>            previous = h;
+<a href=#741 id=741 data-nosnippet>741</a>        }
+<a href=#742 id=742 data-nosnippet>742</a>    }
+<a href=#743 id=743 data-nosnippet>743</a>
+<a href=#744 id=744 data-nosnippet>744</a>    <span class="doccomment">/// The mistake this table exists to prevent.
+<a href=#745 id=745 data-nosnippet>745</a>    ///
+<a href=#746 id=746 data-nosnippet>746</a>    /// [`ramp`] is keyed by a weight on the block axis and carries its signal in
+<a href=#747 id=747 data-nosnippet>747</a>    /// lightness; [`tints`] is keyed by a whole colour and is at constant
+<a href=#748 id=748 data-nosnippet>748</a>    /// lightness by construction.  Running an index through `ramp` would draw a
+<a href=#749 id=749 data-nosnippet>749</a>    /// legend that lies, and the two are different sizes of different things --
+<a href=#750 id=750 data-nosnippet>750</a>    /// so they must not be interchangeable, and the numbers say so.
+<a href=#751 id=751 data-nosnippet>751</a>    </span><span class="attr">#[test]
+<a href=#752 id=752 data-nosnippet>752</a>    </span><span class="kw">fn </span>the_tint_table_is_not_the_weight_ramp() {
+<a href=#753 id=753 data-nosnippet>753</a>        <span class="kw">let </span>(table, ramp) = (tints(), ramp());
+<a href=#754 id=754 data-nosnippet>754</a>        <span class="macro">assert_ne!</span>(<span class="kw-2">&amp;</span>table[..], <span class="kw-2">&amp;</span>ramp[..], <span class="string">"two tables, two meanings"</span>);
+<a href=#755 id=755 data-nosnippet>755</a>
+<a href=#756 id=756 data-nosnippet>756</a>        <span class="kw">let </span>lightness = |c: Rgb| oklab(c)[<span class="number">0</span>];
+<a href=#757 id=757 data-nosnippet>757</a>        <span class="kw">let </span>spanned = |t: <span class="kw-2">&amp;</span>[Rgb]| {
+<a href=#758 id=758 data-nosnippet>758</a>            <span class="kw">let </span>(<span class="kw-2">mut </span>lo, <span class="kw-2">mut </span>hi) = (f64::INFINITY, f64::NEG_INFINITY);
+<a href=#759 id=759 data-nosnippet>759</a>            <span class="kw">for </span><span class="kw-2">&amp;</span>c <span class="kw">in </span>t {
+<a href=#760 id=760 data-nosnippet>760</a>                lo = lo.min(lightness(c));
+<a href=#761 id=761 data-nosnippet>761</a>                hi = hi.max(lightness(c));
+<a href=#762 id=762 data-nosnippet>762</a>            }
+<a href=#763 id=763 data-nosnippet>763</a>            hi - lo
+<a href=#764 id=764 data-nosnippet>764</a>        };
+<a href=#765 id=765 data-nosnippet>765</a>        <span class="comment">// The ramp spends nearly the whole lightness axis; the tints spend the
+<a href=#766 id=766 data-nosnippet>766</a>        // gamut mapping's leftovers and nothing else.
+<a href=#767 id=767 data-nosnippet>767</a>        </span><span class="macro">assert!</span>(
+<a href=#768 id=768 data-nosnippet>768</a>            spanned(<span class="kw-2">&amp;</span>ramp) &gt; <span class="number">0.5</span>,
+<a href=#769 id=769 data-nosnippet>769</a>            <span class="string">"the ramp carries its signal in lightness: spanned {}"</span>,
+<a href=#770 id=770 data-nosnippet>770</a>            spanned(<span class="kw-2">&amp;</span>ramp)
+<a href=#771 id=771 data-nosnippet>771</a>        );
+<a href=#772 id=772 data-nosnippet>772</a>        <span class="macro">assert!</span>(
+<a href=#773 id=773 data-nosnippet>773</a>            spanned(<span class="kw-2">&amp;</span>table) &lt; <span class="number">0.1</span>,
+<a href=#774 id=774 data-nosnippet>774</a>            <span class="string">"the tints are at one lightness, so hue and chroma carry both axes: spanned {}"</span>,
+<a href=#775 id=775 data-nosnippet>775</a>            spanned(<span class="kw-2">&amp;</span>table)
+<a href=#776 id=776 data-nosnippet>776</a>        );
+<a href=#777 id=777 data-nosnippet>777</a>    }
+<a href=#778 id=778 data-nosnippet>778</a>
+<a href=#779 id=779 data-nosnippet>779</a>    <span class="doccomment">/// A byte is all there is, so the table has to fit in one and fill it.
+<a href=#780 id=780 data-nosnippet>780</a>    </span><span class="attr">#[test]
+<a href=#781 id=781 data-nosnippet>781</a>    </span><span class="kw">fn </span>the_table_fills_a_byte_exactly() {
+<a href=#782 id=782 data-nosnippet>782</a>        <span class="macro">assert_eq!</span>(TINTS_LEN, <span class="number">256</span>, <span class="string">"one byte, every value of it"</span>);
+<a href=#783 id=783 data-nosnippet>783</a>        <span class="macro">assert_eq!</span>(TINT_HUES * TINT_MIXES, TINTS_LEN);
+<a href=#784 id=784 data-nosnippet>784</a>        <span class="macro">assert_eq!</span>(tints().len(), TINTS_LEN);
+<a href=#785 id=785 data-nosnippet>785</a>        <span class="comment">// And the largest index a transaction can be given is inside it, which
+<a href=#786 id=786 data-nosnippet>786</a>        // is what the `as u8` in `tint_index` is trusting.
+<a href=#787 id=787 data-nosnippet>787</a>        </span><span class="macro">assert_eq!</span>(tint_index(f64::MAX, f64::MAX, <span class="number">762_261.0</span>) <span class="kw">as </span>usize, TINTS_LEN - <span class="number">1</span>);
+<a href=#788 id=788 data-nosnippet>788</a>    }
+<a href=#789 id=789 data-nosnippet>789</a>
+<a href=#790 id=790 data-nosnippet>790</a>    <span class="doccomment">/// [`oklab`] is the inverse of [`oklch_to_srgb`], and if it is not then
+<a href=#791 id=791 data-nosnippet>791</a>    /// every dE in this file is a number about nothing.
+<a href=#792 id=792 data-nosnippet>792</a>    </span><span class="attr">#[test]
+<a href=#793 id=793 data-nosnippet>793</a>    </span><span class="kw">fn </span>the_two_directions_of_the_space_agree() {
+<a href=#794 id=794 data-nosnippet>794</a>        <span class="kw">let </span>corners = [(<span class="number">0.72</span>, <span class="number">0.0</span>, <span class="number">0.0</span>), (<span class="number">0.72</span>, <span class="number">0.05</span>, <span class="number">30.0</span>), (<span class="number">0.5</span>, <span class="number">0.1</span>, <span class="number">250.0</span>), (<span class="number">0.9</span>, <span class="number">0.02</span>, <span class="number">150.0</span>)];
+<a href=#795 id=795 data-nosnippet>795</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>(l, c, h) <span class="kw">in </span><span class="kw-2">&amp;</span>corners {
+<a href=#796 id=796 data-nosnippet>796</a>            <span class="kw">let </span>rgb = oklch_to_srgb(l, c, h).expect(<span class="string">"chosen to be inside sRGB"</span>);
+<a href=#797 id=797 data-nosnippet>797</a>            <span class="kw">let </span>back = oklab(rgb);
+<a href=#798 id=798 data-nosnippet>798</a>            <span class="kw">let </span>(a, b) = (c * h.to_radians().cos(), c * h.to_radians().sin());
+<a href=#799 id=799 data-nosnippet>799</a>            <span class="comment">// 8-bit channels, so the round trip is only good to a step of them.
+<a href=#800 id=800 data-nosnippet>800</a>            </span><span class="kw">for </span>(got, want) <span class="kw">in </span>back.iter().zip(<span class="kw-2">&amp;</span>[l, a, b]) {
+<a href=#801 id=801 data-nosnippet>801</a>                <span class="macro">assert!</span>(
+<a href=#802 id=802 data-nosnippet>802</a>                    (got - want).abs() &lt; <span class="number">3e-3</span>,
+<a href=#803 id=803 data-nosnippet>803</a>                    <span class="string">"L={} C={} h={} came back as {:?}"</span>,
+<a href=#804 id=804 data-nosnippet>804</a>                    l, c, h, back
+<a href=#805 id=805 data-nosnippet>805</a>                );
+<a href=#806 id=806 data-nosnippet>806</a>            }
+<a href=#807 id=807 data-nosnippet>807</a>        }
+<a href=#808 id=808 data-nosnippet>808</a>        <span class="macro">assert_eq!</span>(difference([<span class="number">17</span>, <span class="number">34</span>, <span class="number">51</span>], [<span class="number">17</span>, <span class="number">34</span>, <span class="number">51</span>]), <span class="number">0.0</span>, <span class="string">"a colour is itself"</span>);
+<a href=#809 id=809 data-nosnippet>809</a>        <span class="macro">assert!</span>(
+<a href=#810 id=810 data-nosnippet>810</a>            difference([<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>], [<span class="number">255</span>, <span class="number">255</span>, <span class="number">255</span>]) &gt; <span class="number">0.9</span>,
+<a href=#811 id=811 data-nosnippet>811</a>            <span class="string">"black to white is the whole axis"
+<a href=#812 id=812 data-nosnippet>812</a>        </span>);
+<a href=#813 id=813 data-nosnippet>813</a>    }
+<a href=#814 id=814 data-nosnippet>814</a>
+<a href=#815 id=815 data-nosnippet>815</a>    <span class="attr">#[test]
+<a href=#816 id=816 data-nosnippet>816</a>    </span><span class="kw">fn </span>hex_is_six_digits() {
+<a href=#817 id=817 data-nosnippet>817</a>        <span class="macro">assert_eq!</span>(hex([<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>]), <span class="string">"#000000"</span>);
+<a href=#818 id=818 data-nosnippet>818</a>        <span class="macro">assert_eq!</span>(hex([<span class="number">255</span>, <span class="number">255</span>, <span class="number">255</span>]), <span class="string">"#ffffff"</span>);
+<a href=#819 id=819 data-nosnippet>819</a>        <span class="macro">assert_eq!</span>(hex([<span class="number">1</span>, <span class="number">171</span>, <span class="number">205</span>]), <span class="string">"#01abcd"</span>);
+<a href=#820 id=820 data-nosnippet>820</a>    }
+<a href=#821 id=821 data-nosnippet>821</a>
+<a href=#822 id=822 data-nosnippet>822</a>    <span class="doccomment">/// A hue is a direction and the colour has to point that way: a hue of 30°
+<a href=#823 id=823 data-nosnippet>823</a>    /// is warm and one of 250° is cold, whatever the gamut mapping does to the
+<a href=#824 id=824 data-nosnippet>824</a>    /// chroma on the way.
+<a href=#825 id=825 data-nosnippet>825</a>    </span><span class="attr">#[test]
+<a href=#826 id=826 data-nosnippet>826</a>    </span><span class="kw">fn </span>hue_survives_the_conversion() {
+<a href=#827 id=827 data-nosnippet>827</a>        <span class="kw">let </span>warm = in_gamut(<span class="number">0.6</span>, <span class="number">0.1</span>, <span class="number">30.0</span>);
+<a href=#828 id=828 data-nosnippet>828</a>        <span class="kw">let </span>cold = in_gamut(<span class="number">0.6</span>, <span class="number">0.1</span>, <span class="number">250.0</span>);
+<a href=#829 id=829 data-nosnippet>829</a>        <span class="macro">assert!</span>(warm[<span class="number">0</span>] &gt; warm[<span class="number">2</span>], <span class="string">"30 degrees is red-ish: {:?}"</span>, warm);
+<a href=#830 id=830 data-nosnippet>830</a>        <span class="macro">assert!</span>(cold[<span class="number">2</span>] &gt; cold[<span class="number">0</span>], <span class="string">"250 degrees is blue-ish: {:?}"</span>, cold);
+<a href=#831 id=831 data-nosnippet>831</a>    }
+<a href=#832 id=832 data-nosnippet>832</a>}
+</code></pre></div></section></main></body></html>

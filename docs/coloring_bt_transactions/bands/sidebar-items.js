@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CARRY_LAPLACE","CARRY_MOMENTS","CHAIN_BLOCKS","LAPLACE","LAYOUT"],"fn":["combine_into","configure","laplace_at","laplace_of","laplace_table","scale_into"],"struct":["BandStore","Layout","Tinted"],"trait":["Lane"],"type":["Color"]};
