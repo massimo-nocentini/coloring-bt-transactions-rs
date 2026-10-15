@@ -23,6 +23,29 @@
 //! finer than a band.  With `K = 1024` over the 2022 chain a band is 745 blocks
 //! -- about five days.
 //!
+//! ## What is carried exactly beside the bands
+//!
+//! The same argument says what *can* be kept exactly: any number that is linear
+//! in the colour folds through the convex combination the way the bands do, so
+//! a store can carry it beside them in one `f64` and never derive it from band
+//! indices at all.  Two sets of such numbers are carried.
+//!
+//! - The first two moments, always: `sum w`, `sum w . b` and `sum w . b^2`,
+//!   which is what keeps `--moments` and `--sum` exact in blocks.  See
+//!   [`Tinted`].
+//! - The seven values of `--laplace`, when it asks: `sum w . exp(-s . b / L)`
+//!   for each `s` in [`LAPLACE`], with `L` fixed at [`CHAIN_BLOCKS`].  A
+//!   coinbase starts at [`laplace_at`] of its own block, and from there they
+//!   are scaled and combined with exactly the weights the moments are.
+//!
+//! The second set is a type parameter, [`CARRY_LAPLACE`] against
+//! [`CARRY_MOMENTS`], rather than something every colour holds.  Seven `f64` a
+//! colour is 56 bytes across ninety million live colours, five gigabytes at the
+//! end of the 2022 chain and a twentieth of the store at `--bands 256` -- worth
+//! paying for a run that prints them and for no other.  Only `--laplace` makes
+//! the wider store, so every other run is the one it was, byte for byte in
+//! its output and to the byte in memory.
+//!
 //! ## Why this is flat in memory
 //!
 //! The working set of the exact fold is (transactions holding an unspent
@@ -55,12 +78,87 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::ops::{Add, Mul};
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 /// One past the largest block id in the 2022 chain, which is what a band's
 /// width is measured against unless `--blocks` says otherwise.  Fixing the
 /// range up front is what makes a band mean the same thing at every record of a
 /// run and across runs of different lengths.
 pub const CHAIN_BLOCKS: usize = 762_261;
+
+/// The `s` at which `--laplace` evaluates a colour, `F(s) = sum_b w_b .
+/// exp(-s . b / L)` with `L` = [`CHAIN_BLOCKS`].
+///
+/// Doublings, because what `s` sets is the stretch of history `F(s)` resolves:
+/// `exp(-s . b / L)` falls by a factor `e` every `L / s` blocks, so `s = 0.5`
+/// barely moves across the whole chain -- it is the mean, nearly linearly --
+/// and `s = 32` has spent all of its range in the first 24,000 blocks and says
+/// how much of a colour is that old.  Each step halves the stretch.  If one
+/// column is wanted rather than seven, it is `s = 4`: over block ids spread
+/// evenly across the chain, `F(s)` varies most at `s` = 3.25, and 4 is the
+/// grid point nearest.
+///
+/// `L` is the 2022 chain and not the run's block count, so a value means the
+/// same thing in every run, the way a band does.
+pub const LAPLACE: [f64; 7] = [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0];
+
+/// `exp(-s . block / L)` for every `s` in [`LAPLACE`]: what a coinbase minted
+/// in `block` is worth at each, and what every term of a colour is weighted by.
+///
+/// One definition for both of the stores that compute it -- [`crate::emit`]
+/// sums it over the terms of an exact colour, and a [`BandStore`] seeds a
+/// coinbase with it -- so the two agree bit for bit wherever a colour is a
+/// single block.  The order of the arithmetic is not a choice to worry about:
+/// every `s` is a power of two and `block` an integer, so `s . block` is exact
+/// and `s . (block / L)` would round to the same bits.
+///
+/// Every value is in `[exp(-32), 1]` for a block inside the chain, positive and
+/// far from either end of an `f64`, so the sums `--laplace` prints are of
+/// positive terms and lose nothing to cancellation.
+#[inline]
+pub fn laplace_at(block: f64) -> [f64; 7] {
+    let mut at = [0.0f64; 7];
+    for (value, s) in at.iter_mut().zip(LAPLACE) {
+        *value = (-(s * block) / CHAIN_BLOCKS as f64).exp();
+    }
+    at
+}
+
+/// [`laplace_at`] of every block in the chain, computed the first time an
+/// exact colour is printed under `--laplace` and kept: 5.3 million `exp`s once,
+/// about 40 ms, rather than seven for every term of every line.
+///
+/// That is the difference between the form costing what `--moments` costs and
+/// costing ten times it.  Over the first 200,000 records of the 2022 chain,
+/// `--weighted --laplace` took 22.25s with the `exp`s in the loop against
+/// `--moments`' 2.08s; the terms of a colour are blocks, and the same blocks
+/// recur in every colour downstream of them, so the work was the same few
+/// hundred thousand values recomputed a billion times.  The table holds the
+/// very values [`laplace_at`] returns, so a line is the same bits either way.
+///
+/// 42.7 MB, in a run whose store is gigabytes, and only in a run that walks
+/// terms under `--laplace` -- a band store hands its values over and never
+/// reaches here.  A block past the table, from a chain longer than 2022's, is
+/// computed on the spot by [`laplace_of`] rather than refused.
+fn laplace_table() -> &'static [[f64; 7]] {
+    static TABLE: OnceLock<Box<[[f64; 7]]>> = OnceLock::new();
+    TABLE.get_or_init(|| (0..CHAIN_BLOCKS).map(|b| laplace_at(b as f64)).collect())
+}
+
+/// [`laplace_at`] of a block id, out of [`laplace_table`] when it is in it.
+#[inline]
+pub fn laplace_of(block: usize) -> [f64; 7] {
+    match laplace_table().get(block) {
+        Some(at) => *at,
+        None => laplace_at(block as f64),
+    }
+}
+
+/// How many exact `f64` a colour carries beside its bands: the three moments,
+/// or the three moments and the seven [`LAPLACE`] values.  See the module docs
+/// for why the second is a type and not a flag.
+pub const CARRY_MOMENTS: usize = 3;
+pub const CARRY_LAPLACE: usize = CARRY_MOMENTS + LAPLACE.len();
 
 /// A number a band's weight can be held in.
 pub trait Lane: Copy + Default + Add<Output = Self> + Mul<Output = Self> + 'static {
@@ -150,7 +248,7 @@ pub fn configure(layout: Layout) {
 
 /// `K` weights, one per band, summing to 1.  Shared like the other stores'
 /// colours: a second handle is a refcount bump.
-pub type Color<T> = Rc<Tinted<T>>;
+pub type Color<T, const E: usize> = Rc<Tinted<T, E>>;
 
 /// A colour: the band weights, and beside them the exact first two moments of
 /// the block distribution the bands are an approximation of.
@@ -165,26 +263,34 @@ pub type Color<T> = Rc<Tinted<T>>;
 /// They are `f64` whatever the lanes are.  The lanes are narrow to save memory
 /// across ninety million live colours; there are three of these, so precision
 /// is free and exactness is the whole point of them.
-pub struct Tinted<T: Lane> {
+///
+/// Under `--laplace` the same array runs on to the seven [`LAPLACE`] values,
+/// which are linear in the colour for the same reason and so ride the same
+/// combination: `E` is [`CARRY_LAPLACE`] there and [`CARRY_MOMENTS`] everywhere
+/// else.
+pub struct Tinted<T: Lane, const E: usize> {
     bands: Box<[T]>,
-    /// `sum w`, `sum w . b`, `sum w . b^2`, over block ids.
+    /// `sum w`, `sum w . b`, `sum w . b^2`, over block ids; then, when `E` has
+    /// room, `sum w . exp(-s . b / L)` for each `s` in [`LAPLACE`].
     ///
     /// Linear in the colour, so a convex combination of colours has the convex
     /// combination of their moments -- which is why they can be carried at all.
     /// The effective block count cannot: it is `mass^2 / sum w^2`, quadratic,
     /// and no bounded per-colour state folds it.  See [`crate::main`]'s
     /// `Line::Moments`.
-    moments: [f64; 3],
+    exact: [f64; E],
 }
 
-impl<T: Lane> Tinted<T> {
+impl<T: Lane, const E: usize> Tinted<T, E> {
     #[inline]
     fn len(&self) -> usize {
         self.bands.len()
     }
 }
 
-pub struct BandStore<T: Lane> {
+/// `E` is how many exact `f64` each colour carries beside its lanes, and is
+/// [`CARRY_MOMENTS`] unless a run asked for `--laplace`.
+pub struct BandStore<T: Lane, const E: usize = CARRY_MOMENTS> {
     layout: Layout,
     /// Colours alive, in allocations, and the high-water mark of that.  The
     /// bytes are `live * bands * size_of::<T>()`, plus an `Rc` header each.
@@ -195,13 +301,13 @@ pub struct BandStore<T: Lane> {
     _lane: std::marker::PhantomData<T>,
 }
 
-impl<T: Lane> BandStore<T> {
+impl<T: Lane, const E: usize> BandStore<T, E> {
     #[cfg(test)]
     pub fn layout(&self) -> Layout {
         self.layout
     }
 
-    fn track(&mut self, color: Color<T>) -> Color<T> {
+    fn track(&mut self, color: Color<T, E>) -> Color<T, E> {
         self.live += 1;
         self.peak = self.peak.max(self.live);
         color
@@ -215,7 +321,12 @@ impl<T: Lane> BandStore<T> {
 /// the iterator knows its length exactly -- filled in place with no staging
 /// buffer and no copy.  This is the loop the vector unit is for.
 #[inline]
-fn combine_into<T: Lane>(a: &Tinted<T>, wa: f64, b: &Tinted<T>, wb: f64) -> Color<T> {
+fn combine_into<T: Lane, const E: usize>(
+    a: &Tinted<T, E>,
+    wa: f64,
+    b: &Tinted<T, E>,
+    wb: f64,
+) -> Color<T, E> {
     debug_assert_eq!(a.len(), b.len());
     let (la, lb) = (T::from_f64(wa), T::from_f64(wb));
     let bands: Box<[T]> = a
@@ -224,34 +335,41 @@ fn combine_into<T: Lane>(a: &Tinted<T>, wa: f64, b: &Tinted<T>, wb: f64) -> Colo
         .zip(&b.bands)
         .map(|(&x, &y)| x * la + y * lb)
         .collect();
-    // The same combination, on the three exact lanes.  Done in `f64` and from
-    // the `f64` weights rather than the lane-rounded ones, so the moments do
-    // not inherit the lanes' precision.
-    let mut moments = [0.0f64; 3];
-    for k in 0..3 {
-        moments[k] = a.moments[k] * wa + b.moments[k] * wb;
+    // The same combination, on the exact lanes.  Done in `f64` and from the
+    // `f64` weights rather than the lane-rounded ones, so the moments -- and
+    // the `--laplace` values after them, when there are any -- do not inherit
+    // the lanes' precision.
+    let mut exact = [0.0f64; E];
+    for k in 0..E {
+        exact[k] = a.exact[k] * wa + b.exact[k] * wb;
     }
-    Rc::new(Tinted { bands, moments })
+    Rc::new(Tinted { bands, exact })
 }
 
 #[inline]
-fn scale_into<T: Lane>(a: &Tinted<T>, w: f64) -> Color<T> {
+fn scale_into<T: Lane, const E: usize>(a: &Tinted<T, E>, w: f64) -> Color<T, E> {
     let lane = T::from_f64(w);
     let bands: Box<[T]> = a.bands.iter().map(|&x| x * lane).collect();
-    let mut moments = a.moments;
-    for m in &mut moments {
+    let mut exact = a.exact;
+    for m in &mut exact {
         *m *= w;
     }
-    Rc::new(Tinted { bands, moments })
+    Rc::new(Tinted { bands, exact })
 }
 
-impl<T: Lane> ColorStore for BandStore<T> {
-    type Color = Color<T>;
+impl<T: Lane, const E: usize> ColorStore for BandStore<T, E> {
+    type Color = Color<T, E>;
 
     const WEIGHTED: bool = true;
     const NARROW: bool = T::NARROW;
 
     fn new() -> Self {
+        const {
+            assert!(
+                E == CARRY_MOMENTS || E == CARRY_LAPLACE,
+                "a band colour carries the moments, or the moments and --laplace"
+            )
+        };
         let layout = LAYOUT.with(|l| l.get()).unwrap_or_else(|| {
             panic!("bands::configure must be called on this thread before a BandStore is made")
         });
@@ -264,20 +382,25 @@ impl<T: Lane> ColorStore for BandStore<T> {
         }
     }
 
-    fn singleton(&mut self, block: usize) -> Color<T> {
+    fn singleton(&mut self, block: usize) -> Color<T, E> {
         let mut bands = vec![T::default(); self.layout.bands].into_boxed_slice();
         bands[self.layout.band(block)] = T::from_f64(1.0);
         // A coinbase is a point mass on one block, so its moments are exact and
-        // trivial -- and they are the block itself, not the band's centre.
+        // trivial -- and they are the block itself, not the band's centre.  So
+        // are its `--laplace` values, which are seven `exp`s of that block: the
+        // only place this store calls one, since everything after a coinbase is
+        // a combination of what coinbases started with.
         let b = block as f64;
-        let color = Rc::new(Tinted {
-            bands,
-            moments: [1.0, b, b * b],
-        });
+        let mut exact = [0.0f64; E];
+        exact[..CARRY_MOMENTS].copy_from_slice(&[1.0, b, b * b]);
+        if E == CARRY_LAPLACE {
+            exact[CARRY_MOMENTS..].copy_from_slice(&laplace_at(b));
+        }
+        let color = Rc::new(Tinted { bands, exact });
         self.track(color)
     }
 
-    fn combine(&mut self, a: &Color<T>, wa: f64, b: &Color<T>, wb: f64) -> Color<T> {
+    fn combine(&mut self, a: &Color<T, E>, wa: f64, b: &Color<T, E>, wb: f64) -> Color<T, E> {
         // Two handles on one vector: `wa . C + wb . C` is `(wa + wb) . C`, a
         // scale rather than nothing, as in the weighted store.
         if Rc::ptr_eq(a, b) {
@@ -287,7 +410,7 @@ impl<T: Lane> ColorStore for BandStore<T> {
         self.track(color)
     }
 
-    fn scale(&mut self, color: &Color<T>, w: f64) -> Color<T> {
+    fn scale(&mut self, color: &Color<T, E>, w: f64) -> Color<T, E> {
         // Weight 1 changes nothing, and a single-input transaction is exactly
         // that case; sharing keeps the commonest shape free.
         if w == 1.0 {
@@ -297,11 +420,11 @@ impl<T: Lane> ColorStore for BandStore<T> {
         self.track(scaled)
     }
 
-    fn share(&mut self, color: &Color<T>) -> Color<T> {
+    fn share(&mut self, color: &Color<T, E>) -> Color<T, E> {
         Rc::clone(color)
     }
 
-    fn release(&mut self, color: Color<T>) {
+    fn release(&mut self, color: Color<T, E>) {
         if Rc::strong_count(&color) == 1 {
             self.live -= 1;
         }
@@ -310,7 +433,7 @@ impl<T: Lane> ColorStore for BandStore<T> {
     /// The non-zero bands, highest first, as `(band, weight)`.  The exponent is
     /// the band's index and not a block id; [`ColorStore::placement`] says how to
     /// put it back on the block axis.
-    fn for_each_term(&self, color: &Color<T>, mut f: impl FnMut(usize, f64)) {
+    fn for_each_term(&self, color: &Color<T, E>, mut f: impl FnMut(usize, f64)) {
         for k in (0..color.len()).rev() {
             let w = color.bands[k].to_f64();
             if w != 0.0 {
@@ -329,11 +452,26 @@ impl<T: Lane> ColorStore for BandStore<T> {
     /// the mean would be a band centre, out by up to half a band -- 372 blocks
     /// at `--bands 1024`, 1,488 at `--bands 256`.  Carried, it is the same
     /// number the exact fold prints, to floating-point drift.
-    fn exact_moments(&self, color: &Color<T>) -> Option<[f64; 3]> {
-        Some(color.moments)
+    fn exact_moments(&self, color: &Color<T, E>) -> Option<[f64; 3]> {
+        let mut moments = [0.0f64; CARRY_MOMENTS];
+        moments.copy_from_slice(&color.exact[..CARRY_MOMENTS]);
+        Some(moments)
     }
 
-    fn observe(&mut self, color: &Color<T>) {
+    /// The seven `--laplace` values carried beside the bands, when this store
+    /// was made to carry them, which `main` does exactly when `--laplace` is
+    /// asked for.  Derived from the bands they would put every block of a band
+    /// at its centre, as the moments would.
+    fn exact_laplace(&self, color: &Color<T, E>) -> Option<[f64; 7]> {
+        if E != CARRY_LAPLACE {
+            return None;
+        }
+        let mut values = [0.0f64; 7];
+        values.copy_from_slice(&color.exact[CARRY_MOMENTS..]);
+        Some(values)
+    }
+
+    fn observe(&mut self, color: &Color<T, E>) {
         let total: f64 = color.bands.iter().map(|w| w.to_f64()).sum();
         self.drift = self.drift.max((total - 1.0).abs());
     }
@@ -346,14 +484,14 @@ impl<T: Lane> ColorStore for BandStore<T> {
         ("live lanes", "peak lanes")
     }
 
-    fn audit(&self, live: &mut dyn Iterator<Item = &Color<T>>) -> String {
-        let mut seen: HashSet<*const Tinted<T>> = HashSet::new();
+    fn audit(&self, live: &mut dyn Iterator<Item = &Color<T, E>>) -> String {
+        let mut seen: HashSet<*const Tinted<T, E>> = HashSet::new();
         let mut reachable = 0;
         for color in live {
             // `&**color` rather than `Rc::as_ptr`, which cannot be named here:
             // the lane parameter is also called `T`, so `Rc::as_ptr` resolves
             // against `Rc<T>` and not `Rc<Tinted<T>>`.
-            let at: *const Tinted<T> = &**color;
+            let at: *const Tinted<T, E> = &**color;
             if seen.insert(at) {
                 reachable += 1;
             }
@@ -385,7 +523,7 @@ mod tests {
         BandStore::<T>::new()
     }
 
-    fn dump<T: Lane>(store: &BandStore<T>, c: &Color<T>) -> Vec<(usize, f64)> {
+    fn dump<T: Lane>(store: &BandStore<T>, c: &Color<T, CARRY_MOMENTS>) -> Vec<(usize, f64)> {
         let mut out = Vec::new();
         store.for_each_term(c, |band, w| out.push((band, w)));
         out
@@ -532,6 +670,79 @@ mod tests {
         assert_eq!(offset, 49.5);
         // band 2 covers 200..299, centred on 249.5
         assert_eq!(2.0 * scale + offset, 249.5);
+    }
+
+    /// A store that carries the `--laplace` values, for the tests about them.
+    fn laplace_store<T: Lane>(bands: usize, blocks: usize) -> BandStore<T, CARRY_LAPLACE> {
+        configure(Layout::new(bands, blocks));
+        BandStore::<T, CARRY_LAPLACE>::new()
+    }
+
+    /// A coinbase in block `b` is worth exactly `exp(-s . b / L)` at every `s`,
+    /// in either lane, at any banding -- the one place the store calls `exp`,
+    /// and the value the exact fold sums for the same block.
+    #[test]
+    fn a_coinbase_starts_at_its_own_laplace_values() {
+        for block in [0usize, 1, 37, 381_130, CHAIN_BLOCKS - 1] {
+            let mut s = laplace_store::<f32>(4, CHAIN_BLOCKS);
+            let c = s.singleton(block);
+            let got = s.exact_laplace(&c).expect("carried");
+            for (k, sk) in LAPLACE.iter().enumerate() {
+                let want = (-sk * block as f64 / CHAIN_BLOCKS as f64).exp();
+                assert_eq!(got[k], want, "s = {} at block {}", sk, block);
+            }
+            // The moments ride in front, unmoved.
+            let b = block as f64;
+            assert_eq!(s.exact_moments(&c), Some([1.0, b, b * b]));
+        }
+    }
+
+    /// The narrower carry answers no values, which is what tells `main`'s emit
+    /// path it has nothing handed over -- and `main` never asks it to.
+    #[test]
+    fn only_the_wider_store_carries_them() {
+        let mut s = store::<f64>(4, 40);
+        let c = s.singleton(5);
+        assert_eq!(s.exact_laplace(&c), None);
+    }
+
+    /// Scaling and combining carry the seven values through the same convex
+    /// combination as the moments and the lanes: half from one coinbase and
+    /// half from another is the average of their values, and a deeper mix is
+    /// the weighted average written out.
+    #[test]
+    fn the_laplace_values_follow_the_same_combination() {
+        let mut s = laplace_store::<f32>(8, 800_000);
+        let (ba, bb, bc) = (100usize, 500_000, 700_000);
+        let a = s.singleton(ba);
+        let b = s.singleton(bb);
+        let c = s.singleton(bc);
+        let at = |block: usize| laplace_at(block as f64);
+
+        let ab = s.combine(&a, 0.5, &b, 0.5);
+        let got = s.exact_laplace(&ab).unwrap();
+        for k in 0..7 {
+            let want = (at(ba)[k] + at(bb)[k]) / 2.0;
+            assert!((got[k] - want).abs() <= 1e-15 * want, "half and half, s = {}", LAPLACE[k]);
+        }
+
+        let ab = s.combine(&a, 0.25, &b, 0.75);
+        let abc = s.combine(&ab, 0.5, &c, 0.5);
+        let scaled = s.scale(&abc, 0.5);
+        let got = s.exact_laplace(&abc).unwrap();
+        let halved = s.exact_laplace(&scaled).unwrap();
+        for k in 0..7 {
+            let want = 0.125 * at(ba)[k] + 0.375 * at(bb)[k] + 0.5 * at(bc)[k];
+            assert!((got[k] - want).abs() <= 1e-15 * want, "s = {}: {} against {}", LAPLACE[k], got[k], want);
+            assert_eq!(halved[k], got[k] * 0.5, "a scale is a scale, s = {}", LAPLACE[k]);
+        }
+        // And the moments in front of them are the ones the narrower store
+        // would have carried, bit for bit: the wider array is the same loop.
+        let mut narrow = store::<f32>(8, 800_000);
+        let (na, nb, nc) = (narrow.singleton(ba), narrow.singleton(bb), narrow.singleton(bc));
+        let nab = narrow.combine(&na, 0.25, &nb, 0.75);
+        let nabc = narrow.combine(&nab, 0.5, &nc, 0.5);
+        assert_eq!(s.exact_moments(&abc), narrow.exact_moments(&nabc));
     }
 
     #[test]

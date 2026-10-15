@@ -17,7 +17,8 @@
 //! tracks the UTXO set rather than the whole chain.
 //!
 //! One line goes out per record: the transaction's id, a tab, and then the
-//! color.  What follows the tab is one of two things, and `--sum` is which:
+//! color.  What follows the tab is the color in full, or the color collapsed to
+//! numbers by `--sum`, `--moments` or `--laplace`:
 //!
 //! - by default, the color in full — each term as `coefficient:exponent`, terms
 //!   separated by a comma and nothing trailing the last of them, so a
@@ -26,6 +27,8 @@
 //!   `0.5:3` is half a unit of block 3.
 //! - under `--sum`, one number — `sum_b b . weight(b)`, the color's terms added
 //!   up.  See [`Line::Sum`] for what that number is and why it takes weights.
+//! - under `--moments`, three — [`Line::Moments`]; under `--laplace`, seven —
+//!   [`Line::Laplace`].
 //!
 //! # A picture instead
 //!
@@ -226,6 +229,38 @@
 //! those records, and two of the three extra fields are another shortest
 //! round-tripping decimal each, which is the most expensive thing this program
 //! formats. (An earlier reading had the two equal, at 3.58s against 3.57s.)
+//!
+//! # Seven numbers that fold exactly
+//!
+//! Under `--weighted` a colour is `P(x) = sum_b w_b x^b`, and the obvious
+//! number to read off a polynomial is useless here: the weights sum to 1, so
+//! `P(1)` is 1 for every transaction there is.  `--laplace` evaluates it
+//! somewhere that is not 1 instead, at seven points:
+//!
+//! ```text
+//!     F(s)  =  P(exp(-s / L))  =  sum_b w_b . exp(-s . b / L),
+//!              s in 0.5, 1, 2, 4, 8, 16, 32,    L = 762,261
+//! ```
+//!
+//! the Laplace transform of the colour as a distribution over blocks, sampled
+//! on a doubling grid -- see [`bands::LAPLACE`] for what each `s` resolves.  A
+//! line is the transaction's id and the seven values, tab-separated, small `s`
+//! first.  `L` is the 2022 chain's block count rather than the run's, so a
+//! value means the same thing in every run.
+//!
+//! Each `F(s)` is linear in the colour, so it folds exactly through the convex
+//! combination the way the moments do, and [`bands`] carries all seven beside
+//! its lanes when asked; and each is a sum of positive terms in
+//! `[exp(-32), 1]`, so nothing cancels, nothing overflows, and the binned run
+//! prints what the exact one does to rounding: over the first 200,000 records
+//! of the 2022 chain the worst relative disagreement between `--bands 1
+//! --laplace` and `--weighted --laplace` is 7.1e-14 in any column, the same at
+//! `--bands 1024` and `--bands64 1024`, and 116,933 of the lines are
+//! byte-identical.  It grows with depth, as rounding accumulated through more
+//! combinations does: 1.7e-13 over 300,000 records and 2.6e-13 over 400,000.  The exact run takes 4.44s and the binned one 0.24s.  It
+//! needs weights, so it selects [`weighted`] and contradicts `--sum` and
+//! `--moments` the way they contradict each other, `--threads` as they do,
+//! and the pictures as `--sum` does.  See [`Line::Laplace`].
 //!
 //! # The records, already taken apart
 //!
@@ -542,6 +577,63 @@ enum Line {
     /// for comparing binned colours with each other; it is not comparable with
     /// an exact run's fourth column.
     Moments,
+    /// Seven numbers: `F(s) = sum_b weight(b) . exp(-s . b / L)` at each `s`
+    /// of [`bands::LAPLACE`], with `L` = [`bands::CHAIN_BLOCKS`].
+    ///
+    /// The colour is a polynomial `P(x) = sum_b weight(b) . x^b`, and this is
+    /// `P` evaluated at `exp(-s / L)`.  Evaluating it at 1 would be the
+    /// obvious single number and is no number at all: the weights sum to 1, so
+    /// `P(1)` is 1 for every transaction.  Below 1 the blocks are discounted by
+    /// age the other way round -- an old block is worth more, a recent one
+    /// less -- and `s` says how steeply: a coinbase in block `b` prints exactly
+    /// `exp(-s . b / L)`, half the value from each of two blocks prints the
+    /// average of theirs, and every value is in `(0, 1]` and falls as `s`
+    /// grows.  It is the Laplace transform of the colour as a distribution
+    /// over `b / L`, which is what the seven columns together pin down; by
+    /// Jensen each is at least `exp(-s . mean / L)`, with equality only when
+    /// the colour sits on one block, so how far above that a column sits is
+    /// the spread showing.
+    ///
+    /// Three things make it the right kind of number for this program.  It is
+    /// linear in the colour, so it folds exactly through the convex
+    /// combination like the moments.  Every term is positive, so the sum is
+    /// perfectly conditioned -- no cancellation of the kind the spread's
+    /// `E[b^2] - E[b]^2` has to clamp.  And every term is in `[exp(-32), 1]`
+    /// for a block in the chain, so nothing approaches either end of an `f64`.
+    ///
+    /// Seven tab-separated fields after the transaction's own, so a line is
+    /// eight columns, smallest `s` first.  Each printed through [`push_f64`],
+    /// as the other collapsed forms' are.
+    ///
+    /// Off an exact colour it is seven values a term, looked up by block in a
+    /// table built once rather than seven `exp`s computed per term: over the
+    /// first 200,000 records of the 2022 chain that is 4.44s against 22.25s,
+    /// byte-identical, beside `--moments`' 2.07s.  Most of what is left is the
+    /// form and not the lookup -- seven accumulators and an eight-column line
+    /// cost 2.87s with no lookup at all.  See `bands::laplace_table`.
+    ///
+    /// # Under `--bands`
+    ///
+    /// Carried, not derived.  [`bands`] keeps the seven values beside its
+    /// moments in `f64`, seeds a coinbase with them and scales and combines
+    /// them with the weights the moments get, and hands them over as it hands
+    /// the moments over -- so the binned line is the exact line to rounding,
+    /// at every `K` and in either lane, and `--bands 1 --laplace` is the
+    /// cheapest way there is to compute it.  The carry is a type, made only
+    /// when this form is asked for, so no other run pays its 56 bytes a colour.
+    Laplace,
+}
+
+impl Line {
+    /// The flag that asks for a collapsed form, or `None` for the terms.
+    fn flag(self) -> Option<&'static str> {
+        match self {
+            Line::Terms => None,
+            Line::Sum => Some("--sum"),
+            Line::Moments => Some("--moments"),
+            Line::Laplace => Some("--laplace"),
+        }
+    }
 }
 
 /// Where a finished color goes.
@@ -631,11 +723,30 @@ impl Output {
                 // skips the walk, which is also why a binned `--sum` run is
                 // faster than a binned `--moments` one: 2.70s against 5.40s
                 // over the first 2,000,000 records of the 2022 chain.
+                //
+                // `--laplace` is the third collapsed form and the second that
+                // is handed its whole answer: seven linear functionals, carried
+                // beside the moments by a band store made to carry them.  What
+                // it must never do is fall through to the walk under bands,
+                // where it would sum `exp` of band centres -- `main` makes the
+                // carrying store whenever this form is asked for, so the case
+                // is a bug and the debug build says so.
                 let mut walk = true;
                 if *form == Line::Moments || *form == Line::Sum {
                     if let Some(moments) = store.exact_moments(color) {
                         body = body.from_exact_moments(moments);
                         walk = *form != Line::Sum;
+                    }
+                } else if *form == Line::Laplace {
+                    match store.exact_laplace(color) {
+                        Some(values) => {
+                            body = body.from_exact_laplace(values);
+                            walk = false;
+                        }
+                        None => debug_assert!(
+                            store.placement() == (1.0, 0.0),
+                            "--laplace off band indices: the store should have carried it"
+                        ),
                     }
                 }
                 if walk {
@@ -726,7 +837,7 @@ impl Output {
 }
 
 const USAGE: &str = "usage: circular-polynomial [<record-limit>|all] [--stats] \
-                     [--rings|--sets|--weighted|--bands <K>|--bands64 <K>] [--sum|--moments] \
+                     [--rings|--sets|--weighted|--bands <K>|--bands64 <K>] [--sum|--moments|--laplace] \
                      [--threads <n>|auto] \
                      [--png <file>|--pdf <file>|--fold <file>|--view] \
                      [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] [--palette] \
@@ -1143,11 +1254,17 @@ fn plan(
 
     // `--sum` says what goes after the tab on a line, and a picture has no
     // lines.  Drawing one and quietly ignoring the other is the reading nobody
-    // wants.
-    if form == Line::Sum {
+    // wants.  `--laplace` is refused for the same reason.  `--moments` is not:
+    // `--moments --png` has always drawn the picture and dropped the flag, and
+    // refusing it too would change what an existing command line does, which
+    // is a decision for whoever owns those command lines rather than a side
+    // effect of adding a form.
+    if let (Line::Sum | Line::Laplace, Some(flag)) = (form, form.flag()) {
         return Err(format!(
-            "--sum says what a line says, and a picture has no lines: \
-             drop one of --sum and {}",
+            "{} says what a line says, and a picture has no lines: \
+             drop one of {} and {}",
+            flag,
+            flag,
             sheet.flag()
         ));
     }
@@ -1466,22 +1583,24 @@ fn main() -> ExitCode {
                 backend = Backend::Weighted;
                 chose_backend = true;
             }
-            // Which of the two line forms, rather than which backend -- but a
+            // Which of the line forms, rather than which backend -- but a
             // sum of weights needs weights, so it settles that too, below.
-            // Two ways of collapsing a color to numbers, so a run does one or
-            // the other; a later one quietly winning would be a run printing
+            // Three ways of collapsing a color to numbers, so a run does one
+            // of them; a later one quietly winning would be a run printing
             // something nobody asked for, which is what `choose` refuses for
             // the pictures.
-            "--sum" | "--moments" => {
-                let asked = if args[i] == "--sum" {
-                    Line::Sum
-                } else {
-                    Line::Moments
+            "--sum" | "--moments" | "--laplace" => {
+                let asked = match args[i].as_str() {
+                    "--sum" => Line::Sum,
+                    "--moments" => Line::Moments,
+                    _ => Line::Laplace,
                 };
                 if form != Line::Terms && form != asked {
                     eprintln!(
-                        "circular-polynomial: --sum and --moments are two ways of \
-                         collapsing a color; drop one of them"
+                        "circular-polynomial: {} and {} are two ways of collapsing \
+                         a color; drop one of them",
+                        form.flag().expect("a collapsed form was asked for"),
+                        args[i]
                     );
                     return ExitCode::FAILURE;
                 }
@@ -1652,14 +1771,12 @@ fn main() -> ExitCode {
     // Checked after the whole command line rather than as the flag is read, so
     // that it holds whichever order the flags came in.
     //
-    // The two collapsed forms are one case: both add up weights, so both need a
-    // backend that has weights, and both put so little on a line that a pool of
-    // formatters would cost more than it saves.
-    if let Some(flag) = match form {
-        Line::Sum => Some("--sum"),
-        Line::Moments => Some("--moments"),
-        Line::Terms => None,
-    } {
+    // The collapsed forms are one case: all three add up weights, so all need
+    // a backend that has weights, and all put so little on a line that a pool
+    // of formatters would cost more than it saves.  `--laplace` is seven
+    // numbers rather than one or three, and still a line of a hundred-odd
+    // bytes against a colour's worth of terms copied to make it.
+    if let Some(flag) = form.flag() {
         if chose_backend && !backend.weighted() {
             eprintln!(
                 "circular-polynomial: {} adds up the weights of a color, and the \
@@ -1672,8 +1789,8 @@ fn main() -> ExitCode {
             backend = Backend::Weighted;
         }
         // A pool of formatters is worth having because formatting a color is
-        // expensive, and these two are the line forms for which it is not: the
-        // whole color collapses to a number or three, and handing a worker a
+        // expensive, and these are the line forms for which it is not: the
+        // whole color collapses to a few numbers, and handing a worker a
         // copy of the terms to collapse costs more than collapsing them here
         // does.  Measured over the corpus `emit` names -- 150,000 records of
         // `--example records -- --window 4000` -- `--sum` goes from 3.34s
@@ -1826,10 +1943,19 @@ fn main() -> ExitCode {
         Backend::Bands | Backend::Bands64 => {
             let k = bands.expect("the backend was chosen by --bands");
             bands::configure(bands::Layout::new(k, band_blocks));
-            if backend == Backend::Bands {
-                run::<bands::BandStore<f32>>(limit, skip, stats, output, source, oracle)
-            } else {
-                run::<bands::BandStore<f64>>(limit, skip, stats, output, source, oracle)
+            // `--laplace` gets a store that carries its seven values beside the
+            // moments, and only `--laplace` does: the wider carry is a type, so
+            // every other run is the store it always was.  See `bands`.
+            use bands::{BandStore, CARRY_LAPLACE};
+            match (backend == Backend::Bands, form == Line::Laplace) {
+                (true, false) => run::<BandStore<f32>>(limit, skip, stats, output, source, oracle),
+                (false, false) => run::<BandStore<f64>>(limit, skip, stats, output, source, oracle),
+                (true, true) => {
+                    run::<BandStore<f32, CARRY_LAPLACE>>(limit, skip, stats, output, source, oracle)
+                }
+                (false, true) => {
+                    run::<BandStore<f64, CARRY_LAPLACE>>(limit, skip, stats, output, source, oracle)
+                }
             }
         }
     };
@@ -2328,6 +2454,15 @@ mod tests {
     /// and the rest spending a spread of recent ancestors.  That is what makes
     /// a colour rest on several blocks at unequal weights.
     fn mixed(n: usize, mint: usize) -> String {
+        mixed_every(n, mint, 3)
+    }
+
+    /// [`mixed`], with transaction `tx` in block `tx * stride` rather than
+    /// `tx * 3` -- so a corpus of a few hundred records can reach across the
+    /// whole chain, which is what `--laplace` needs to be tested over: its `L`
+    /// is the chain and not the run, and over [`mixed`]'s 1,200 blocks every
+    /// value it prints is within 5% of 1.
+    fn mixed_every(n: usize, mint: usize, stride: usize) -> String {
         let mut out = String::new();
         for tx in 0..n {
             let spends: Vec<(usize, usize)> = if tx % mint == 0 {
@@ -2339,7 +2474,7 @@ mod tests {
                     .map(|k| (tx - k, 1 + (tx * 7 + k) % 11))
                     .collect()
             };
-            out.push_str(&record(tx * 3, tx, &spends, 4));
+            out.push_str(&record(tx * stride, tx, &spends, 4));
         }
         out
     }
@@ -2384,6 +2519,22 @@ mod tests {
                     .collect();
                 assert_eq!(f.len(), 3, "a moments line is four columns: {}", line);
                 (f[0], f[1], f[2])
+            })
+            .collect()
+    }
+
+    /// The seven `--laplace` values of each line a store prints.
+    fn laplaces<S: ColorStore>(records: &str, limit: usize) -> Vec<[f64; 7]> {
+        lines::<S>(records, Line::Laplace, limit)
+            .iter()
+            .map(|line| {
+                let f: Vec<f64> = line
+                    .split('\t')
+                    .skip(1)
+                    .map(|v| v.parse().expect("seven numbers after the tx id"))
+                    .collect();
+                assert_eq!(f.len(), 7, "a laplace line is eight columns: {}", line);
+                f.try_into().unwrap()
             })
             .collect()
     }
@@ -2691,6 +2842,211 @@ mod tests {
         }
     }
 
+    /// `exp(-s . b / L)`, written out here rather than called, so the tests
+    /// below hold the definition against `bands::laplace_at` rather than
+    /// against itself.
+    fn discount(s: f64, block: f64) -> f64 {
+        (-s * block / bands::CHAIN_BLOCKS as f64).exp()
+    }
+
+    /// A coinbase in block `b` prints exactly `exp(-s . b / L)` at every `s` --
+    /// bit for bit, off the exact fold and off the carried values of either
+    /// lane at any banding, since all of them start a coinbase from the one
+    /// definition.  Block 0 is all ones, which is `P(1)` and why `s > 0`.
+    #[test]
+    fn a_coinbase_is_worth_exp_of_its_own_block() {
+        for block in [0usize, 7, 94_406, bands::CHAIN_BLOCKS - 1] {
+            let records = record(block, 0, &[], 1);
+            let want: Vec<f64> = bands::LAPLACE.iter().map(|&s| discount(s, block as f64)).collect();
+            let exact = laplaces::<weighted::WeightedSets>(&records, 10);
+            assert_eq!(exact[0].to_vec(), want, "--weighted at block {}", block);
+            let text = lines::<weighted::WeightedSets>(&records, Line::Laplace, 10);
+            for k in [1usize, 1024] {
+                bands::configure(bands::Layout::new(k, bands::CHAIN_BLOCKS));
+                use bands::{BandStore, CARRY_LAPLACE};
+                assert_eq!(
+                    lines::<BandStore<f32, CARRY_LAPLACE>>(&records, Line::Laplace, 10),
+                    text,
+                    "--bands {} at block {}",
+                    k,
+                    block
+                );
+                assert_eq!(
+                    lines::<BandStore<f64, CARRY_LAPLACE>>(&records, Line::Laplace, 10),
+                    text,
+                    "--bands64 {} at block {}",
+                    k,
+                    block
+                );
+            }
+        }
+        assert_eq!(
+            laplaces::<weighted::WeightedSets>(&record(0, 0, &[], 1), 10),
+            vec![[1.0; 7]]
+        );
+    }
+
+    /// Half the value from each of two blocks is the average of the two
+    /// coinbases' values: the form is linear in the colour, which is the whole
+    /// reason it can be carried.
+    #[test]
+    fn half_from_each_of_two_blocks_is_the_average() {
+        let (a, b) = (1_000usize, 400_000usize);
+        let records =
+            record(a, 0, &[], 1) + &record(b, 1, &[], 1) + &record(b + 1, 2, &[(0, 50), (1, 50)], 1);
+        let want: Vec<f64> = bands::LAPLACE
+            .iter()
+            .map(|&s| (discount(s, a as f64) + discount(s, b as f64)) / 2.0)
+            .collect();
+        bands::configure(bands::Layout::new(4, bands::CHAIN_BLOCKS));
+        use bands::{BandStore, CARRY_LAPLACE};
+        for (name, got) in [
+            ("--weighted", laplaces::<weighted::WeightedSets>(&records, 10)),
+            ("--bands", laplaces::<BandStore<f32, CARRY_LAPLACE>>(&records, 10)),
+            ("--bands64", laplaces::<BandStore<f64, CARRY_LAPLACE>>(&records, 10)),
+        ] {
+            let mixed = got.last().unwrap();
+            for k in 0..7 {
+                assert!(
+                    (mixed[k] - want[k]).abs() <= 2e-16 * want[k],
+                    "{} at s = {}: {} against {}",
+                    name,
+                    bands::LAPLACE[k],
+                    mixed[k],
+                    want[k]
+                );
+            }
+        }
+    }
+
+    /// The binned values are the exact ones, to rounding: carried beside the
+    /// bands rather than summed off them, so neither `K` nor the lane enters.
+    /// Over the corpus the moments are tested on, and over the same mixing
+    /// spread across the whole chain -- where `F(32)` reaches down to `e^-32`
+    /// and a value read off band centres would be out by far more than this.
+    #[test]
+    fn the_binned_laplace_values_are_the_exact_ones() {
+        use bands::{BandStore, CARRY_LAPLACE};
+        let corpora = [
+            (mixed(400, 7), 1200usize, [1usize, 12, 40]),
+            (mixed_every(400, 7, 1900), bands::CHAIN_BLOCKS, [1, 256, 1024]),
+        ];
+        for (records, blocks, widths) in &corpora {
+            let exact = laplaces::<weighted::WeightedSets>(records, usize::MAX);
+            for &k in widths {
+                bands::configure(bands::Layout::new(k, *blocks));
+                let f32_lines = laplaces::<BandStore<f32, CARRY_LAPLACE>>(records, usize::MAX);
+                let f64_lines = laplaces::<BandStore<f64, CARRY_LAPLACE>>(records, usize::MAX);
+                for (lane, binned) in [("f32", f32_lines), ("f64", f64_lines)] {
+                    assert_eq!(exact.len(), binned.len());
+                    let mut worst = 0.0f64;
+                    for (e, b) in exact.iter().zip(&binned) {
+                        for k in 0..7 {
+                            worst = worst.max((b[k] - e[k]).abs() / e[k]);
+                        }
+                    }
+                    assert!(
+                        worst < 1e-12,
+                        "{} bands of {} lanes over {} blocks: worst relative disagreement {:e}",
+                        k,
+                        lane,
+                        blocks,
+                        worst
+                    );
+                }
+            }
+        }
+        // The chain-wide corpus has to use the range, or it is no better a
+        // test than the first.
+        let wide = laplaces::<weighted::WeightedSets>(&corpora[1].0, usize::MAX);
+        assert!(
+            wide.iter().filter(|f| f[6] < 1e-3).count() > 100,
+            "the corpus should reach far enough down the chain for F(32) to be small"
+        );
+    }
+
+    /// Every value is in `(0, 1]`, and a line never rises with `s`: each term
+    /// `exp(-s . b / L)` falls as `s` grows, so their positive sum does too.
+    #[test]
+    fn the_laplace_values_fall_with_s_and_stay_in_the_unit_interval() {
+        for records in [mixed(400, 7), mixed_every(400, 7, 1900)] {
+            let got = laplaces::<weighted::WeightedSets>(&records, usize::MAX);
+            let mut falling = 0;
+            for (n, f) in got.iter().enumerate() {
+                for k in 0..7 {
+                    assert!(f[k] > 0.0 && f[k] <= 1.0, "record {}: F({}) = {}", n, bands::LAPLACE[k], f[k]);
+                }
+                for k in 1..7 {
+                    assert!(f[k] <= f[k - 1], "record {}: F rose from s = {} to {}: {:?}", n, bands::LAPLACE[k - 1], bands::LAPLACE[k], f);
+                }
+                if f[6] < f[0] {
+                    falling += 1;
+                }
+            }
+            assert!(falling > 300, "only block 0 holds F flat in s, and few colours are only block 0");
+        }
+    }
+
+    /// Jensen: `exp(-s . b / L)` is convex in `b`, so its mean under the
+    /// colour is at least its value at the mean -- `F(s) >= exp(-s . mean /
+    /// L)` with the mean `--moments` prints, and equal only for a colour on one
+    /// block.  How far above the bound a value sits is the spread showing.
+    #[test]
+    fn the_laplace_values_sit_above_the_mean_by_jensen() {
+        for records in [mixed(400, 7), mixed_every(400, 7, 1900)] {
+            let got = laplaces::<weighted::WeightedSets>(&records, usize::MAX);
+            let three = moments(&records, usize::MAX);
+            assert_eq!(got.len(), three.len());
+            let mut strictly = 0;
+            for (n, (f, &(mean, spread, _))) in got.iter().zip(&three).enumerate() {
+                for k in 0..7 {
+                    let bound = discount(bands::LAPLACE[k], mean);
+                    assert!(
+                        f[k] >= bound * (1.0 - 1e-12),
+                        "record {} at s = {}: {} below exp(-s . mean / L) = {}",
+                        n,
+                        bands::LAPLACE[k],
+                        f[k],
+                        bound
+                    );
+                }
+                if spread > 1.0 && f[6] > discount(32.0, mean) * (1.0 + 1e-9) {
+                    strictly += 1;
+                }
+            }
+            assert!(strictly > 100, "a spread colour should clear the bound: {}", strictly);
+        }
+    }
+
+    /// `--sum` and `--laplace` say what a line says, and a picture has no
+    /// lines, so each is refused beside one rather than quietly dropped.
+    #[test]
+    fn a_collapsed_form_has_no_picture_to_go_into() {
+        // `--moments` is left out: it has always drawn the picture and dropped
+        // the flag, and that is kept as it was.
+        for form in [Line::Sum, Line::Laplace] {
+            let refused = plan(
+                Some((Sheet::Raster, scratch("never-written.png"))),
+                None,
+                None,
+                None,
+                None,
+                image::Ink::Weighted,
+                form,
+                0,
+                false,
+                usize::MAX,
+                None,
+                true,
+            )
+            .err()
+            .expect("a collapsed form and a picture contradict each other");
+            let flag = form.flag().unwrap();
+            assert!(refused.contains(flag), "the refusal names {}: {}", flag, refused);
+            assert!(refused.contains("--png"), "and the picture: {}", refused);
+        }
+    }
+
     #[test]
     fn a_color_sums_to_one_so_the_sum_is_the_mean() {
         let mut records = String::new();
@@ -2981,7 +3337,7 @@ mod tests {
                 "--sets over a matrix, limit {}",
                 limit
             );
-            for form in [Line::Terms, Line::Sum, Line::Moments] {
+            for form in [Line::Terms, Line::Sum, Line::Moments, Line::Laplace] {
                 assert_eq!(
                     matrix_lines::<weighted::WeightedSets>(&path, form, limit),
                     lines::<weighted::WeightedSets>(&records, form, limit),
@@ -2998,6 +3354,13 @@ mod tests {
                     limit
                 );
             }
+            use bands::{BandStore, CARRY_LAPLACE};
+            assert_eq!(
+                matrix_lines::<BandStore<f32, CARRY_LAPLACE>>(&path, Line::Laplace, limit),
+                lines::<BandStore<f32, CARRY_LAPLACE>>(&records, Line::Laplace, limit),
+                "--bands --laplace over a matrix, limit {}",
+                limit
+            );
         }
         // And the corpus has to be worth comparing over.
         assert_eq!(
@@ -3118,7 +3481,7 @@ mod tests {
         // 200 and 1,000,001 rows asked of 50, and the whole of it asked for
         // exactly: every one of them is the 50 rows the file holds.
         for limit in [200usize, DEFAULT_LIMIT, 50] {
-            for form in [Line::Terms, Line::Sum, Line::Moments] {
+            for form in [Line::Terms, Line::Sum, Line::Moments, Line::Laplace] {
                 assert_eq!(
                     planned_lines::<weighted::WeightedSets>(&path, form, limit, true),
                     lines::<weighted::WeightedSets>(&records, form, limit),

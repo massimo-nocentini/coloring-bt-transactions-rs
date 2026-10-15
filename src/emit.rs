@@ -79,6 +79,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 use std::thread;
 
+use crate::bands::{laplace_at, laplace_of};
 use crate::{push_f32, push_f64, push_int, Line};
 
 /// How many batches may be in flight per worker.
@@ -144,6 +145,12 @@ pub struct Body<'a> {
     /// Set when the store handed over the first two moments outright, so
     /// `term` must not add to them a second time.
     exact: bool,
+    /// `sum w . exp(-s . b / L)` at each `s` of [`crate::bands::LAPLACE`],
+    /// which is all [`Line::Laplace`] prints.  Summed here off an exact
+    /// colour's terms, or handed over whole by a store that carries them, in
+    /// which case the terms are not walked at all -- the way a handed-over
+    /// [`Line::Sum`] is not.
+    laplace: [f64; 7],
     /// Where an exponent sits on the block axis, as
     /// [`crate::store::ColorStore::placement`] gives it: the identity for the
     /// stores whose exponents are block ids, and the band geometry for the one
@@ -167,6 +174,7 @@ impl<'a> Body<'a> {
             second: 0.0,
             squares: 0.0,
             exact: false,
+            laplace: [0.0; 7],
             scale: 1.0,
             offset: 0.0,
             narrow: false,
@@ -193,6 +201,17 @@ impl<'a> Body<'a> {
         self.first = moments[1];
         self.second = moments[2];
         self.exact = true;
+        self
+    }
+
+    /// Take the seven [`Line::Laplace`] values from the store instead of
+    /// summing them off the terms.  The same hand-over as
+    /// [`Body::from_exact_moments`], for the same reason: a band store's terms
+    /// are bands, and the sum off them would put each block at its band's
+    /// centre.  The caller does not walk the terms after this, so `term` has
+    /// nothing to skip.
+    pub fn from_exact_laplace(mut self, values: [f64; 7]) -> Self {
+        self.laplace = values;
         self
     }
 
@@ -246,6 +265,24 @@ impl<'a> Body<'a> {
                     self.second += block * block * coefficient;
                 }
             }
+            // Seven values a term, each `exp(-s . b / L)` of the term's block.
+            // Looked up rather than computed when the exponent is a block --
+            // seven `exp`s a term made this form ten times the cost of
+            // `--moments`; see `bands::laplace_table` -- and computed through
+            // `laplace_at` otherwise.  The table holds `laplace_at`'s own
+            // values, which is also what the band store seeds a coinbase with,
+            // so a colour that is one block prints the same bits from any of
+            // them.
+            Line::Laplace => {
+                let at = if self.scale == 1.0 && self.offset == 0.0 {
+                    laplace_of(exponent)
+                } else {
+                    laplace_at(exponent as f64 * self.scale + self.offset)
+                };
+                for (sum, value) in self.laplace.iter_mut().zip(at) {
+                    *sum += coefficient * value;
+                }
+            }
         }
     }
 
@@ -291,6 +328,14 @@ impl<'a> Body<'a> {
                 push_f64(self.line, spread);
                 self.line.push(b'\t');
                 push_f64(self.line, effective);
+            }
+            Line::Laplace => {
+                for (k, value) in self.laplace.iter().enumerate() {
+                    if k > 0 {
+                        self.line.push(b'\t');
+                    }
+                    push_f64(self.line, *value);
+                }
             }
         }
         self.line.push(b'\n');
@@ -743,7 +788,7 @@ mod tests {
         for &(count, spread) in &[(900usize, 6u64), (300, 400), (500, 40)] {
         let records = colors_upto(count, spread);
         for &weighted in &[false, true] {
-            for &form in &[Line::Terms, Line::Sum] {
+            for &form in &[Line::Terms, Line::Sum, Line::Laplace] {
                 let want = serially(&records, form, weighted);
                 for threads in [1usize, 2, 3, 5, 8, 16] {
                     let got = threaded(&records, form, weighted, threads);

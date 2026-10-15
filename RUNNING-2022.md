@@ -433,6 +433,39 @@ reproducible from it without replacing it — it says which of 256 boxes the mea
 and the spread fell in, and nothing goes back the other way, so the moments are
 what is kept.
 
+### One float a transaction, from the polynomial itself
+
+Evaluating a weighted colour at `x = 1` gives 1 for every transaction — the
+weights sum to 1 — so the single numbers worth having are elsewhere on the
+polynomial. Two exist for the whole chain, one line per record, 778,613,440
+lines each:
+
+- `P'(1) = sum_b b w_b`, the mean block, is column 2 of the `--moments` run
+  already on disk: `zstd -dc colors.moments.zst | cut -f2 > colors.mean.txt`,
+  two minutes, 14.3 GB.
+- `F(s) = P(exp(-s/L))` with `L = 762,261`, for seven `s` at once, from
+  `--laplace`. It does not depend on the bands, so `K = 1` is enough and it
+  runs at 336k records/s — 38m43s and 4.96 GB resident for the chain:
+
+```bash
+./target/release/coloring-bt-transactions all --bands 1 --laplace --stats \
+  --release-oracle /data/bitcoin/2022/lastspend-2022.u32 \
+  < /data/bitcoin/2022/finalBCUTXO_2022.scm \
+| zstd -12 -T16 -o /data/bitcoin/2022/colors.laplace.zst      # 25.6 GB
+zstd -dc /data/bitcoin/2022/colors.laplace.zst | cut -f6 \
+  > /data/bitcoin/2022/colors.laplace8.txt                     # s = 8, 15.4 GB
+```
+
+`s = 8` is chosen on what `F` says that the mean does not. Over every 50th
+record, the spread of `F(s)` left once transactions are binned into 4,096
+equal-count bins of the mean is 0.0011, 0.0036, 0.0090, 0.0157, **0.0169**,
+0.0117 and 0.0068 from `s = 0.5` to 32: small `s` is the mean again (99.9% of
+the variance explained at 0.5), large `s` is near 0 for all but the oldest
+coins. At `s = 8` a block's weight halves every ~66,000 blocks, so the number
+reads as how much of the value is old coin. `s = 4` is the near runner-up, with
+twice the range (1st–99th percentile 0.057–0.493 against 0.004–0.269), and is
+`cut -f5` of the same file.
+
 ## Reproducing the measurements
 
 The prefix run above, which is cheap because `--sum` writes almost nothing:

@@ -127,6 +127,18 @@ pub trait ColorStore {
         None
     }
 
+    /// `sum_b w_b . exp(-s . b / L)` for each `s` in [`crate::bands::LAPLACE`],
+    /// when the store carries them exactly -- what `--laplace` prints.
+    ///
+    /// `None` for the same stores and for the same reason as
+    /// [`ColorStore::exact_moments`]: their terms are blocks and the sum over
+    /// them is exact.  [`crate::bands`] answers `Some` when it was made to
+    /// carry them, which is linear in the colour and so foldable, like the
+    /// moments.
+    fn exact_laplace(&self, _color: &Self::Color) -> Option<[f64; 7]> {
+        None
+    }
+
     /// Offered each finished color, so a store with an invariant can watch it.
     ///
     /// Only called under `--stats`, because checking one generally means a pass

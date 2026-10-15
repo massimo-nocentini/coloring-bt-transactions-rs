@@ -50,7 +50,8 @@ is spent, so what a run holds tracks the UTXO set rather than the whole chain.
 
 ```text
 coloring-bt-transactions [<record-limit>|all] [--stats]
-                         [--rings|--sets|--weighted|--bands <K>|--bands64 <K>] [--sum|--moments]
+                         [--rings|--sets|--weighted|--bands <K>|--bands64 <K>]
+                         [--sum|--moments|--laplace]
                          [--threads <n>|auto]
                          [--png <file>|--pdf <file>|--fold <file>|--view]
                          [--blocks <n>] [--bin <n>] [--rows <a>..<b>] [--gain <x>] [--palette]
@@ -142,6 +143,10 @@ nothing refused it.  Both forms take it now, a binned `--sum` agrees with an
 exact `--weighted --sum` to 6.1e-9 blocks over the first 200,000 records at
 either width, and it got *faster* — 2.70s against 5.40s over 2,000,000 records —
 because a handed-over first moment does not walk the terms at all.
+
+`--bands K --laplace` is seven more linear functionals carried the same way —
+see [below](#seven-numbers-that-fold-exactly) — and so prints the exact values
+at every `K`, `K = 1` included, which is the cheapest way there is to get them.
 
 ### Freeing a colour when nothing will read it
 
@@ -378,6 +383,61 @@ index can be recomputed from the three columns of `--moments` in one pass, and
 nothing goes the other way: a byte carries which of 256 boxes the mean and the
 spread landed in, and not the mean, the spread, or the effective count.
 
+### Seven numbers that fold exactly
+
+Under `--weighted` a colour is a polynomial, `P(x) = sum_b w_b x^b`, and the
+first number anyone would read off a polynomial is useless here: the weights sum
+to 1, so `P(1)` is 1 for every transaction in the chain.  `--laplace` evaluates
+it below 1 instead, at seven points:
+
+```text
+F(s) = P(exp(-s/L)) = sum_b w_b * exp(-s * b / L),   s = 0.5, 1, 2, 4, 8, 16, 32,   L = 762,261
+```
+
+— the Laplace transform of the colour, as a distribution over how far along the
+chain its blocks are.  A line is the transaction id and the seven values,
+tab-separated, smallest `s` first.  A coinbase in block `b` prints exactly
+`exp(-s*b/L)`; half the value from each of two blocks prints the average of the
+two; every value is in `(0, 1]` and falls as `s` grows.  `s` sets how much of
+the chain a column resolves — `exp(-s*b/L)` falls by `e` every `L/s` blocks — so
+`F(0.5)` is nearly the mean and `F(32)` says how much of a colour is from the
+first 24,000 blocks.  Wanting one column rather than seven, take `s = 4`: over
+blocks spread evenly across the chain `F(s)` varies most at `s = 3.25`.  By
+Jensen each value is at least `exp(-s*mean/L)`, equal only for a colour on one
+block, so the distance above that bound is the spread showing through.  `L` is
+the 2022 chain and not the run's block count, so a value means the same thing in
+every run.
+
+Two properties make it the right kind of number here.  Each `F(s)` is **linear**
+in the colour, so it folds exactly through the convex combination, and
+`--bands K` carries all seven beside its moments rather than reading them off
+band centres.  And each is a sum of **positive** terms in `[exp(-32), 1]`, so
+nothing cancels and nothing comes near either end of an `f64` — unlike the
+spread's `E[b²] - E[b]²`.  Over the first 200,000 records of the 2022 chain:
+
+| | time | resident | |
+|---|---|---|---|
+| `--weighted --laplace` | 4.44 s | 124 MB | the reference |
+| `--bands 1 --laplace` | 0.24 s | 16 MB | worst relative disagreement 7.1e-14 |
+| `--bands 1024 --laplace` | 0.43 s | 245 MB | byte-identical to `--bands 1` |
+| `--bands64 1024 --laplace` | 0.60 s | 467 MB | byte-identical to `--bands 1` |
+
+The worst disagreement is per column and in every column: 6.2e-14, 5.6e-14,
+5.6e-14, 7.1e-14, 4.9e-14, 6.4e-14 and 5.6e-14 from `s = 0.5` to 32, with
+116,933 of the 200,000 lines byte-identical — summation order and nothing else,
+and the same at every `K` and in either lane, since neither enters the carried
+values.  The figure is for that prefix and grows with depth, as rounding carried
+through more combinations does: 1.7e-13 over 300,000 records, 2.6e-13 over
+400,000.  The exact run looks each term's seven values up by block in a table
+built once (42.7 MB, 40 ms); computing seven `exp`s a term instead printed the
+same bytes in 22.25 s.  It is still twice `--moments`' 2.07 s, most of it the
+form: seven accumulators and an eight-column line cost 2.87 s with no lookup at
+all.  The carry is opt-in in the type, so no other run pays its 56 bytes a
+colour — five gigabytes over the 2022 chain's live colours.  Like `--sum` and
+`--moments` it needs weights, so it selects `--weighted`, contradicts the other
+two backends and both of those forms, refuses `--threads`, and refuses the pictures
+as `--sum` does.
+
 ### Threads
 
 `--threads <n>` puts the formatting of lines on `n` threads and the reading of
@@ -417,9 +477,9 @@ record at the end, ending mid-line and varying run to run — so it is now an
 
 `--threads auto` asks the machine, less one for the fold.  Wider is not always
 better: the pool saturates once the fold thread is the bottleneck, which is
-around 8 for `--sets` and 16 for `--weighted` above.  `--sum` collapses a colour
-to one number and so has nothing to spread; a picture has no lines at all.  Both
-refuse the flag rather than ignoring it.
+around 8 for `--sets` and 16 for `--weighted` above.  `--sum`, `--moments` and
+`--laplace` collapse a colour to a few numbers and so have nothing to spread; a
+picture has no lines at all.  All of them refuse the flag rather than ignoring it.
 
 The text is enormous — a colour of a thousand blocks is some nine thousand bytes
 of `1:<block>`, and a good part of it punctuation.  `--png` draws the same answer
