@@ -411,6 +411,159 @@ pub fn fmt(x: f64) -> String {
     }
 }
 
+/// `ln Gamma(x)` for `x > 0` (Lanczos, g = 7, 9 terms): about 15 digits,
+/// which is far more than the quantiles below need.
+pub fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        let pi = std::f64::consts::PI;
+        return (pi / (pi * x).sin()).ln() - ln_gamma(1.0 - x);
+    }
+    let x = x - 1.0;
+    let mut a = G[0];
+    let t = x + 7.5;
+    for (i, g) in G.iter().enumerate().skip(1) {
+        a += g / (x + i as f64);
+    }
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
+}
+
+/// The regularised incomplete beta `I_x(a, b)`, by Lentz's continued
+/// fraction on whichever side converges.
+pub fn inc_beta(x: f64, a: f64, b: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    if x > (a + 1.0) / (a + b + 2.0) {
+        return 1.0 - inc_beta(1.0 - x, b, a);
+    }
+    let front = (ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp() / a;
+    let tiny = 1e-300;
+    let (mut f, mut c, mut d) = (1.0f64, 1.0f64, 0.0f64);
+    for i in 0..400 {
+        let m = (i / 2) as f64;
+        let num = if i == 0 {
+            1.0
+        } else if i % 2 == 0 {
+            m * (b - m) * x / ((a + 2.0 * m - 1.0) * (a + 2.0 * m))
+        } else {
+            -(a + m) * (a + b + m) * x / ((a + 2.0 * m) * (a + 2.0 * m + 1.0))
+        };
+        d = 1.0 + num * d;
+        if d.abs() < tiny {
+            d = tiny;
+        }
+        d = 1.0 / d;
+        c = 1.0 + num / c;
+        if c.abs() < tiny {
+            c = tiny;
+        }
+        let cd = c * d;
+        f *= cd;
+        if (1.0 - cd).abs() < 1e-15 {
+            break;
+        }
+    }
+    front * (f - 1.0)
+}
+
+/// The regularised lower incomplete gamma `P(a, x)`: the series below `a+1`,
+/// the continued fraction above.
+pub fn inc_gamma(a: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let lg = ln_gamma(a);
+    if x < a + 1.0 {
+        let (mut sum, mut term, mut ap) = (1.0 / a, 1.0 / a, a);
+        for _ in 0..1000 {
+            ap += 1.0;
+            term *= x / ap;
+            sum += term;
+            if term.abs() < sum.abs() * 1e-16 {
+                break;
+            }
+        }
+        (sum.ln() - x + a * x.ln() - lg).exp()
+    } else {
+        let tiny = 1e-300;
+        let mut b = x + 1.0 - a;
+        let mut c = 1.0 / tiny;
+        let mut d = 1.0 / b;
+        let mut h = d;
+        for i in 1..1000 {
+            let an = -(i as f64) * (i as f64 - a);
+            b += 2.0;
+            d = an * d + b;
+            if d.abs() < tiny {
+                d = tiny;
+            }
+            c = b + an / c;
+            if c.abs() < tiny {
+                c = tiny;
+            }
+            d = 1.0 / d;
+            let del = d * c;
+            h *= del;
+            if (del - 1.0).abs() < 1e-16 {
+                break;
+            }
+        }
+        1.0 - (-x + a * x.ln() - lg).exp() * h
+    }
+}
+
+/// Student's t CDF with `nu` degrees of freedom.
+pub fn t_cdf(t: f64, nu: f64) -> f64 {
+    let tail = 0.5 * inc_beta(nu / (nu + t * t), nu / 2.0, 0.5);
+    if t >= 0.0 {
+        1.0 - tail
+    } else {
+        tail
+    }
+}
+
+/// The `p`-quantile of Student's t, `p` in (0, 1), by bisection on the CDF.
+pub fn t_quantile(p: f64, nu: f64) -> f64 {
+    let (mut lo, mut hi) = (-1e7f64, 1e7f64);
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if t_cdf(mid, nu) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// The `p`-quantile of chi-square with `k` degrees of freedom.
+pub fn chi2_quantile(p: f64, k: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0f64, k + 100.0 * k.sqrt() + 1000.0);
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if inc_gamma(k / 2.0, mid / 2.0) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
 pub const LAPLACE_NAMES: [&str; 7] = ["0.5", "1", "2", "4", "8", "16", "32"];
 const _: () = assert!(LAPLACE.len() == LAPLACE_NAMES.len());
 
@@ -523,5 +676,17 @@ mod tests {
         let q = vec![(0u32, 1.0)];
         let e = top32_l1(&p, &q);
         assert!(e > 0.0);
+    }
+
+    /// The quantiles the seed gates use, against tabulated values.
+    #[test]
+    fn t_and_chi2_quantiles_match_the_tables() {
+        assert!((t_quantile(0.975, 7.0) - 2.364_624).abs() < 1e-5);
+        assert!((t_quantile(0.995, 15.0) - 2.946_713).abs() < 1e-5);
+        assert!((t_quantile(0.5, 3.0)).abs() < 1e-6);
+        assert!((chi2_quantile(0.025, 7.0) - 1.689_869).abs() < 1e-5);
+        assert!((chi2_quantile(0.975, 7.0) - 16.012_764).abs() < 1e-5);
+        assert!((chi2_quantile(0.95, 63.0) - 82.528_727).abs() < 1e-4);
+        assert!((ln_gamma(10.0) - 362_880f64.ln()).abs() < 1e-12);
     }
 }

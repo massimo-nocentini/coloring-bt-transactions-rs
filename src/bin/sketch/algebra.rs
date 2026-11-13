@@ -202,6 +202,9 @@ impl Config {
             Some("varopt") => Variant::VarOpt,
             Some("prio") => Variant::Prio,
             Some("coord") => Variant::Coord,
+            Some(side @ ("kmv" | "l1")) => {
+                return Err(format!("config {:?}: {} is a side store: pass --{}", text, side, side))
+            }
             other => return Err(format!("config {:?}: unknown variant {:?} (varopt, prio, coord)", text, other.unwrap_or(""))),
         };
         let k: usize = parts
@@ -680,6 +683,7 @@ mod tests {
         assert!(Config::parse("varopt:0").is_err());
         assert!(Config::parse("varopt:2000000").is_err());
         assert!(Config::parse("foo:3").is_err());
+        assert!(Config::parse("kmv:64").unwrap_err().contains("kmv is a side store: pass --kmv"));
         assert!(Config::parse("varopt:3:cap=harm").is_err());
         assert!(Config::parse("varopt:3:bogus=1").is_err());
     }

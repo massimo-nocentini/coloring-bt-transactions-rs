@@ -11,7 +11,7 @@
 //!   not get threads of its own).
 //! - **check**: the decoder on this thread, the references on theirs, the
 //!   same [`Buckets`] as `chain`.
-//! - **decode**: binary to text.
+//! - **decode**: binary to text, `SKETCH01` or `KMVCNT01` by the magic.
 
 use crate::algebra::{Algebra, Config, Sketcher, Variant};
 use crate::chain::{self, snapshot, BucketCost, Buckets, Refs};
@@ -238,13 +238,104 @@ pub fn emit(
     result
 }
 
-/// `decode`: the binary form to the text one.
-pub fn decode(input: Box<dyn Read + Send>, mut out: Box<dyn Write + Send>) -> io::Result<()> {
+/// `decode`: a binary stream to text, by its magic.
+///
+/// - `SKETCH01` (what `emit` writes) to `--weighted`'s terms lines, byte for
+///   byte what it always was.  With `select`, only those record indices, each
+///   line prefixed by `rec<TAB>reduced<TAB>tau<TAB>`: this is how the
+///   production varopt sketches of selected records are read without a new
+///   fold.  It stops after the last selected record, so the trailer of a
+///   whole-chain file is not reached and not verified.
+/// - `KMVCNT01` (what `count` writes) to a TSV with a header, both counts
+///   recomputed ([`crate::kmv::CntDecoder`]); `select` filters it the same
+///   way.  A first comment line names the stream's spec and its support,
+///   `# kmv-k1024-s1-pos k=1024 seed=1 support=pos bits=20 M=1048576`.
+pub fn decode(mut input: Box<dyn Read + Send>, mut out: Box<dyn Write + Send>, select: Option<&[u64]>) -> io::Result<()> {
+    let mut magic = [0u8; 8];
+    let mut got = 0;
+    while got < 8 {
+        let n = input.read(&mut magic[got..])?;
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    if got == 8 && &magic == crate::kmv::CNT_MAGIC {
+        return decode_counts(input, out, magic, select);
+    }
+    let input = io::Cursor::new(magic[..got].to_vec()).chain(input);
     let mut dec = Decoder::new(io::BufReader::with_capacity(1 << 20, input))?;
     let mut r = Decoded::default();
     let mut buf = Vec::with_capacity(CHUNK + (1 << 16));
+    let mut rec = 0u64;
+    let mut next = 0usize;
     while dec.next(&mut r)? {
-        encode::text_line(&mut buf, r.tx, &r.p);
+        match select {
+            None => encode::text_line(&mut buf, r.tx, &r.p),
+            Some(sel) => {
+                if next < sel.len() && sel[next] == rec {
+                    write!(buf, "{}\t{}\t{}\t", rec, r.meta.reduced as u8, r.meta.tau)?;
+                    encode::text_line(&mut buf, r.tx, &r.p);
+                    next += 1;
+                }
+                if next == sel.len() {
+                    break;
+                }
+            }
+        }
+        rec += 1;
+        if buf.len() >= CHUNK {
+            out.write_all(&buf)?;
+            buf.clear();
+        }
+    }
+    out.write_all(&buf)?;
+    out.flush()?;
+    if let Some(sel) = select {
+        if next < sel.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("the selection names record {} but the stream holds {}", sel[next], rec),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn decode_counts(input: Box<dyn Read + Send>, mut out: Box<dyn Write + Send>, magic: [u8; 8], select: Option<&[u64]>) -> io::Result<()> {
+    let mut dec = crate::kmv::CntDecoder::new(io::BufReader::with_capacity(1 << 20, input), magic, None)?;
+    let mut buf = Vec::with_capacity(CHUNK + (1 << 16));
+    // The stream's spec first, as a comment line: a sets stream and a pos
+    // stream decode to the same columns, and only this line tells them apart.
+    let s = dec.spec;
+    writeln!(buf, "# {} k={} seed={} support={} bits={} M={}", s.label(), s.k, s.seed, s.support.name(), s.bits, dec.m)?;
+    writeln!(buf, "rec\ttx\tblock\tuniv\tfull\tm\tn_hat\tse\tn_hat_M\tse_M")?;
+    let f = crate::metrics::fmt;
+    let mut next = 0usize;
+    while let Some(r) = dec.next()? {
+        if let Some(sel) = select {
+            if next >= sel.len() {
+                break;
+            }
+            if sel[next] != r.rec {
+                continue;
+            }
+            next += 1;
+        }
+        writeln!(
+            buf,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            r.rec,
+            r.r.tx,
+            r.r.block,
+            r.n_univ,
+            r.r.full() as u8,
+            r.r.len(),
+            f(r.n_hat),
+            f(r.se),
+            f(r.n_hat_m),
+            f(r.se_m)
+        )?;
         if buf.len() >= CHUNK {
             out.write_all(&buf)?;
             buf.clear();

@@ -28,8 +28,9 @@ impl Exact {
     }
 
     /// The colour's terms exactly as `--weighted` holds them: ascending,
-    /// unnormalised, zero coefficients included.
-    #[cfg(test)]
+    /// unnormalised, zero coefficients included.  The support it lists is
+    /// the `--sets` one (zero-amount inputs' blocks sit at coefficient 0), so
+    /// it is the ground truth of the KMV store as well as of the colour.
     pub fn terms(&self, c: &Color) -> Vec<(u32, f64)> {
         let mut out = Vec::new();
         self.store.for_each_term(c, |b, w| out.push((b as u32, w)));

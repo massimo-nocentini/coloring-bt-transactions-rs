@@ -706,3 +706,784 @@ fn the_first_100k_records_match_weighted() {
 fn unit_draws_used_by_the_tests_are_in_range() {
     assert!(unit(0) > 0.0);
 }
+
+// ------------------------------------------------------------------ KMV, L1 and the modes over them
+
+use crate::count::{self, CountOpts};
+use crate::hash::Perm;
+use crate::kmv::{KmvSpec, KmvStore, Owned, Support};
+use crate::l1::{L1Spec, L1Store};
+use crate::pick::{self, PickOpts};
+use std::collections::BTreeSet;
+use std::rc::Rc;
+
+/// The support recurrence written out with sets: the reference the KMV store
+/// is checked against, folded by the same driver.
+struct SetAlg {
+    pos: bool,
+}
+
+impl Algebra for SetAlg {
+    type C = Rc<BTreeSet<u32>>;
+    fn singleton(&mut self, block: u32) -> Self::C {
+        Rc::new([block].into())
+    }
+    fn record(&mut self, ops: &[(Self::C, f64)], _rec: u64) -> Self::C {
+        let mut s = BTreeSet::new();
+        for (h, w) in ops {
+            if self.pos && *w == 0.0 {
+                continue;
+            }
+            s.extend(h.iter().copied());
+        }
+        Rc::new(s)
+    }
+    fn emit(&self, c: &Self::C, out: &mut Vec<(u32, f64)>) {
+        out.clear();
+        out.extend(c.iter().map(|&b| (b, 1.0)));
+    }
+    fn raw_mass(&self, _c: &Self::C) -> f64 {
+        1.0
+    }
+    fn info(&self, c: &Self::C) -> Info {
+        Info { n: c.len(), tau: 0.0, reduced: false }
+    }
+    fn work(&self) -> crate::algebra::Work {
+        Default::default()
+    }
+    fn usage(&self) -> crate::algebra::Usage {
+        Default::default()
+    }
+}
+
+/// Every record's colour under `alg`, read out by `get`.
+fn fold_all<A: Algebra, T>(alg: A, records: &str, oracle: Option<Arc<Oracle>>, mut get: impl FnMut(&A::C, &A) -> T) -> (Vec<T>, A) {
+    let mut d = Driver::new(alg, oracle, None);
+    let mut out = Vec::new();
+    read_batches(Cursor::new(records.as_bytes()), u64::MAX, |b| {
+        d.batch(&b, |_, _, c, alg| {
+            out.push(get(c, alg));
+            Ok(())
+        })
+        .unwrap();
+        true
+    })
+    .unwrap();
+    (out, d.finish())
+}
+
+/// Blocks of `stream()` and `dag()` reach 5,000,000: 23 bits.
+const TEST_BITS: u32 = 23;
+
+fn spec(k: usize, seed: u64, support: Support) -> KmvSpec {
+    KmvSpec { k, seed, support, bits: TEST_BITS }
+}
+
+fn bottom_k(set: &BTreeSet<u32>, perm: &Perm, k: usize) -> Owned {
+    let mut r: Vec<u32> = set.iter().map(|&b| perm.rank(b)).collect();
+    r.sort_unstable();
+    let full = r.len() > k;
+    r.truncate(k);
+    Owned { r, full }
+}
+
+/// T-K3 and T-K5: through the driver, on `stream()` (shared parents,
+/// repeated inputs, zero amounts, all-zero records, one-group records, the
+/// BIP-30 duplicate) and `dag()`, with and without the oracle, at k in {2,
+/// 3, 16, 64}: every record's sketch is `K_k` of its brute-force support,
+/// `full` iff the support exceeds k, a whole sketch counts exactly, and the
+/// two supports are the exact store's (`sets`: every term, zeros included;
+/// `pos`: the nonzero ones).
+#[test]
+fn kmv_is_the_bottom_k_of_the_support_through_the_dag() {
+    let perm = Arc::new(Perm::new(7, TEST_BITS));
+    for (name, records) in [("stream", stream(2500, 300, 31)), ("dag", dag())] {
+        let oracle = oracle_of(&records, &format!("tk3-{}", name));
+        for o in [None, Some(oracle)] {
+            let (terms, _) = fold_all(Exact::new(), &records, o.clone(), |c, alg| alg.terms(c));
+            for support in [Support::Sets, Support::Pos] {
+                let pos = support == Support::Pos;
+                let (sets, _) = fold_all(SetAlg { pos }, &records, o.clone(), |c, _| (**c).clone());
+                for (t, s) in terms.iter().zip(&sets) {
+                    let want: BTreeSet<u32> = t.iter().filter(|x| !pos || x.1 != 0.0).map(|x| x.0).collect();
+                    assert_eq!(&want, s, "{} {:?}: the reference support is the exact store's", name, support);
+                }
+                for k in [2usize, 3, 16, 64] {
+                    let alg = KmvStore::new(spec(k, 7, support), perm.clone());
+                    let (got, alg) = fold_all(alg, &records, o.clone(), |c, _| (c.r.to_vec(), c.full));
+                    let mut full = 0;
+                    for (i, ((r, f), s)) in got.iter().zip(&sets).enumerate() {
+                        let want = bottom_k(s, &perm, k);
+                        assert_eq!((r, *f), (&want.r, want.full), "{} {:?} k {} record {}", name, support, k, i);
+                        if !f {
+                            assert_eq!(r.len(), s.len());
+                        }
+                        full += *f as usize;
+                    }
+                    assert!(k > 16 || full > 0, "{} k {}: something is full", name, k);
+                    assert_eq!(alg.usage().live_entries, 0, "every sketch released");
+                }
+            }
+        }
+    }
+}
+
+/// T-K4: a record's sketch does not depend on the order of its operands, nor
+/// on a group being split into repeated operands.
+#[test]
+fn kmv_ignores_order_and_grouping() {
+    let perm = Arc::new(Perm::new(3, 16));
+    let mut alg = KmvStore::new(KmvSpec { k: 16, seed: 3, support: Support::Sets, bits: 16 }, perm.clone());
+    let mut rng = Rng(5);
+    for trial in 0..200u64 {
+        let g = 2 + rng.below(40) as usize;
+        let parents: Vec<_> = (0..g)
+            .map(|_| {
+                let n = 1 + rng.below(60) as usize;
+                let s: BTreeSet<u32> = (0..n).map(|_| rng.below(5000) as u32).collect();
+                let o = bottom_k(&s, &perm, 16);
+                crate::kmv::Kmv::new(o.r.into_boxed_slice(), o.full)
+            })
+            .collect();
+        let ops: Vec<(crate::kmv::KHandle, f64)> = parents.iter().map(|p| (p.clone(), 1.0 / g as f64)).collect();
+        let a = alg.record(&ops, trial);
+        let mut shuffled = ops.clone();
+        for i in (1..shuffled.len()).rev() {
+            let j = rng.below(i as u64 + 1) as usize;
+            shuffled.swap(i, j);
+        }
+        let b = alg.record(&shuffled, trial);
+        let mut repeated = ops.clone();
+        for _ in 0..5 {
+            let i = rng.below(ops.len() as u64) as usize;
+            repeated.push((ops[i].0.clone(), 0.5 / g as f64));
+        }
+        let c = alg.record(&repeated, trial);
+        assert_eq!((&a.r, a.full), (&b.r, b.full));
+        assert_eq!((&a.r, a.full), (&c.r, c.full));
+    }
+}
+
+/// T-L1: the L1 store is the linear map of the exact colour, `v(C_t) = A
+/// C_t`, at every record of `dag()` and `stream()`: relative deviation (over
+/// `sum_b |A_jb| c_b`) at most 1e-6 in f32 and 1e-12 in f64.  Both the
+/// grouped path and the free path (one parent) are on these streams.
+#[test]
+fn l1_is_the_projection_of_the_exact_colour() {
+    for (name, records) in [("stream", stream(1500, 300, 41)), ("dag", dag())] {
+        let (terms, _) = fold_all(Exact::new(), &records, None, |c, alg| alg.terms(c));
+        for (prec, tol) in [("f32", 1e-6), ("f64", 1e-12)] {
+            let spec = L1Spec::parse(&format!("32:seed=4:prec={}", prec)).unwrap();
+            let (vs, alg) = fold_all(L1Store::new(spec), &records, None, |c, _| c.to_f64());
+            let mut worst = 0.0f64;
+            for (t, v) in terms.iter().zip(&vs) {
+                for (j, x) in v.iter().enumerate() {
+                    let (mut ac, mut den) = (0.0, 0.0);
+                    for &(b, c) in t {
+                        let a = crate::hash::cauchy(4, b, j as u32);
+                        ac += c * a;
+                        den += (c * a).abs();
+                    }
+                    worst = worst.max((x - ac).abs() / den);
+                }
+            }
+            assert!(worst <= tol, "{} {}: worst relative deviation {:e}", name, prec, worst);
+            assert_eq!(alg.usage().live_entries, 0, "every vector released");
+        }
+    }
+}
+
+/// A scratch directory of this test process.
+fn scratch(name: &str) -> String {
+    let d = std::env::temp_dir().join(format!("sketch-test-{}-{}", std::process::id(), name));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d.to_str().unwrap().to_string()
+}
+
+fn input(records: &str) -> Box<dyn std::io::Read + Send> {
+    Box::new(Cursor::new(records.as_bytes().to_vec()))
+}
+
+/// The sets-counts file of `records`, by the brute-force algebra.
+fn sets_counts(records: &str, path: &str) {
+    let (sizes, _) = fold_all(SetAlg { pos: false }, records, None, |c, _| c.len());
+    let text: String = sizes.iter().map(|n| format!("{}\n", n)).collect();
+    std::fs::write(path, text).unwrap();
+}
+
+fn count_opts(specs: &[KmvSpec], out: &str, refs: Option<String>) -> CountOpts {
+    CountOpts {
+        kmv: specs.to_vec(),
+        out: out.to_string(),
+        limit: u64::MAX,
+        sets_counts: refs,
+        every: Some(7),
+        stream: true,
+        zstd: false,
+        bucket: 1000,
+        stats: false,
+    }
+}
+
+/// `decode` into a file, answering its text.
+fn decode_to_string(bytes: Vec<u8>, select: Option<&[u64]>, dir: &str) -> String {
+    let path = format!("{}/decoded.txt", dir);
+    let out: Box<dyn std::io::Write + Send> = Box::new(std::fs::File::create(&path).unwrap());
+    crate::modes::decode(Box::new(Cursor::new(bytes)), out, select).unwrap();
+    std::fs::read_to_string(&path).unwrap()
+}
+
+/// T-K9 and T-K10 through `count` itself: its stream decodes (dispatched on
+/// the magic) to every record's exact size wherever the sketch is whole, the
+/// hard counters are 0 against a brute-force sets-counts file, the same seed
+/// writes the same bytes and another seed does not, and a selection filters
+/// the decoded rows.
+#[test]
+fn count_streams_decode_and_are_deterministic() {
+    let records = stream(3000, 400, 51);
+    let dir = scratch("count");
+    let refs = format!("{}/sc.txt", dir);
+    sets_counts(&records, &refs);
+    let (sizes, _) = fold_all(SetAlg { pos: false }, &records, None, |c, _| c.len());
+    let specs = [spec(16, 1, Support::Sets), spec(16, 2, Support::Sets), spec(16, 3, Support::Sets), spec(16, 1, Support::Pos)];
+    let perms = count::perms_for(&specs);
+    let run = |out: &str| {
+        count::run(count_opts(&specs, out, Some(refs.clone())), input(&records), None, &perms).unwrap();
+    };
+    let (a, b) = (format!("{}/a", dir), format!("{}/b", dir));
+    run(&a);
+    run(&b);
+    let bytes = |d: &str, s: &KmvSpec| std::fs::read(format!("{}/counts.{}.bin", d, s.label())).unwrap();
+    for s in &specs {
+        assert_eq!(bytes(&a, s), bytes(&b, s), "{}: the same seed, the same bytes", s.label());
+        assert_eq!(bytes(&a, s).len(), 48 + 20 * 3000 + 24);
+    }
+    assert_ne!(bytes(&a, &specs[0]), bytes(&a, &specs[1]));
+    let check = std::fs::read_to_string(format!("{}/count-check.tsv", a)).unwrap();
+    for line in check.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        assert_eq!(c[3], "3000", "{}", line);
+        assert_eq!(&c[5..9], &["0", "0", "0", "0"], "hard counters: {}", line);
+    }
+    assert!(std::path::Path::new(&format!("{}/count-seeds.tsv", a)).exists());
+    let text = decode_to_string(bytes(&a, &specs[0]), None, &a);
+    let mut lines = text.lines();
+    // A3: the first line names the stream's spec and support.
+    assert_eq!(lines.next().unwrap(), format!("# kmv-k16-s1-sets-b23 k=16 seed=1 support=sets bits=23 M={}", 1u64 << 23));
+    assert_eq!(lines.next().unwrap(), "rec\ttx\tblock\tuniv\tfull\tm\tn_hat\tse\tn_hat_M\tse_M");
+    let pos = decode_to_string(bytes(&a, &specs[3]), None, &a);
+    assert_eq!(pos.lines().next().unwrap(), format!("# kmv-k16-s1-pos-b23 k=16 seed=1 support=pos bits=23 M={}", 1u64 << 23));
+    let mut whole = 0;
+    for (i, l) in lines.enumerate() {
+        let c: Vec<&str> = l.split('\t').collect();
+        assert_eq!(c[0], i.to_string());
+        if c[4] == "0" {
+            whole += 1;
+            assert_eq!(c[6], sizes[i].to_string(), "record {}: a whole sketch counts exactly", i);
+        } else {
+            assert!(sizes[i] > 16);
+        }
+    }
+    assert!(whole > 100 && whole < 3000);
+    let text = decode_to_string(bytes(&a, &specs[0]), Some(&[3, 17, 2999]), &a);
+    let recs: Vec<&str> = text.lines().skip(2).map(|l| l.split('\t').next().unwrap()).collect();
+    assert_eq!(recs, vec!["3", "17", "2999"]);
+}
+
+/// A5: what the old modes write does not change.  The SKETCH01 header is
+/// pinned byte for byte, `decode` without a selection is the text `emit`
+/// would write, and `decode --select` prefixes exactly the selected lines.
+#[test]
+fn sketch01_and_decode_are_unchanged() {
+    let cfg = Config::parse("varopt:16:seed=3").unwrap();
+    assert_eq!(
+        encode::header(&cfg),
+        [
+            b'S', b'K', b'E', b'T', b'C', b'H', b'0', b'1', 1, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0
+        ]
+    );
+    let records = stream(1500, 300, 61);
+    let mut d = Driver::new(sketcher("varopt:16:seed=3"), None, None);
+    let (mut bin, mut text) = (encode::header(&cfg), Vec::new());
+    let mut enc = Encoder::default();
+    let (mut p64, mut p32) = (Vec::new(), Vec::new());
+    let mut lines = Vec::new();
+    read_batches(Cursor::new(records.as_bytes()), u64::MAX, |b| {
+        d.batch(&b, |_, tx, c, alg| {
+            let m = snapshot(alg, c, &mut p64, &mut p32);
+            enc.record(&mut bin, tx as u64, &p32, m);
+            let mut one = Vec::new();
+            encode::text_line(&mut one, tx as u64, &p32);
+            text.extend_from_slice(&one);
+            lines.push((m, String::from_utf8(one).unwrap()));
+            Ok(())
+        })
+        .unwrap();
+        true
+    })
+    .unwrap();
+    enc.trailer(&mut bin);
+    let dir = scratch("decode");
+    assert_eq!(decode_to_string(bin.clone(), None, &dir).as_bytes(), &text[..]);
+    let sel = [0u64, 5, 1499];
+    let got = decode_to_string(bin, Some(&sel), &dir);
+    let want: String = sel
+        .iter()
+        .map(|&r| {
+            let (m, l) = &lines[r as usize];
+            format!("{}\t{}\t{}\t{}", r, m.reduced as u8, m.tau, l)
+        })
+        .collect();
+    assert_eq!(got, want);
+}
+
+/// T-P2 and T-P1: `pick` dumps each selected record once, in order, and the
+/// varopt subset decodes to what `emit` writes at those indices; `pairs` on
+/// the dump equals the pure estimators, its matrices are symmetric with the
+/// diagonal at 1, its exact columns are brute force, and its output is the
+/// same bytes at 1 and 8 threads.
+#[test]
+fn pick_and_pairs_agree_with_the_pure_functions() {
+    let records = stream(2000, 300, 71);
+    let dir = scratch("pick");
+    let sel_path = format!("{}/sel.txt", dir);
+    let chosen: Vec<u64> = vec![1999, 3, 40, 41, 500, 777, 1200, 1500, 1501, 1800];
+    let text: String = chosen.iter().enumerate().map(|(i, r)| format!("{}\t{}\n", r, if i % 3 == 0 { "odd" } else { "all" })).collect();
+    std::fs::write(&sel_path, format!("# test selection\n{}", text)).unwrap();
+    let kspecs = [spec(8, 1, Support::Sets), spec(8, 1, Support::Pos)];
+    let lspecs = [L1Spec::parse("64").unwrap(), L1Spec::parse("64:prec=f64").unwrap()];
+    let perms = count::perms_for(&kspecs);
+    let out = format!("{}/pick", dir);
+    let opts = |out: &str, sel: &str| PickOpts {
+        select: sel.to_string(),
+        out: out.to_string(),
+        limit: u64::MAX,
+        configs: vec![Config::parse("varopt:16").unwrap()],
+        kmv: kspecs.to_vec(),
+        l1: lspecs.to_vec(),
+        exact: true,
+        stats: false,
+    };
+    pick::run(opts(&out, &sel_path), input(&records), None, &HashMap::new(), &perms).unwrap();
+    // Out of range: an error.
+    let bad = format!("{}/bad.txt", dir);
+    std::fs::write(&bad, "5\n2000\n").unwrap();
+    let e = pick::run(opts(&format!("{}/bad", dir), &bad), input(&records), None, &HashMap::new(), &perms).unwrap_err();
+    assert!(e.to_string().contains("names record 2000"), "{}", e);
+
+    // T-K10 for pick: the same seeds write the same bytes, another does not.
+    let again = format!("{}/again", dir);
+    pick::run(opts(&again, &sel_path), input(&records), None, &HashMap::new(), &perms).unwrap();
+    for f in ["kmv.kmv-k8-s1-sets-b23.bin", "l1.l1-m64-s1-f32.bin", "varopt.varopt-k16-s1-rec.bin", "exact.bin", "sel.tsv"] {
+        assert_eq!(std::fs::read(format!("{}/{}", out, f)).unwrap(), std::fs::read(format!("{}/{}", again, f)).unwrap(), "{}", f);
+    }
+    let other = [spec(8, 2, Support::Sets)];
+    let o2 = format!("{}/other", dir);
+    let mut po = opts(&o2, &sel_path);
+    po.kmv = other.to_vec();
+    pick::run(po, input(&records), None, &HashMap::new(), &count::perms_for(&other)).unwrap();
+    assert_ne!(
+        std::fs::read(format!("{}/kmv.kmv-k8-s1-sets-b23.bin", out)).unwrap()[32..],
+        std::fs::read(format!("{}/kmv.kmv-k8-s2-sets-b23.bin", o2)).unwrap()[32..]
+    );
+
+    let mut sorted = chosen.clone();
+    sorted.sort();
+    let sel = pick::read_sel_tsv(&format!("{}/sel.tsv", out)).unwrap();
+    assert_eq!(sel.iter().map(|r| r.rec).collect::<Vec<_>>(), sorted);
+    // The varopt dump decodes to emit's records at those indices.
+    let mut d = Driver::new(sketcher("varopt:16"), None, None);
+    let (mut p64, mut p32) = (Vec::new(), Vec::new());
+    let mut emitted = Vec::new();
+    read_batches(Cursor::new(records.as_bytes()), u64::MAX, |b| {
+        d.batch(&b, |_, tx, c, alg| {
+            let m = snapshot(alg, c, &mut p64, &mut p32);
+            emitted.push((tx as u64, m, p32.clone()));
+            Ok(())
+        })
+        .unwrap();
+        true
+    })
+    .unwrap();
+    let mut dec = Decoder::new(std::fs::File::open(format!("{}/varopt.varopt-k16-s1-rec.bin", out)).unwrap()).unwrap();
+    let mut r = Decoded::default();
+    let mut i = 0;
+    while dec.next(&mut r).unwrap() {
+        let (tx, m, p) = &emitted[sorted[i] as usize];
+        assert_eq!((r.tx, r.meta, &r.p), (*tx, *m, p));
+        i += 1;
+    }
+    assert_eq!(i, sorted.len());
+
+    // The supports of the selected records, brute force.
+    let (all_sets, _) = fold_all(SetAlg { pos: false }, &records, None, |c, _| (**c).clone());
+    let (all_pos, _) = fold_all(SetAlg { pos: true }, &records, None, |c, _| (**c).clone());
+    let (one, eight) = (format!("{}/pairs1", dir), format!("{}/pairs8", dir));
+    for (o, t) in [(&one, 1), (&eight, 8)] {
+        crate::pairs::run(crate::pairs::PairsOpts { input: out.clone(), out: o.clone(), groups: vec![], varopt_text: None, threads: t })
+            .unwrap();
+    }
+    let mut names: Vec<String> = std::fs::read_dir(&one).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    assert!(names.contains(&"pairs.all.tsv".to_string()) && names.contains(&"pairs.odd.tsv".to_string()));
+    for n in &names {
+        assert_eq!(std::fs::read(format!("{}/{}", one, n)).unwrap(), std::fs::read(format!("{}/{}", eight, n)).unwrap(), "{}", n);
+    }
+    let tsv = std::fs::read_to_string(format!("{}/pairs.all.tsv", one)).unwrap();
+    let mut lines = tsv.lines();
+    let header: Vec<&str> = lines.next().unwrap().split('\t').collect();
+    let col = |name: &str| header.iter().position(|h| *h == name).unwrap_or_else(|| panic!("no column {}", name));
+    let rows_all: Vec<&pick::SelRow> = sel.iter().filter(|r| r.group == "all").collect();
+    let perm = &perms[&(1, TEST_BITS)];
+    // A1's restricted counts, brute force: `R''` by a scan of the universe
+    // `[0, N)` (no Fenwick tree, no offline sweep), `N = frontier + 1` for a
+    // row and `max(frontier_i, frontier_j) + 1` for a pair.
+    let below = |n_univ: u64, rk: u32| (0..n_univ).filter(|&b| perm.rank(b as u32) < rk).count() as u64;
+    let count_bf = |sk: &Owned, n_univ: u64| match sk.view().rk() {
+        None => sk.r.len() as f64,
+        Some(rk) => 7.0 * n_univ as f64 / below(n_univ, rk) as f64,
+    };
+    let mut pairs = 0;
+    let mut full_unions = 0;
+    for l in lines {
+        let c: Vec<&str> = l.split('\t').collect();
+        let (a, b): (usize, usize) = (c[0].parse().unwrap(), c[1].parse().unwrap());
+        let (ra, rb) = (rows_all[a].rec as usize, rows_all[b].rec as usize);
+        let (na_univ, nb_univ) = (rows_all[a].frontier as u64 + 1, rows_all[b].frontier as u64 + 1);
+        let nu_univ = na_univ.max(nb_univ);
+        for (label, sets) in [("kmv-k8-s1-sets-b23", &all_sets), ("kmv-k8-s1-pos-b23", &all_pos)] {
+            let (ka, kb) = (bottom_k(&sets[ra], perm, 8), bottom_k(&sets[rb], perm, 8));
+            let e = crate::kmv::pair(ka.view(), kb.view(), 8, perm.universe());
+            assert_eq!(c[col(&format!("{}:J", label))], metrics::fmt(e.j), "{} pair {} {}", label, a, b);
+            assert_eq!(c[col(&format!("{}:cont_ij", label))], metrics::fmt(e.cont_ab));
+            assert_eq!(c[col(&format!("{}:exact", label))], (e.exact as u8).to_string());
+            // The counts: per row over its own universe, per pair over the
+            // larger of the two, and the M column as before.
+            let (na, nb) = (count_bf(&ka, na_univ), count_bf(&kb, nb_univ));
+            assert_eq!(c[col(&format!("{}:n_i", label))], metrics::fmt(na), "{} pair {} {}: n_i", label, a, b);
+            assert_eq!(c[col(&format!("{}:n_j", label))], metrics::fmt(nb), "{} pair {} {}: n_j", label, a, b);
+            let raw = crate::kmv::pair_raw(ka.view(), kb.view(), 8);
+            let nu = match raw.union_rk {
+                None => {
+                    let union = sets[ra].union(&sets[rb]).count();
+                    if e.exact {
+                        assert_eq!(raw.union as usize, union);
+                    }
+                    raw.union as f64
+                }
+                Some(rk) => {
+                    full_unions += 1;
+                    7.0 * nu_univ as f64 / below(nu_univ, rk) as f64
+                }
+            };
+            assert_eq!(c[col(&format!("{}:n_union", label))], metrics::fmt(nu), "{} pair {} {}: n_union", label, a, b);
+            assert!(nu <= nu_univ as f64 || e.exact, "the restricted union count is at most its universe");
+            assert_eq!(c[col(&format!("{}:n_union_M", label))], metrics::fmt(e.n_union), "{} pair {} {}: n_union_M", label, a, b);
+            assert_eq!(c[col(&format!("{}:inter", label))], metrics::fmt(e.j * nu));
+            assert_eq!(c[col(&format!("{}:cont_ij_fb", label))], metrics::fmt(e.j * nu / na));
+            assert_eq!(c[col(&format!("{}:cont_ji_fb", label))], metrics::fmt(e.j * nu / nb));
+            if e.exact {
+                let inter = sets[ra].intersection(&sets[rb]).count() as f64;
+                let union = sets[ra].union(&sets[rb]).count() as f64;
+                assert_eq!(e.j, inter / union);
+            }
+        }
+        let (sa, sb) = (&all_sets[ra], &all_sets[rb]);
+        let xj = sa.intersection(sb).count() as f64 / sa.union(sb).count() as f64;
+        assert_eq!(c[col("X_J")], metrics::fmt(xj));
+        assert_eq!(c[col("X_n_i")], sa.len().to_string());
+        let (pa, pb) = (&all_pos[ra], &all_pos[rb]);
+        assert_eq!(c[col("X_J_pos")], metrics::fmt(pa.intersection(pb).count() as f64 / pa.union(pb).count() as f64));
+        // The weighted Jaccard two ways: sum min / sum max, and (1-TV)/(1+TV).
+        let (tv, jw): (f64, f64) = (c[col("X_tv")].parse().unwrap(), c[col("X_jw")].parse().unwrap());
+        assert!((jw - (1.0 - tv) / (1.0 + tv)).abs() < 1e-9);
+        let (t32, t64): (f64, f64) = (c[col("l1-m64-s1-f32:tv")].parse().unwrap(), c[col("l1-m64-s1-f64:tv")].parse().unwrap());
+        assert!((t32 - t64).abs() <= 1e-5 * t64.max(1e-3), "f32 {} f64 {}", t32, t64);
+        pairs += 1;
+    }
+    let n = rows_all.len();
+    assert_eq!(pairs, n * (n - 1) / 2);
+    assert!(full_unions > 0, "some unions are full, so the restricted union count is exercised");
+    // The row counts as `pairs` writes them for plots: `n.<g>.<label>.f32`
+    // and `rows.<g>.tsv`, the same restricted counts.
+    let rows_tsv = std::fs::read_to_string(format!("{}/rows.all.tsv", one)).unwrap();
+    let mut rl = rows_tsv.lines();
+    let rh: Vec<&str> = rl.next().unwrap().split('\t').collect();
+    let rows_tsv: Vec<Vec<&str>> = rl.map(|l| l.split('\t').collect()).collect();
+    assert_eq!(rows_tsv.len(), n);
+    let mut full_rows = 0;
+    for (label, sets) in [("kmv-k8-s1-sets-b23", &all_sets), ("kmv-k8-s1-pos-b23", &all_pos)] {
+        let v = std::fs::read(format!("{}/n.all.{}.f32", one, label)).unwrap();
+        let v: Vec<f32> = v.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        assert_eq!(v.len(), n);
+        let rc = rh.iter().position(|h| *h == format!("{}:n", label)).unwrap();
+        for (i, r) in rows_all.iter().enumerate() {
+            let sk = bottom_k(&sets[r.rec as usize], perm, 8);
+            full_rows += sk.full as usize;
+            let want = count_bf(&sk, r.frontier as u64 + 1);
+            assert_eq!(v[i], want as f32, "{} row {}", label, i);
+            assert_eq!(rows_tsv[i][rc], metrics::fmt(want), "{} row {}", label, i);
+            assert_eq!(rows_tsv[i][4], r.frontier.to_string());
+        }
+    }
+    assert!(full_rows > 0, "some rows are full, so the restricted row count is exercised");
+    let m = std::fs::read(format!("{}/m.all.kmv-k8-s1-sets-b23.J.f32", one)).unwrap();
+    let v: Vec<f32> = m.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+    assert_eq!(v.len(), n * n);
+    for a in 0..n {
+        assert_eq!(v[a * n + a], 1.0);
+        for b in 0..n {
+            assert_eq!(v[a * n + b], v[b * n + a]);
+        }
+    }
+}
+
+/// T-E1: `eval --kmv` over `stream()` finds every sketch equal to the
+/// bottom-k of the exact support (`set_mismatch = 0`, both supports) and the
+/// exact support equal to a sets-counts file written by the brute-force
+/// algebra; and without the new flags `eval` writes the files and columns it
+/// always wrote (A5).
+#[test]
+fn eval_checks_kmv_against_the_exact_store() {
+    let records = stream(3000, 400, 81);
+    let dir = scratch("eval");
+    let refs = format!("{}/sc.txt", dir);
+    sets_counts(&records, &refs);
+    let kspecs = vec![spec(16, 1, Support::Sets), spec(16, 2, Support::Sets), spec(16, 1, Support::Pos)];
+    let opts = |out: &str, configs: Vec<Config>, kmv: Vec<KmvSpec>, l1: Vec<L1Spec>, sc: Option<String>| crate::eval::EvalOpts {
+        configs,
+        out: out.to_string(),
+        limit: u64::MAX,
+        every: 7,
+        metric_threads: 3,
+        check_ref: None,
+        stats: false,
+        perms: count::perms_for(&kmv),
+        kmv,
+        l1,
+        l1_every: 101,
+        sets_counts: sc,
+    };
+    let out = format!("{}/side", dir);
+    crate::eval::run(
+        opts(&out, vec![Config::parse("varopt:16").unwrap()], kspecs.clone(), vec![L1Spec::parse("32").unwrap()], Some(refs.clone())),
+        input(&records),
+        None,
+        HashMap::new(),
+    )
+    .unwrap();
+    let summary = std::fs::read_to_string(format!("{}/kmv-summary.tsv", out)).unwrap();
+    let mut seen = 0;
+    for l in summary.lines() {
+        let c: Vec<&str> = l.split('\t').collect();
+        if c[3] == "set_mismatch" || c[3] == "support_ref_mismatch" {
+            assert_eq!(c[5], "0", "{}", l);
+            assert!(c[4].parse::<u64>().unwrap() > 400, "{}", l);
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 4);
+    let l1 = std::fs::read_to_string(format!("{}/l1-summary.tsv", out)).unwrap();
+    let worst: f64 = l1.lines().nth(1).unwrap().split('\t').nth(2).unwrap().parse().unwrap();
+    assert!(worst < 1e-6, "{}", l1);
+    // A5: the old outputs, alone and unchanged in shape.
+    let old = format!("{}/old", dir);
+    crate::eval::run(opts(&old, vec![Config::parse("varopt:16").unwrap()], vec![], vec![], None), input(&records), None, HashMap::new())
+        .unwrap();
+    let mut names: Vec<String> = std::fs::read_dir(&old).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, vec!["cost.tsv", "rows.tsv", "summary.tsv"]);
+    for f in ["rows.tsv", "summary.tsv"] {
+        assert_eq!(
+            std::fs::read(format!("{}/{}", old, f)).unwrap(),
+            std::fs::read(format!("{}/{}", out, f)).unwrap(),
+            "{}: the side stores do not change the configs' rows",
+            f
+        );
+    }
+}
+
+/// T-I1 (needs /data): the first 1,000,000 records, `count --kmv 1024` and
+/// sixteen seeds of `--kmv 256` against the sets-counts reference: no hard
+/// counter, and the seed gates of `count-seeds.tsv` -- seeds as the unit,
+/// Bonferroni over the strata -- all pass.  One seed's per-stratum RMS is
+/// not gated: within a run the errors share one permutation.
+#[test]
+#[ignore]
+fn the_first_million_records_count_against_sets_counts() {
+    let rec = "/data/bitcoin/2022/finalBCUTXO_2022.scm";
+    let sc = "/data/bitcoin/2022/finalBCUTXO_2022.sets-counts.31187785.txt";
+    let or = "/data/bitcoin/2022/lastspend-2022.u32";
+    if !std::path::Path::new(rec).exists() {
+        eprintln!("skipped: {} is not here", rec);
+        return;
+    }
+    let dir = scratch("t-i1");
+    let mut specs = vec![KmvSpec::parse("1024").unwrap()];
+    specs.extend((1..=16).map(|s| KmvSpec::parse(&format!("256:seed={}", s)).unwrap()));
+    let perms = count::perms_for(&specs);
+    let n = 1_000_000u64;
+    let oracle = Arc::new(Oracle::load(or, Some(n)).unwrap());
+    let mut opts = count_opts(&specs, &dir, Some(sc.to_string()));
+    opts.limit = n;
+    opts.every = None;
+    opts.stream = false;
+    opts.bucket = 250_000;
+    count::run(opts, Box::new(std::fs::File::open(rec).unwrap()), Some(oracle), &perms).unwrap();
+    let check = std::fs::read_to_string(format!("{}/count-check.tsv", dir)).unwrap();
+    eprintln!("{}", check);
+    for line in check.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        assert_eq!(c[3], n.to_string());
+        assert_eq!(&c[5..9], &["0", "0", "0", "0"], "{}", line);
+    }
+    let seeds = std::fs::read_to_string(format!("{}/count-seeds.tsv", dir)).unwrap();
+    eprintln!("{}", seeds);
+    let mut tested = 0;
+    for line in seeds.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        assert_ne!(c[10], "0", "bias gate: {}", line);
+        assert_ne!(c[14], "0", "variance gate: {}", line);
+        tested += (c[10] == "1") as usize;
+    }
+    assert!(tested >= 6, "{} strata tested", tested);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A k = 2 seed family: the theory formula diverges there (`count_se` is
+/// +inf), so every stratum's variance gate is `NA` and none fails, while the
+/// bias is still tested.  The unit test pins the rule; the `count` run shows
+/// it end to end.
+#[test]
+fn a_k2_family_tests_its_bias_and_not_its_variance() {
+    let mut st = count::SeedStrata::new(4);
+    for i in 0..50u64 {
+        let es: Vec<f64> = (0..4).map(|s| ((i * 4 + s) % 7) as f64 / 10.0 - 0.3).collect();
+        st.add(1000 + i, 2, &es, f64::INFINITY);
+    }
+    let lines = st.lines(0.01);
+    assert!(!lines.is_empty());
+    for l in &lines {
+        assert!(l.bias_ok.is_some(), "{}: the bias is tested", l.stratum);
+        assert_eq!(l.var_ok, None, "{}: no variance gate", l.stratum);
+        assert!(l.var_ratio.is_nan());
+    }
+
+    let records = stream(3000, 400, 91);
+    let dir = scratch("k2");
+    let refs = format!("{}/sc.txt", dir);
+    sets_counts(&records, &refs);
+    let specs: Vec<KmvSpec> = (1..=4).map(|s| spec(2, s, Support::Sets)).collect();
+    let perms = count::perms_for(&specs);
+    count::run(count_opts(&specs, &dir, Some(refs)), input(&records), None, &perms).unwrap();
+    let seeds = std::fs::read_to_string(format!("{}/count-seeds.tsv", dir)).unwrap();
+    let mut tested = 0;
+    for line in seeds.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        if c[2] == "<=k" {
+            continue;
+        }
+        assert_eq!(c[14], "NA", "k = 2 has no variance gate: {}", line);
+        tested += (c[10] != "NA") as usize;
+    }
+    assert!(tested > 0, "some k = 2 strata have their bias tested:\n{}", seeds);
+}
+
+/// The new modes refuse what they would ignore and what would collide: an
+/// option `count` does not consume (`--l1`, `--config`, `--exact`), and a
+/// store given twice to `pick` or `eval` (two threads, one file).
+#[test]
+fn new_modes_refuse_ignored_options_and_repeated_stores() {
+    let argv = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+    for (cmd, want) in [
+        ("count --kmv 64 --l1 64 --out /nonexistent", "--l1"),
+        ("count --l1 1024 --out /nonexistent", "--l1"),
+        ("count --kmv 64 --config varopt:16 --out /nonexistent", "--config"),
+        ("count --kmv 64 --exact --out /nonexistent", "--exact"),
+        ("pick --select x --kmv 64 --sets-counts y --out /nonexistent", "--sets-counts"),
+        ("pairs --in x --kmv 64 --out /nonexistent", "--kmv"),
+    ] {
+        let e = crate::run(crate::parse(&argv(cmd)).unwrap()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains(want), "{}: {}", cmd, e);
+    }
+    let dir = scratch("dup");
+    let sel = format!("{}/sel.txt", dir);
+    std::fs::write(&sel, "0\n").unwrap();
+    let records = stream(10, 5, 3);
+    let k = [spec(8, 1, Support::Sets), spec(8, 1, Support::Sets)];
+    let l = [L1Spec::parse("64").unwrap(), L1Spec::parse("64").unwrap()];
+    let pick_opts = |kmv: &[KmvSpec], l1: &[L1Spec], configs: Vec<Config>| PickOpts {
+        select: sel.clone(),
+        out: format!("{}/pick", dir),
+        limit: u64::MAX,
+        configs,
+        kmv: kmv.to_vec(),
+        l1: l1.to_vec(),
+        exact: false,
+        stats: false,
+    };
+    let v = Config::parse("varopt:16").unwrap();
+    for o in [pick_opts(&k, &[], vec![]), pick_opts(&[], &l, vec![]), pick_opts(&[], &[], vec![v, v])] {
+        let e = pick::run(o, input(&records), None, &HashMap::new(), &count::perms_for(&k)).unwrap_err();
+        assert!(e.to_string().contains("given twice"), "{}", e);
+    }
+    for (kmv, l1) in [(k.to_vec(), vec![]), (vec![], l.to_vec())] {
+        let o = crate::eval::EvalOpts {
+            configs: vec![],
+            out: format!("{}/eval", dir),
+            limit: u64::MAX,
+            every: 7,
+            metric_threads: 1,
+            check_ref: None,
+            stats: false,
+            perms: count::perms_for(&kmv),
+            kmv,
+            l1,
+            l1_every: 7,
+            sets_counts: None,
+        };
+        let e = crate::eval::run(o, input(&records), None, HashMap::new()).unwrap_err();
+        assert!(e.to_string().contains("given twice"), "{}", e);
+    }
+    assert!(!std::path::Path::new(&format!("{}/pick", dir)).exists(), "refused before any output");
+}
+
+/// `eval --check-ref` with no `--config` still compares the exact colours
+/// with the Laplace reference: a reference that is wrong on every sampled
+/// record fails the run.  Before, the comparison ran only beside a config.
+#[test]
+fn check_ref_runs_without_a_config() {
+    let records = stream(600, 100, 13);
+    let dir = scratch("checkref");
+    let mut txs = Vec::new();
+    read_batches(Cursor::new(records.as_bytes()), u64::MAX, |b| {
+        txs.extend(b.recs.iter().map(|r| r.tx));
+        true
+    })
+    .unwrap();
+    let text: String = txs.iter().map(|t| format!("{}\t2\t2\t2\t2\t2\t2\t2\n", t)).collect();
+    let plain = format!("{}/lap.txt", dir);
+    std::fs::write(&plain, text).unwrap();
+    let st = std::process::Command::new("zstd").args(["-q", "-f", &plain, "-o", &format!("{}.zst", plain)]).status().unwrap();
+    assert!(st.success());
+    let kmv = vec![spec(16, 1, Support::Sets)];
+    let o = crate::eval::EvalOpts {
+        configs: vec![],
+        out: format!("{}/eval", dir),
+        limit: u64::MAX,
+        every: 7,
+        metric_threads: 1,
+        check_ref: Some(format!("{}.zst", plain)),
+        stats: false,
+        perms: count::perms_for(&kmv),
+        kmv,
+        l1: vec![],
+        l1_every: 7,
+        sets_counts: None,
+    };
+    let e = crate::eval::run(o, input(&records), None, HashMap::new()).unwrap_err();
+    assert!(e.to_string().contains("Laplace values differ from the reference"), "{}", e);
+}

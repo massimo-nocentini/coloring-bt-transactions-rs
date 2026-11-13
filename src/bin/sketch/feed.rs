@@ -398,6 +398,77 @@ pub fn next_refs(
     Ok(out)
 }
 
+/// One batch of a sets-counts file: the exact `--sets` support size of each
+/// record, on the same [`BATCH`] boundaries as the records.  `vals` is short
+/// (or the batch never comes) past the file's end, which is how a reference
+/// that covers only a prefix of the chain stops being compared.
+pub struct CountBatch {
+    pub first: u64,
+    pub vals: Vec<u32>,
+}
+
+/// Cut `src`, one integer per line, into [`CountBatch`]es until `limit` lines
+/// or `f` answers `false`.  Answers how many lines were read.  The file
+/// carries no tx ids, so alignment rests on the line count alone.
+pub fn read_counts<B: BufRead>(mut src: B, limit: u64, mut f: impl FnMut(Arc<CountBatch>) -> bool) -> io::Result<u64> {
+    let mut line = Vec::with_capacity(64);
+    let mut count = 0u64;
+    loop {
+        let mut b = CountBatch { first: count, vals: Vec::with_capacity(BATCH) };
+        while b.vals.len() < BATCH && count < limit {
+            line.clear();
+            if src.read_until(b'\n', &mut line)? == 0 {
+                break;
+            }
+            let t = std::str::from_utf8(&line).ok().map(|s| s.trim()).unwrap_or("");
+            let v: u32 = t.parse().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("sets-counts line {}: not a count: {:?}", count + 1, t))
+            })?;
+            b.vals.push(v);
+            count += 1;
+        }
+        if b.vals.is_empty() {
+            return Ok(count);
+        }
+        let full = b.vals.len() == BATCH;
+        if !f(Arc::new(b)) || !full {
+            return Ok(count);
+        }
+    }
+}
+
+/// [`read_counts`] on a thread of its own, broadcasting to `to`: plain text,
+/// or through `zstd -dc` when the path ends in `.zst`.  The thread ends at
+/// the file's end; a consumer then finds the channel closed and stops
+/// comparing, and the thread's own result says whether that was the end of
+/// the file or an error.
+pub fn spawn_counts(path: String, limit: u64, to: Vec<SyncSender<Arc<CountBatch>>>) -> JoinHandle<io::Result<u64>> {
+    std::thread::Builder::new()
+        .name("sets-counts".into())
+        .spawn(move || {
+            let send = |b: Arc<CountBatch>| {
+                let mut any = false;
+                for t in &to {
+                    any |= t.send(b.clone()).is_ok();
+                }
+                any
+            };
+            let result = if path.ends_with(".zst") {
+                let mut child = decompress(&path)?;
+                let out = child.stdout.take().expect("piped");
+                let r = read_counts(BufReader::with_capacity(1 << 22, out), limit, send);
+                let _ = child.kill();
+                let _ = child.wait();
+                r
+            } else {
+                let f = std::fs::File::open(&path)?;
+                read_counts(BufReader::with_capacity(1 << 22, f), limit, send)
+            };
+            result.map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path, e)))
+        })
+        .expect("spawn the sets-counts reader")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

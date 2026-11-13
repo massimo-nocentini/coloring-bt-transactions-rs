@@ -53,8 +53,19 @@
 //!               [--check-ref [--laplace-ref <zst>]] [--metric-threads 8] [--force-exact] [--stats] < records.scm
 //! sketch check  --out <dir> [--every 16] [--rows-every 4001] [--bucket 10000000]
 //!               [--laplace-ref <zst>] [--moments-ref <zst>] [--bands-ref <zst>] < out.bin
-//! sketch decode < out.bin > out.txt
+//! sketch decode [--select <file>] < out.bin|counts.bin > out.txt
+//! sketch count  --kmv <spec> [--kmv <spec> ...] --oracle <path> --out <dir> [--limit <n>|all]
+//!               [--sets-counts <path>] [--every <n>] [--bucket 10000000] [--no-stream] [--zstd] [--stats]
+//!               < records.scm
+//! sketch pick   --select <file> --out <dir> --oracle <path> [--limit <n>|all] [--config <cfg> ...]
+//!               [--kmv <spec> ...] [--l1 <spec> ...] [--exact [--force-exact]] [--stats] < records.scm
+//! sketch pairs  --in <pick dir> --out <dir> [--group <name> ...] [--varopt-text <file>] [--threads 32]
 //! ```
+//!
+//! `eval` also takes `--kmv`, `--l1`, `--sets-counts` and `--l1-every 997`,
+//! and then needs no `--config`; see below.  `count`, `pick` and `pairs`
+//! refuse an option they would ignore: an L1 store, in particular, runs
+//! only under `pick` or `eval`, never under `count`.
 //!
 //! - **`eval`** ([`eval`]) runs the exact store beside the sketches on a
 //!   prefix and measures every sketch against the whole colour.
@@ -85,6 +96,44 @@
 //! hold about 4.8x the colours -- and refuse to run without one unless told
 //! `--no-oracle`.  `eval` holds the exact colours too, about 43 GB at 1.5M
 //! records, and refuses a prefix past 3M without `--force-exact`.
+//!
+//! ## Counting and comparing colours
+//!
+//! Two questions the varopt sketches cannot answer: *from how many blocks*
+//! does a transaction descend (a count-distinct of its support), and *how
+//! much do two transactions share* (a Jaccard similarity).  Varopt's draws
+//! are fresh at every reduction, so two sketches are not coordinated; a block
+//! dropped at an ancestor is gone for every descendant; and kept light terms
+//! are stored at `tau`, which loses their inclusion probabilities.  Two side
+//! stores answer them instead, each its own [`algebra::Algebra`] on its own
+//! thread, fed by the same parse:
+//!
+//! - **`--kmv <k>[:seed=][:support=sets|pos][:bits=20]`** ([`kmv`]): the `k`
+//!   blocks of the support with the smallest rank under one permutation of
+//!   the blocks, folded by union.  The bottom-k of a union is the bottom-k of
+//!   the parents' bottom-k, so the fold is *exact*: every stored sketch is the
+//!   one-shot sketch of its support, whatever the DAG did.  The count is
+//!   exactly unbiased over the universe the support can lie in, `[0, beta]`;
+//!   Jaccard is exact when both supports fit in `k` and hypergeometric
+//!   otherwise.  `support=sets` is `--sets`'s support (zero-amount inputs
+//!   included), `support=pos` the weighted colour's; every output names one.
+//! - **`--l1 <m>[:seed=][:prec=f32|f64]`** ([`l1`]): a Cauchy projection of
+//!   the colour, which commutes with the recurrence exactly.  Every colour is
+//!   a probability vector, so the weighted Jaccard is `(1 - TV)/(1 + TV)`, a
+//!   function of the L1 distance the projection estimates.  It has a floor
+//!   near 0.01, so it is informative inside a window of blocks, not across
+//!   the chain.
+//!
+//! The modes over them: **`count`** ([`count`]) writes every record's count
+//! as a fixed-width stream and checks it against the exact sizes on disk;
+//! **`pick`** ([`pick`]) folds any stores once and dumps the sketches of
+//! selected records; **`pairs`** ([`pairs`]) computes every pair of a pick;
+//! **`eval --kmv/--l1`** checks both stores against the exact colours on a
+//! prefix; **`decode`** reads a count stream too, and `--select` cuts the
+//! records of a selection out of a production `SKETCH01` file.  Bias and
+//! variance are judged across seeds only (`count-seeds.tsv`,
+//! `kmv-seeds.tsv`): one run shares one permutation, so its records' errors
+//! are correlated and their spread says nothing about the estimator's.
 //!
 //! ## What it costs
 //!
@@ -133,6 +182,8 @@ mod algebra;
 mod chain;
 #[path = "sketch/coord.rs"]
 mod coord;
+#[path = "sketch/count.rs"]
+mod count;
 #[path = "sketch/driver.rs"]
 mod driver;
 #[path = "sketch/encode.rs"]
@@ -145,10 +196,18 @@ mod exact;
 mod feed;
 #[path = "sketch/hash.rs"]
 mod hash;
+#[path = "sketch/kmv.rs"]
+mod kmv;
+#[path = "sketch/l1.rs"]
+mod l1;
 #[path = "sketch/metrics.rs"]
 mod metrics;
 #[path = "sketch/modes.rs"]
 mod modes;
+#[path = "sketch/pairs.rs"]
+mod pairs;
+#[path = "sketch/pick.rs"]
+mod pick;
 #[path = "sketch/prio.rs"]
 mod prio;
 #[path = "sketch/varopt.rs"]
@@ -173,6 +232,8 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use algebra::{Config, Variant};
+use kmv::KmvSpec;
+use l1::L1Spec;
 use hash::Keys;
 use modes::{Format, RefPaths};
 use std::collections::HashMap;
@@ -190,7 +251,7 @@ fn allocator() -> &'static str {
     }
 }
 
-const USAGE: &str = "usage: sketch emit|chain|eval|check|decode [options] < input   (see the module docs)";
+const USAGE: &str = "usage: sketch emit|chain|eval|check|decode|count|pick|pairs [options] < input   (see the module docs)";
 
 #[derive(Debug)]
 struct Args {
@@ -209,6 +270,20 @@ struct Args {
     check_ref: bool,
     metric_threads: usize,
     force_exact: bool,
+    kmv: Vec<KmvSpec>,
+    l1: Vec<L1Spec>,
+    sets_counts: Option<String>,
+    l1_every: u64,
+    select: Option<String>,
+    input: Option<String>,
+    groups: Vec<String>,
+    varopt_text: Option<String>,
+    threads: usize,
+    exact: bool,
+    no_stream: bool,
+    zstd: bool,
+    /// Every option given, in order, so a mode can refuse what it ignores.
+    given: Vec<String>,
 }
 
 fn parse(argv: &[String]) -> Result<Args, String> {
@@ -229,6 +304,19 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         check_ref: false,
         metric_threads: 8,
         force_exact: false,
+        kmv: Vec::new(),
+        l1: Vec::new(),
+        sets_counts: None,
+        l1_every: 997,
+        select: None,
+        input: None,
+        groups: Vec::new(),
+        varopt_text: None,
+        threads: 32,
+        exact: false,
+        no_stream: false,
+        zstd: false,
+        given: Vec::new(),
     };
     let mut i = 1;
     let value = |i: usize| -> Result<&String, String> {
@@ -240,6 +328,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
     };
     while i < argv.len() {
         let mut takes = true;
+        a.given.push(argv[i].clone());
         match argv[i].as_str() {
             "--config" => a.configs.push(Config::parse(value(i)?)?),
             "--limit" => {
@@ -277,11 +366,50 @@ fn parse(argv: &[String]) -> Result<Args, String> {
                 a.force_exact = true;
                 takes = false;
             }
+            "--kmv" => a.kmv.push(KmvSpec::parse(value(i)?)?),
+            "--l1" => a.l1.push(L1Spec::parse(value(i)?)?),
+            "--sets-counts" => a.sets_counts = Some(value(i)?.clone()),
+            "--l1-every" => a.l1_every = number(i)?.max(1),
+            "--select" => a.select = Some(value(i)?.clone()),
+            "--in" => a.input = Some(value(i)?.clone()),
+            "--group" => a.groups.push(value(i)?.clone()),
+            "--varopt-text" => a.varopt_text = Some(value(i)?.clone()),
+            "--threads" => a.threads = number(i)?.max(1) as usize,
+            "--exact" => {
+                a.exact = true;
+                takes = false;
+            }
+            "--no-stream" => {
+                a.no_stream = true;
+                takes = false;
+            }
+            "--zstd" => {
+                a.zstd = true;
+                takes = false;
+            }
             other => return Err(format!("unknown option {:?}\n{}", other, USAGE)),
         }
         i += if takes { 2 } else { 1 };
     }
     Ok(a)
+}
+
+/// Refuse an option the mode would silently ignore.  Only the new modes
+/// (`count`, `pick`, `pairs`) check; the old ones keep accepting what they
+/// always accepted (A5).  `--stats` is every mode's.
+fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
+    match a.given.iter().find(|o| o.as_str() != "--stats" && !takes.contains(&o.as_str())) {
+        None => Ok(()),
+        Some(o) => {
+            let hint = match o.as_str() {
+                "--l1" | "--l1-every" => "; an L1 store runs under pick or eval",
+                "--config" => "; a varopt or coord store runs under emit, chain, eval or pick",
+                "--exact" | "--force-exact" => "; the exact store runs under eval or pick",
+                _ => "",
+            };
+            Err(format!("{} does not take {}{}", a.mode, o, hint))
+        }
+    }
 }
 
 fn need_out(a: &Args) -> Result<String, String> {
@@ -314,6 +442,15 @@ fn keys_for(configs: &[Config]) -> HashMap<u64, Arc<Keys>> {
         m.entry(c.seed).or_insert_with(|| Arc::new(Keys::new(c.seed, bands::CHAIN_BLOCKS + 10)));
     }
     m
+}
+
+/// The refusal of a prefix that would hold too many exact colours.
+fn exact_refusal(mode: &str, limit: u64) -> String {
+    format!(
+        "{} holds every exact colour, about 43 GB at 1.5M records; --limit {} needs --force-exact",
+        mode,
+        if limit == u64::MAX { "all".to_string() } else { limit.to_string() }
+    )
 }
 
 fn stdin() -> Box<dyn io::Read + Send> {
@@ -358,15 +495,12 @@ fn run(a: Args) -> io::Result<()> {
             modes::chain(opts, stdin(), o, &keys)
         }
         "eval" => {
-            if a.configs.is_empty() {
-                return Err(invalid("eval needs at least one --config".into()));
+            if a.configs.is_empty() && a.kmv.is_empty() && a.l1.is_empty() {
+                return Err(invalid("eval needs at least one --config, --kmv or --l1".into()));
             }
             let limit = a.limit.unwrap_or(1_500_000);
             if limit > 3_000_000 && !a.force_exact {
-                return Err(invalid(format!(
-                    "eval holds every exact colour, about 43 GB at 1.5M records; --limit {} needs --force-exact",
-                    if limit == u64::MAX { "all".to_string() } else { limit.to_string() }
-                )));
+                return Err(invalid(exact_refusal("eval", limit)));
             }
             let o = oracle_for(&a, limit, false)?;
             let check_ref = a.check_ref.then(|| {
@@ -380,8 +514,83 @@ fn run(a: Args) -> io::Result<()> {
                 metric_threads: a.metric_threads,
                 check_ref,
                 stats: a.stats,
+                kmv: a.kmv.clone(),
+                perms: count::perms_for(&a.kmv),
+                l1: a.l1.clone(),
+                l1_every: a.l1_every,
+                sets_counts: a.sets_counts.clone(),
             };
             eval::run(opts, stdin(), o, keys)
+        }
+        "count" => {
+            only(
+                &a,
+                &[
+                    "--kmv", "--oracle", "--no-oracle", "--out", "--limit", "--sets-counts", "--every", "--bucket", "--no-stream",
+                    "--zstd",
+                ],
+            )
+            .map_err(invalid)?;
+            if a.kmv.is_empty() {
+                return Err(invalid("count needs at least one --kmv".into()));
+            }
+            let limit = a.limit.unwrap_or(u64::MAX);
+            let o = oracle_for(&a, limit, true)?;
+            let perms = count::perms_for(&a.kmv);
+            let opts = count::CountOpts {
+                kmv: a.kmv.clone(),
+                out: need_out(&a).map_err(invalid)?,
+                limit,
+                sets_counts: a.sets_counts.clone(),
+                every: a.every,
+                stream: !a.no_stream,
+                zstd: a.zstd,
+                bucket: a.bucket,
+                stats: a.stats,
+            };
+            count::run(opts, stdin(), o, &perms)
+        }
+        "pick" => {
+            only(
+                &a,
+                &[
+                    "--select", "--out", "--oracle", "--no-oracle", "--limit", "--config", "--kmv", "--l1", "--exact",
+                    "--force-exact",
+                ],
+            )
+            .map_err(invalid)?;
+            let select = a.select.clone().ok_or_else(|| invalid("pick needs --select <file>".into()))?;
+            if a.configs.is_empty() && a.kmv.is_empty() && a.l1.is_empty() && !a.exact {
+                return Err(invalid("pick needs at least one --config, --kmv, --l1 or --exact".into()));
+            }
+            let limit = a.limit.unwrap_or(u64::MAX);
+            if a.exact && limit > 3_000_000 && !a.force_exact {
+                return Err(invalid(exact_refusal("pick --exact", limit)));
+            }
+            let o = oracle_for(&a, limit, true)?;
+            let perms = count::perms_for(&a.kmv);
+            let opts = pick::PickOpts {
+                select,
+                out: need_out(&a).map_err(invalid)?,
+                limit,
+                configs: a.configs.clone(),
+                kmv: a.kmv.clone(),
+                l1: a.l1.clone(),
+                exact: a.exact,
+                stats: a.stats,
+            };
+            pick::run(opts, stdin(), o, &keys, &perms)
+        }
+        "pairs" => {
+            only(&a, &["--in", "--out", "--group", "--varopt-text", "--threads"]).map_err(invalid)?;
+            let opts = pairs::PairsOpts {
+                input: a.input.clone().ok_or_else(|| invalid("pairs needs --in <pick dir>".into()))?,
+                out: need_out(&a).map_err(invalid)?,
+                groups: a.groups.clone(),
+                varopt_text: a.varopt_text.clone(),
+                threads: a.threads,
+            };
+            pairs::run(opts)
         }
         "check" => {
             let opts = modes::CheckOpts {
@@ -393,7 +602,13 @@ fn run(a: Args) -> io::Result<()> {
             };
             modes::check(opts, stdin())
         }
-        "decode" => modes::decode(stdin(), stdout()),
+        "decode" => match &a.select {
+            None => modes::decode(stdin(), stdout(), None),
+            Some(path) => {
+                let sel = pick::Selection::load(path)?;
+                modes::decode(stdin(), stdout(), Some(&sel.recs))
+            }
+        },
         other => Err(invalid(format!("unknown mode {:?}\n{}", other, USAGE))),
     }
 }

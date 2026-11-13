@@ -40,6 +40,30 @@
 //! worst coefficient error among them), `seeds.tsv` (when configs differ only
 //! by `:seed=`), and `cost.tsv`.
 //!
+//! ## The side stores
+//!
+//! With `--kmv` and `--l1` the same exact store checks the stores of
+//! [`crate::kmv`] and [`crate::l1`], and `--config` becomes optional:
+//!
+//! - **KMV**: on every sampled record the sketch must *equal* the `k`
+//!   lowest-ranked blocks of the exact support -- every term of the exact
+//!   colour for `support=sets`, zero coefficients included, the nonzero ones
+//!   for `pos` -- with `full` iff the support exceeds `k` (`set_mismatch`,
+//!   which must be 0; T3 says it is).  A coefficient that underflowed to 0
+//!   in f64 along every path would show here as a `pos` mismatch the sketch
+//!   is not to blame for; none has been seen.  Both counts are compared with
+//!   the exact size (`kmv-rows.tsv`, `kmv-summary.tsv`), and seed replicates
+//!   are tested in `kmv-seeds.tsv` with the seeds as the unit.
+//! - **`--sets-counts`**: the exact support size of every sampled record
+//!   against the file of `--sets` sizes (`support_ref_mismatch`, must be 0),
+//!   which validates the reference and the support semantics at once.
+//! - **L1**: one record in `--l1-every`, the store's vector against `A C`
+//!   computed afresh from the exact terms and the hash (`m n` Cauchy draws,
+//!   shared by the specs of one seed), as the largest deviation relative to
+//!   `sum_b |A_jb| c_b` (`l1-rows.tsv`, `l1-summary.tsv`).
+//!
+//! Without them every file and column is what it always was.
+//!
 //! ## Which SE to believe
 //!
 //! None of the per-config ones, for a bias question.  Sampled rows share
@@ -63,8 +87,10 @@ use crate::algebra::{Algebra, Config, Info, Sketcher, Variant};
 use crate::coord;
 use crate::driver::Driver;
 use crate::exact::Exact;
-use crate::feed::{self, Batch, RefBatch, RefKind, RefVal};
-use crate::hash::{self, Keys};
+use crate::feed::{self, Batch, CountBatch, RefBatch, RefKind, RefVal};
+use crate::hash::{self, Keys, Perm};
+use crate::kmv::{self, KmvSpec, KmvStore, Support, Universe};
+use crate::l1::{L1Spec, L1Store};
 use crate::metrics::{self, mean_se, quantile_sorted, L};
 use crate::oracle::Oracle;
 use crate::prio;
@@ -83,6 +109,13 @@ pub struct EvalOpts {
     pub metric_threads: usize,
     pub check_ref: Option<String>,
     pub stats: bool,
+    /// The side stores: KMV sketches of the support and L1 projections,
+    /// checked against the exact store; and the sets-counts reference.
+    pub kmv: Vec<KmvSpec>,
+    pub perms: HashMap<(u64, u32), Arc<Perm>>,
+    pub l1: Vec<L1Spec>,
+    pub l1_every: u64,
+    pub sets_counts: Option<String>,
 }
 
 /// One config's estimate of one sampled record, on its way to a metric thread.
@@ -94,8 +127,12 @@ pub struct SketchPayload {
 }
 
 enum Msg {
-    Exact { rec: u64, tx: usize, p: Arc<Vec<(u32, f64)>> },
+    /// The exact colour's estimate (for the configs) and its terms (for the
+    /// side stores), each when someone needs it.
+    Exact { rec: u64, tx: usize, p: Option<Arc<Vec<(u32, f64)>>>, terms: Option<Arc<Vec<(u32, f64)>>> },
     Sketch { rec: u64, payload: SketchPayload },
+    Kmv { rec: u64, payload: KmvPayload },
+    L1 { rec: u64, spec: usize, v: Vec<f64> },
 }
 
 /// One row of `rows.tsv`.
@@ -211,44 +248,221 @@ pub fn row(cfg: &Config, cfg_id: usize, keys: Option<&Keys>, rec: u64, tx: usize
 struct Pending {
     tx: usize,
     exact: Option<Arc<Vec<(u32, f64)>>>,
-    waiting: Vec<SketchPayload>,
+    terms: Option<Arc<Vec<(u32, f64)>>>,
+    waiting: Vec<Payload>,
     done: usize,
+    /// `A . C_exact` and its denominators, per L1 seed, once computed.
+    l1_truth: HashMap<u64, Arc<(Vec<f64>, Vec<f64>)>>,
 }
 
-fn metric_thread(rx: Receiver<Msg>, configs: Arc<Vec<Config>>, keys: Arc<HashMap<u64, Arc<Keys>>>) -> Vec<Row> {
+/// What every metric thread needs to read the side stores.
+pub struct Side {
+    pub kmv: Vec<KmvSpec>,
+    pub perms: Vec<Arc<Perm>>,
+    pub l1: Vec<L1Spec>,
+    pub every: u64,
+    pub l1_every: u64,
+}
+
+impl Side {
+    /// How many payloads record `rec` gets from the stores besides `configs`.
+    fn expected(&self, configs: usize, rec: u64) -> usize {
+        let mut n = 0;
+        if rec % self.every == 0 {
+            n += configs + self.kmv.len();
+        }
+        if rec % self.l1_every == 0 {
+            n += self.l1.len();
+        }
+        n
+    }
+    /// Whether the exact store must send the record's terms, not just its
+    /// estimate.
+    fn wants_terms(&self, rec: u64) -> bool {
+        (!self.kmv.is_empty() && rec % self.every == 0) || (!self.l1.is_empty() && rec % self.l1_every == 0)
+    }
+}
+
+/// The metric thread a record's messages go to.  Any function of `rec`
+/// would do -- the rows are sorted at the end -- as long as every producer
+/// uses the same one.
+fn slot(rec: u64, t: usize) -> usize {
+    (hash::splitmix64(rec) % t as u64) as usize
+}
+
+/// One KMV store's sketch of a sampled record and its two counts.
+pub struct KmvPayload {
+    pub spec: usize,
+    pub r: Vec<u32>,
+    pub full: bool,
+    pub n_hat: f64,
+    pub n_hat_m: f64,
+    pub univ: u64,
+}
+
+/// One row of `kmv-rows.tsv`.
+#[derive(Clone, Debug)]
+pub struct KmvRow {
+    pub rec: u64,
+    pub tx: usize,
+    pub spec: usize,
+    pub n_sets: usize,
+    pub n_pos: usize,
+    pub len: usize,
+    pub full: bool,
+    pub n_hat: f64,
+    pub n_hat_m: f64,
+    pub univ: u64,
+    /// The sketch is exactly `K_k` of the exact support, and `full` iff the
+    /// support is larger than `k`.
+    pub set_ok: bool,
+}
+
+impl KmvRow {
+    /// The exact size of the support this row's spec sketches.
+    pub fn n(&self, side: &Side) -> usize {
+        match side.kmv[self.spec].support {
+            Support::Sets => self.n_sets,
+            Support::Pos => self.n_pos,
+        }
+    }
+}
+
+/// One row of `l1-rows.tsv`.
+#[derive(Clone, Debug)]
+pub struct L1Row {
+    pub rec: u64,
+    pub spec: usize,
+    pub n: usize,
+    pub max_rel_dev: f64,
+}
+
+enum Payload {
+    Sketch(SketchPayload),
+    Kmv(KmvPayload),
+    L1(usize, Vec<f64>),
+}
+
+/// The KMV check: the bottom-k of the exact support under the spec's
+/// permutation, against the sketch.
+fn kmv_row(side: &Side, rec: u64, tx: usize, terms: &[(u32, f64)], p: &KmvPayload) -> KmvRow {
+    let spec = &side.kmv[p.spec];
+    let perm = &side.perms[p.spec];
+    let n_sets = terms.len();
+    let n_pos = terms.iter().filter(|x| x.1 != 0.0).count();
+    let mut r: Vec<u32> = terms
+        .iter()
+        .filter(|x| spec.support == Support::Sets || x.1 != 0.0)
+        .map(|x| perm.rank(x.0))
+        .collect();
+    let n = r.len();
+    if n > spec.k {
+        r.select_nth_unstable(spec.k - 1);
+        r.truncate(spec.k);
+    }
+    r.sort_unstable();
+    KmvRow {
+        rec,
+        tx,
+        spec: p.spec,
+        n_sets,
+        n_pos,
+        len: p.r.len(),
+        full: p.full,
+        n_hat: p.n_hat,
+        n_hat_m: p.n_hat_m,
+        univ: p.univ,
+        set_ok: r == p.r && p.full == (n > spec.k),
+    }
+}
+
+/// `(A C)_j` and `sum_b |A_jb| c_b` for `j < m`, straight from the exact
+/// terms and the hash: `m n` Cauchy draws.
+fn l1_truth(seed: u64, m: usize, terms: &[(u32, f64)]) -> (Vec<f64>, Vec<f64>) {
+    let mut ac = vec![0.0; m];
+    let mut den = vec![0.0; m];
+    for &(b, c) in terms {
+        if c == 0.0 {
+            continue;
+        }
+        for j in 0..m {
+            let a = hash::cauchy(seed, b, j as u32);
+            ac[j] += c * a;
+            den[j] += (c * a).abs();
+        }
+    }
+    (ac, den)
+}
+
+#[derive(Default)]
+struct MetricOut {
+    rows: Vec<Row>,
+    kmv: Vec<KmvRow>,
+    l1: Vec<L1Row>,
+}
+
+fn metric_thread(rx: Receiver<Msg>, configs: Arc<Vec<Config>>, keys: Arc<HashMap<u64, Arc<Keys>>>, side: Arc<Side>) -> MetricOut {
     let mut pending: HashMap<u64, Pending> = HashMap::new();
-    let mut rows = Vec::new();
-    let n = configs.len();
+    let mut out = MetricOut::default();
     let key_of = |c: &Config| keys.get(&c.seed).map(|k| &**k);
+    // The largest m per L1 seed: one projection serves every spec of a seed.
+    let mut m_of: HashMap<u64, usize> = HashMap::new();
+    for s in &side.l1 {
+        let e = m_of.entry(s.seed).or_insert(0);
+        *e = (*e).max(s.m);
+    }
+    let fresh = |tx| Pending { tx, exact: None, terms: None, waiting: Vec::new(), done: 0, l1_truth: HashMap::new() };
     while let Ok(msg) = rx.recv() {
         let (rec, ready) = match msg {
-            Msg::Exact { rec, tx, p } => {
-                let e = pending.entry(rec).or_insert(Pending { tx, exact: None, waiting: Vec::new(), done: 0 });
+            Msg::Exact { rec, tx, p, terms } => {
+                let e = pending.entry(rec).or_insert_with(|| fresh(tx));
                 e.tx = tx;
-                e.exact = Some(p);
+                e.exact = p;
+                e.terms = terms;
                 (rec, std::mem::take(&mut e.waiting))
             }
-            Msg::Sketch { rec, payload } => {
-                let e = pending.entry(rec).or_insert(Pending { tx: 0, exact: None, waiting: Vec::new(), done: 0 });
-                if e.exact.is_none() {
-                    e.waiting.push(payload);
-                    continue;
-                }
-                (rec, vec![payload])
-            }
+            Msg::Sketch { rec, payload } => (rec, vec![Payload::Sketch(payload)]),
+            Msg::Kmv { rec, payload } => (rec, vec![Payload::Kmv(payload)]),
+            Msg::L1 { rec, spec, v } => (rec, vec![Payload::L1(spec, v)]),
         };
-        let e = pending.get_mut(&rec).expect("just inserted");
-        let exact = e.exact.clone().expect("present");
-        for sk in ready {
-            let c = &configs[sk.cfg];
-            rows.push(row(c, sk.cfg, key_of(c), rec, e.tx, &exact, &sk));
+        let e = pending.entry(rec).or_insert_with(|| fresh(0));
+        if e.exact.is_none() && e.terms.is_none() {
+            e.waiting.extend(ready);
+            continue;
+        }
+        for pl in ready {
+            match pl {
+                Payload::Sketch(sk) => {
+                    let c = &configs[sk.cfg];
+                    let exact = e.exact.as_ref().expect("the estimate came with the record");
+                    out.rows.push(row(c, sk.cfg, key_of(c), rec, e.tx, exact, &sk));
+                }
+                Payload::Kmv(p) => {
+                    let terms = e.terms.as_ref().expect("the terms came with the record");
+                    out.kmv.push(kmv_row(&side, rec, e.tx, terms, &p));
+                }
+                Payload::L1(spec, v) => {
+                    let s = &side.l1[spec];
+                    let terms = e.terms.clone().expect("the terms came with the record");
+                    let m_max = m_of[&s.seed];
+                    let truth = e.l1_truth.entry(s.seed).or_insert_with(|| Arc::new(l1_truth(s.seed, m_max, &terms))).clone();
+                    let (ac, den) = &*truth;
+                    let mut worst = 0.0f64;
+                    for j in 0..s.m {
+                        let d = (v[j] - ac[j]).abs();
+                        let rel = if den[j] > 0.0 { d / den[j] } else { d };
+                        worst = worst.max(rel);
+                    }
+                    out.l1.push(L1Row { rec, spec, n: terms.len(), max_rel_dev: worst });
+                }
+            }
             e.done += 1;
         }
-        if e.done == n {
+        if e.done == side.expected(configs.len(), rec) {
             pending.remove(&rec);
         }
     }
-    rows
+    out
 }
 
 /// What a store thread reports at the end.
@@ -262,6 +476,7 @@ pub struct Cost {
     pub off_by_one: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sketch_thread(
     cfg: Config,
     cfg_id: usize,
@@ -274,14 +489,14 @@ fn sketch_thread(
 ) -> io::Result<Cost> {
     let label = cfg.label();
     let mut d = Driver::new(Sketcher::new(cfg, keys), oracle, stats.then(|| label.clone()));
-    let t = metric.len() as u64;
+    let t = metric.len();
     while let Ok(batch) = rx.recv() {
         d.batch(&batch, |rec, _tx, c, alg| {
             if rec % every == 0 {
                 let mut p = Vec::new();
                 alg.emit(c, &mut p);
                 let payload = SketchPayload { cfg: cfg_id, p, raw_mass: alg.raw_mass(c), info: alg.info(c) };
-                let _ = metric[((rec / every) % t) as usize].send(Msg::Sketch { rec, payload });
+                let _ = metric[slot(rec, t)].send(Msg::Sketch { rec, payload });
             }
             Ok(())
         })?;
@@ -301,38 +516,161 @@ fn sketch_thread(
     })
 }
 
-fn exact_thread(
+/// A KMV store beside the exact one: on sampled records, the sketch and both
+/// of its counts (the restricted universe kept here, where the records pass
+/// in order).
+#[allow(clippy::too_many_arguments)]
+fn kmv_thread(
+    id: usize,
+    spec: KmvSpec,
+    perm: Arc<Perm>,
     oracle: Option<Arc<Oracle>>,
     rx: Receiver<Arc<Batch>>,
-    refs: Option<Receiver<Arc<RefBatch>>>,
     metric: Vec<Sender<Msg>>,
     every: u64,
     stats: bool,
 ) -> io::Result<Cost> {
+    let label = spec.label();
+    let m = perm.universe();
+    let mut d = Driver::new(KmvStore::new(spec, perm.clone()), oracle, stats.then(|| label.clone()));
+    let mut uni = Universe::new(perm);
+    let mut frontier: Option<usize> = None;
+    let t = metric.len();
+    while let Ok(batch) = rx.recv() {
+        let first = batch.first;
+        d.batch(&batch, |rec, _tx, c, _alg| {
+            let b = batch.recs[(rec - first) as usize].block;
+            let f = frontier.map_or(b, |f| f.max(b));
+            frontier = Some(f);
+            if rec % every == 0 {
+                uni.grow(f as u64 + 1);
+                let payload = KmvPayload {
+                    spec: id,
+                    r: c.r.to_vec(),
+                    full: c.full,
+                    n_hat: uni.count(c.view(), spec.k),
+                    n_hat_m: kmv::count_m(c.view(), spec.k, m),
+                    univ: uni.size(),
+                };
+                let _ = metric[slot(rec, t)].send(Msg::Kmv { rec, payload });
+            }
+            Ok(())
+        })?;
+    }
+    let w = d.alg.work();
+    let u = d.alg.usage();
+    let (busy, records) = (d.busy, d.records);
+    d.finish();
+    Ok(Cost { label, busy, records, peak_entries: u.peak_entries, peak_sketches: u.peak_sketches, reductions: w.reductions, off_by_one: 0 })
+}
+
+/// An L1 store beside the exact one: its vector on the records sampled for it.
+#[allow(clippy::too_many_arguments)]
+fn l1_thread(
+    id: usize,
+    spec: L1Spec,
+    oracle: Option<Arc<Oracle>>,
+    rx: Receiver<Arc<Batch>>,
+    metric: Vec<Sender<Msg>>,
+    every: u64,
+    stats: bool,
+) -> io::Result<Cost> {
+    let label = spec.label();
+    let mut d = Driver::new(L1Store::new(spec), oracle, stats.then(|| label.clone()));
+    let t = metric.len();
+    while let Ok(batch) = rx.recv() {
+        d.batch(&batch, |rec, _tx, c, _alg| {
+            if rec % every == 0 {
+                let _ = metric[slot(rec, t)].send(Msg::L1 { rec, spec: id, v: c.to_f64() });
+            }
+            Ok(())
+        })?;
+    }
+    let u = d.alg.usage();
+    let (busy, records) = (d.busy, d.records);
+    d.finish();
+    Ok(Cost { label, busy, records, peak_entries: u.peak_entries, peak_sketches: u.peak_sketches, reductions: 0, off_by_one: 0 })
+}
+
+/// What the exact store found about the sets-counts reference.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RefCheck {
+    pub checked: u64,
+    pub mismatch: u64,
+    pub first_bad: Option<(u64, usize, u32)>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_thread(
+    oracle: Option<Arc<Oracle>>,
+    rx: Receiver<Arc<Batch>>,
+    refs: Option<Receiver<Arc<RefBatch>>>,
+    mut counts: Option<Receiver<Arc<CountBatch>>>,
+    metric: Vec<Sender<Msg>>,
+    every: u64,
+    side: Arc<Side>,
+    configs: usize,
+    stats: bool,
+) -> io::Result<(Cost, RefCheck)> {
     let mut d = Driver::new(Exact::new(), oracle, stats.then(|| "exact".to_string()));
-    let t = metric.len() as u64;
+    let t = metric.len();
     let mut worst = 0.0f64;
+    let mut rc = RefCheck::default();
     let refs_rx: Vec<Receiver<Arc<RefBatch>>> = refs.into_iter().collect();
     while let Ok(batch) = rx.recv() {
         let r = feed::next_refs(&refs_rx, &batch)?;
         let first = batch.first;
+        let cb = counts.as_ref().and_then(|c| c.recv().ok());
+        if cb.is_none() {
+            counts = None;
+        }
+        if let Some(cb) = &cb {
+            if cb.first != first {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("sets-counts batch at {} for records at {}", cb.first, first)));
+            }
+        }
         d.batch(&batch, |rec, tx, c, alg| {
-            if rec % every == 0 {
-                let mut p = Vec::new();
-                alg.emit(c, &mut p);
-                if let Some(rb) = r.first() {
-                    if let Some(RefVal::Laplace(want)) = &rb.vals[(rec - first) as usize] {
-                        let (_, e) = lap_err(&metrics::laplace(&p), want);
-                        worst = worst.max(e);
-                        if e > 1e-9 {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("record {} (tx {}): the exact colour's Laplace values differ from the reference by {:e}", rec, tx, e),
-                            ));
+            let sampled = rec % every == 0;
+            let want_terms = side.wants_terms(rec) || (cb.is_some() && sampled);
+            // The exact estimate: for the configs' metrics, and for the
+            // Laplace reference whenever one is open, configs or not.
+            let want_p = sampled && (configs > 0 || !refs_rx.is_empty());
+            if !want_p && !want_terms {
+                return Ok(());
+            }
+            let terms = want_terms.then(|| alg.terms(c));
+            if sampled {
+                if let (Some(cb), Some(t)) = (&cb, &terms) {
+                    if let Some(&want) = cb.vals.get((rec - first) as usize) {
+                        rc.checked += 1;
+                        if t.len() != want as usize {
+                            rc.mismatch += 1;
+                            rc.first_bad.get_or_insert((rec, t.len(), want));
                         }
                     }
                 }
-                let _ = metric[((rec / every) % t) as usize].send(Msg::Exact { rec, tx, p: Arc::new(p) });
+            }
+            let p = want_p.then(|| {
+                let mut p = Vec::new();
+                alg.emit(c, &mut p);
+                p
+            });
+            if let (Some(p), Some(rb)) = (&p, r.first()) {
+                if let Some(RefVal::Laplace(want)) = &rb.vals[(rec - first) as usize] {
+                    let (_, e) = lap_err(&metrics::laplace(p), want);
+                    worst = worst.max(e);
+                    if e > 1e-9 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("record {} (tx {}): the exact colour's Laplace values differ from the reference by {:e}", rec, tx, e),
+                        ));
+                    }
+                }
+            }
+            if side.expected(configs, rec) > 0 {
+                let terms = terms.filter(|_| side.wants_terms(rec)).map(Arc::new);
+                let p = p.filter(|_| configs > 0).map(Arc::new);
+                let _ = metric[slot(rec, t)].send(Msg::Exact { rec, tx, p, terms });
             }
             Ok(())
         })?;
@@ -343,23 +681,37 @@ fn exact_thread(
     let u = d.alg.usage();
     let (busy, records) = (d.busy, d.records);
     d.finish();
-    Ok(Cost { label: "exact".into(), busy, records, peak_entries: u.peak_entries, peak_sketches: 0, reductions: 0, off_by_one: 0 })
+    Ok((Cost { label: "exact".into(), busy, records, peak_entries: u.peak_entries, peak_sketches: 0, reductions: 0, off_by_one: 0 }, rc))
 }
 
 pub fn run(opts: EvalOpts, input: Box<dyn io::Read + Send>, oracle: Option<Arc<Oracle>>, keys: HashMap<u64, Arc<Keys>>) -> io::Result<()> {
+    // The side stores only: a repeated --config is what eval always accepted.
+    crate::count::unique_labels("eval", "--kmv", opts.kmv.iter().map(|s| s.label()))?;
+    crate::count::unique_labels("eval", "--l1", opts.l1.iter().map(|s| s.label()))?;
     std::fs::create_dir_all(&opts.out)?;
     let configs = Arc::new(opts.configs.clone());
     let keys = Arc::new(keys);
     let t = opts.metric_threads.max(1);
     let every = opts.every.max(1);
+    let side = Arc::new(Side {
+        kmv: opts.kmv.clone(),
+        perms: opts
+            .kmv
+            .iter()
+            .map(|s| opts.perms.get(&(s.seed, s.bits)).cloned().unwrap_or_else(|| Arc::new(Perm::new(s.seed, s.bits))))
+            .collect(),
+        l1: opts.l1.clone(),
+        every,
+        l1_every: opts.l1_every.max(1),
+    });
 
     let mut metric_tx = Vec::new();
     let mut metric_handles = Vec::new();
     for i in 0..t {
         let (tx, rx) = channel::<Msg>();
         metric_tx.push(tx);
-        let (c, k) = (configs.clone(), keys.clone());
-        metric_handles.push(std::thread::Builder::new().name(format!("metric-{}", i)).spawn(move || metric_thread(rx, c, k))?);
+        let (c, k, s) = (configs.clone(), keys.clone(), side.clone());
+        metric_handles.push(std::thread::Builder::new().name(format!("metric-{}", i)).spawn(move || metric_thread(rx, c, k, s))?);
     }
 
     let mut senders = Vec::new();
@@ -376,6 +728,18 @@ pub fn run(opts: EvalOpts, input: Box<dyn io::Read + Send>, oracle: Option<Arc<O
                 .spawn(move || sketch_thread(cfg, i, k, o, rx, m, every, stats))?,
         );
     }
+    for (i, spec) in opts.kmv.iter().enumerate() {
+        let (tx, rx) = sync_channel::<Arc<Batch>>(8);
+        senders.push(tx);
+        let (spec, perm, o, m, stats) = (*spec, side.perms[i].clone(), oracle.clone(), metric_tx.clone(), opts.stats);
+        stores.push(std::thread::Builder::new().name(spec.label()).spawn(move || kmv_thread(i, spec, perm, o, rx, m, every, stats))?);
+    }
+    for (i, spec) in opts.l1.iter().enumerate() {
+        let (tx, rx) = sync_channel::<Arc<Batch>>(8);
+        senders.push(tx);
+        let (spec, o, m, stats, le) = (*spec, oracle.clone(), metric_tx.clone(), opts.stats, side.l1_every);
+        stores.push(std::thread::Builder::new().name(spec.label()).spawn(move || l1_thread(i, spec, o, rx, m, le, stats))?);
+    }
     let (tx, rx) = sync_channel::<Arc<Batch>>(8);
     senders.push(tx);
     let mut ref_handle = None;
@@ -387,8 +751,17 @@ pub fn run(opts: EvalOpts, input: Box<dyn io::Read + Send>, oracle: Option<Arc<O
         }
         None => None,
     };
-    let (o, m, stats) = (oracle.clone(), metric_tx.clone(), opts.stats);
-    stores.push(std::thread::Builder::new().name("exact".into()).spawn(move || exact_thread(o, rx, ref_rx, m, every, stats))?);
+    let mut counts_handle = None;
+    let counts_rx = match &opts.sets_counts {
+        Some(path) => {
+            let (ctx, crx) = sync_channel(8);
+            counts_handle = Some(feed::spawn_counts(path.clone(), opts.limit, vec![ctx]));
+            Some(crx)
+        }
+        None => None,
+    };
+    let (o, m, stats, s, nc) = (oracle.clone(), metric_tx.clone(), opts.stats, side.clone(), configs.len());
+    let exact = std::thread::Builder::new().name("exact".into()).spawn(move || exact_thread(o, rx, ref_rx, counts_rx, m, every, s, nc, stats))?;
     drop(metric_tx);
 
     let reader = feed::spawn_reader(input, opts.limit, senders);
@@ -402,22 +775,53 @@ pub fn run(opts: EvalOpts, input: Box<dyn io::Read + Send>, oracle: Option<Arc<O
             }
         }
     }
+    let mut ref_check = RefCheck::default();
+    match exact.join().expect("the exact store panicked") {
+        Ok((c, rc)) => {
+            costs.push(c);
+            ref_check = rc;
+        }
+        Err(e) => {
+            first_err.get_or_insert(e);
+        }
+    }
     let read = reader.join().expect("the reader panicked");
     // A reference stopped early by its consumer is not an error; one that
     // failed is the cause of its consumer's "a reference ended".
     let ref_results = ref_handle.into_iter().map(|h| h.join().expect("a reference reader panicked")).collect();
+    let counts_result = counts_handle.map(|h| h.join().expect("the sets-counts reader panicked"));
     let mut rows: Vec<Row> = Vec::new();
+    let mut kmv_rows: Vec<KmvRow> = Vec::new();
+    let mut l1_rows: Vec<L1Row> = Vec::new();
     for h in metric_handles {
-        rows.extend(h.join().expect("a metric thread panicked"));
+        let o = h.join().expect("a metric thread panicked");
+        rows.extend(o.rows);
+        kmv_rows.extend(o.kmv);
+        l1_rows.extend(o.l1);
     }
     if let Some(e) = feed::root_cause(first_err, ref_results) {
         return Err(e);
     }
+    if let Some(Err(e)) = counts_result {
+        return Err(e);
+    }
     let records = read?;
     rows.sort_by_key(|r| (r.rec, r.cfg));
+    kmv_rows.sort_by_key(|r| (r.rec, r.spec));
+    l1_rows.sort_by_key(|r| (r.rec, r.spec));
 
-    write_rows(&format!("{}/rows.tsv", opts.out), &rows, &configs)?;
-    let worst = write_summary(&format!("{}/summary.tsv", opts.out), &format!("{}/seeds.tsv", opts.out), &rows, &configs)?;
+    let mut worst = Vec::new();
+    if !configs.is_empty() {
+        write_rows(&format!("{}/rows.tsv", opts.out), &rows, &configs)?;
+        worst = write_summary(&format!("{}/summary.tsv", opts.out), &format!("{}/seeds.tsv", opts.out), &rows, &configs)?;
+    }
+    let mut kmv_bad = 0;
+    if !side.kmv.is_empty() || opts.sets_counts.is_some() {
+        kmv_bad = write_kmv(&opts.out, &kmv_rows, &side, &ref_check, opts.sets_counts.is_some())?;
+    }
+    if !side.l1.is_empty() {
+        write_l1(&opts.out, &l1_rows, &side)?;
+    }
     write_cost(&format!("{}/cost.tsv", opts.out), &costs)?;
     eprintln!(
         "sketch eval: {} records, {} rows over {} configs written to {}",
@@ -434,7 +838,180 @@ pub fn run(opts: EvalOpts, input: Box<dyn io::Read + Send>, oracle: Option<Arc<O
             ));
         }
     }
+    if kmv_bad > 0 || ref_check.mismatch > 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} KMV sketch(es) differ from the bottom-k of the exact support and {} support size(s) from the sets-counts reference (first: {:?}); see {}/kmv-summary.tsv",
+                kmv_bad, ref_check.mismatch, ref_check.first_bad, opts.out
+            ),
+        ));
+    }
     Ok(())
+}
+
+/// `kmv-rows.tsv`, `kmv-summary.tsv` and `kmv-seeds.tsv`; answers the number
+/// of set mismatches.
+///
+/// The summary's strata are descriptive (one run, one permutation, correlated
+/// rows); `kmv-seeds.tsv` is where a bias or a variance is tested, with the
+/// seeds as the unit ([`crate::count::SeedStrata`]).
+fn write_kmv(out: &str, rows: &[KmvRow], side: &Side, rc: &RefCheck, have_ref: bool) -> io::Result<u64> {
+    let f = metrics::fmt;
+    let labels: Vec<String> = side.kmv.iter().map(|s| s.label()).collect();
+    let mut w = BufWriter::new(File::create(format!("{}/kmv-rows.tsv", out))?);
+    writeln!(w, "rec\ttx\tlabel\tn_sets\tn_pos\tlen\tfull\tuniv\tn_hat\trel_err\tn_hat_M\trel_err_M\tset_ok")?;
+    for r in rows {
+        let n = r.n(side) as f64;
+        writeln!(
+            w,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            r.rec,
+            r.tx,
+            labels[r.spec],
+            r.n_sets,
+            r.n_pos,
+            r.len,
+            r.full as u8,
+            r.univ,
+            f(r.n_hat),
+            f(r.n_hat / n - 1.0),
+            f(r.n_hat_m),
+            f(r.n_hat_m / n - 1.0),
+            r.set_ok as u8
+        )?;
+    }
+    w.flush()?;
+
+    let mut w = BufWriter::new(File::create(format!("{}/kmv-summary.tsv", out))?);
+    writeln!(w, "label\tsupport\testimator\tstratum\trecords\tmean_rel_err\trms_rel_err\ttheory_rse\trms_over_theory\tblock_se\tblocks")?;
+    let mut bad_total = 0;
+    let mut idx = [0usize; 3];
+    for (si, spec) in side.kmv.iter().enumerate() {
+        let mine: Vec<&KmvRow> = rows.iter().filter(|r| r.spec == si).collect();
+        for (e, est) in crate::count::ESTIMATORS.iter().enumerate() {
+            let mut acc = vec![(0u64, 0.0f64, 0.0f64, 0.0f64, metrics::BlockMeans::default()); kmv::N_STRATA];
+            for r in &mine {
+                let n = r.n(side);
+                let (x, u) = if e == 0 { (r.n_hat, r.univ) } else { (r.n_hat_m, side.perms[si].universe()) };
+                let err = x / n as f64 - 1.0;
+                let th = if n > spec.k { kmv::count_se(n as f64, spec.k, u) / n as f64 } else { 0.0 };
+                let k = kmv::strata_of(n as u64, spec.k, &mut idx);
+                for &s in &idx[..k] {
+                    let a = &mut acc[s];
+                    a.0 += 1;
+                    a.1 += err;
+                    a.2 += err * err;
+                    a.3 += th * th;
+                    a.4.add(r.rec, err);
+                }
+            }
+            for (s, a) in acc.iter().enumerate() {
+                if a.0 == 0 {
+                    continue;
+                }
+                let nf = a.0 as f64;
+                let (rms, th) = ((a.2 / nf).sqrt(), (a.3 / nf).sqrt());
+                let (bse, blocks) = a.4.se();
+                writeln!(
+                    w,
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    labels[si],
+                    spec.support.name(),
+                    est,
+                    kmv::stratum_name(s),
+                    a.0,
+                    f(a.1 / nf),
+                    f(rms),
+                    f(th),
+                    f(if th > 0.0 { rms / th } else { f64::NAN }),
+                    f(bse),
+                    blocks
+                )?;
+            }
+        }
+        let bad = mine.iter().filter(|r| !r.set_ok).count() as u64;
+        bad_total += bad;
+        writeln!(w, "{}\t{}\tNA\tset_mismatch\t{}\t{}\tNA\tNA\tNA\tNA\tNA", labels[si], spec.support.name(), mine.len(), bad)?;
+    }
+    if have_ref {
+        writeln!(w, "sets-counts\tsets\tNA\tsupport_ref_mismatch\t{}\t{}\tNA\tNA\tNA\tNA\tNA", rc.checked, rc.mismatch)?;
+    }
+    w.flush()?;
+
+    // Seed families: rows grouped by record, the seeds side by side.
+    let seeds_path = format!("{}/kmv-seeds.tsv", out);
+    let mut fams: Vec<(String, Vec<usize>)> = Vec::new();
+    for (si, l) in labels.iter().enumerate() {
+        let fam = metrics::family(l);
+        match fams.iter_mut().find(|x| x.0 == fam) {
+            Some(x) => x.1.push(si),
+            None => fams.push((fam, vec![si])),
+        }
+    }
+    fams.retain(|x| x.1.len() >= 2);
+    if fams.is_empty() {
+        let _ = std::fs::remove_file(&seeds_path);
+        return Ok(bad_total);
+    }
+    let mut w = BufWriter::new(File::create(&seeds_path)?);
+    writeln!(w, "{}", crate::count::SEEDS_HEADER)?;
+    for (fam, members) in &fams {
+        let spec = side.kmv[members[0]];
+        let s = members.len();
+        let mut tables = [crate::count::SeedStrata::new(s), crate::count::SeedStrata::new(s)];
+        let mut by_rec: std::collections::BTreeMap<u64, Vec<Option<&KmvRow>>> = std::collections::BTreeMap::new();
+        for r in rows {
+            if let Some(pos) = members.iter().position(|&m| m == r.spec) {
+                by_rec.entry(r.rec).or_insert_with(|| vec![None; s])[pos] = Some(r);
+            }
+        }
+        for v in by_rec.values() {
+            if v.iter().any(|x| x.is_none()) {
+                continue;
+            }
+            let r0 = v[0].expect("checked");
+            let n = r0.n(side);
+            for (e, table) in tables.iter_mut().enumerate() {
+                let es: Vec<f64> = v
+                    .iter()
+                    .map(|x| {
+                        let x = x.expect("checked");
+                        (if e == 0 { x.n_hat } else { x.n_hat_m }) / n as f64 - 1.0
+                    })
+                    .collect();
+                let u = if e == 0 { r0.univ } else { side.perms[members[0]].universe() };
+                let th = if n > spec.k { kmv::count_se(n as f64, spec.k, u) / n as f64 } else { 0.0 };
+                table.add(n as u64, spec.k, &es, th);
+            }
+        }
+        for (e, t) in tables.iter().enumerate() {
+            crate::count::write_seed_lines(&mut w, fam, crate::count::ESTIMATORS[e], s, &t.lines(crate::count::ALPHA))?;
+        }
+    }
+    w.flush()?;
+    Ok(bad_total)
+}
+
+/// `l1-rows.tsv` and `l1-summary.tsv` (max and p99 of the worst relative
+/// deviation per record, per label).
+fn write_l1(out: &str, rows: &[L1Row], side: &Side) -> io::Result<()> {
+    let f = metrics::fmt;
+    let labels: Vec<String> = side.l1.iter().map(|s| s.label()).collect();
+    let mut w = BufWriter::new(File::create(format!("{}/l1-rows.tsv", out))?);
+    writeln!(w, "rec\tlabel\tn\tmax_rel_dev")?;
+    for r in rows {
+        writeln!(w, "{}\t{}\t{}\t{}", r.rec, labels[r.spec], r.n, f(r.max_rel_dev))?;
+    }
+    w.flush()?;
+    let mut w = BufWriter::new(File::create(format!("{}/l1-summary.tsv", out))?);
+    writeln!(w, "label\trecords\tmax_rel_dev\tp99_rel_dev")?;
+    for (si, l) in labels.iter().enumerate() {
+        let mut v: Vec<f64> = rows.iter().filter(|r| r.spec == si).map(|r| r.max_rel_dev).collect();
+        v.sort_by(|a, b| a.total_cmp(b));
+        writeln!(w, "{}\t{}\t{}\t{}", l, v.len(), f(v.last().copied().unwrap_or(f64::NAN)), f(quantile_sorted(&v, 0.99)))?;
+    }
+    w.flush()
 }
 
 fn write_rows(path: &str, rows: &[Row], configs: &[Config]) -> io::Result<()> {
