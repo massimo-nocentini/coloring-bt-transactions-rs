@@ -35,9 +35,12 @@
 //! finalBCUTXO_2022.sets-counts.*.txt` holds its exact size for the first
 //! 31.2M records, which is why it is the default.  `support=pos` skips the
 //! operands of share 0 and is the support of the *weighted* colour, `{b :
-//! c_t(b) > 0}` -- about 2.5% smaller.  Every output names which one in its
-//! label (`kmv-k1024-s1-sets`, `-pos`), since the two differ by more than a
-//! `k = 1024` estimate's error.
+//! c_t(b) > 0}`, in exact arithmetic: in f64 a coefficient can underflow to
+//! 0 at depth while its block stays in `pos` ([`crate::exact`]).  On this
+//! chain the two are almost the same set: over all 31,187,785 records of
+//! the 2022 file the `k = 1024` seed-1 streams of `sets` and `pos` differ
+//! in 104 records.  Every output still names which one in its label
+//! (`kmv-k1024-s1-sets`, `-pos`).
 //!
 //! ## Counting: the universe is `[0, beta]`, not `[0, M)`
 //!

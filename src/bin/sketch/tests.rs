@@ -793,19 +793,21 @@ fn bottom_k(set: &BTreeSet<u32>, perm: &Perm, k: usize) -> Owned {
 /// 3, 16, 64}: every record's sketch is `K_k` of its brute-force support,
 /// `full` iff the support exceeds k, a whole sketch counts exactly, and the
 /// two supports are the exact store's (`sets`: every term, zeros included;
-/// `pos`: the nonzero ones).
+/// `pos`: the terms outside [`Exact::off`], which here are the nonzero ones).
 #[test]
 fn kmv_is_the_bottom_k_of_the_support_through_the_dag() {
     let perm = Arc::new(Perm::new(7, TEST_BITS));
     for (name, records) in [("stream", stream(2500, 300, 31)), ("dag", dag())] {
         let oracle = oracle_of(&records, &format!("tk3-{}", name));
         for o in [None, Some(oracle)] {
-            let (terms, _) = fold_all(Exact::new(), &records, o.clone(), |c, alg| alg.terms(c));
+            let (terms, _) = fold_all(Exact::new(), &records, o.clone(), |c, alg| (alg.terms(c), alg.off(c)));
             for support in [Support::Sets, Support::Pos] {
                 let pos = support == Support::Pos;
                 let (sets, _) = fold_all(SetAlg { pos }, &records, o.clone(), |c, _| (**c).clone());
-                for (t, s) in terms.iter().zip(&sets) {
-                    let want: BTreeSet<u32> = t.iter().filter(|x| !pos || x.1 != 0.0).map(|x| x.0).collect();
+                for ((t, off), s) in terms.iter().zip(&sets) {
+                    let want: BTreeSet<u32> = t.iter().filter(|x| !pos || off.binary_search(&x.0).is_err()).map(|x| x.0).collect();
+                    let nonzero: BTreeSet<u32> = t.iter().filter(|x| !pos || x.1 != 0.0).map(|x| x.0).collect();
+                    assert_eq!(want, nonzero, "{}: no coefficient underflows here", name);
                     assert_eq!(&want, s, "{} {:?}: the reference support is the exact store's", name, support);
                 }
                 for k in [2usize, 3, 16, 64] {
@@ -1486,4 +1488,92 @@ fn check_ref_runs_without_a_config() {
     };
     let e = crate::eval::run(o, input(&records), None, HashMap::new()).unwrap_err();
     assert!(e.to_string().contains("Laplace values differ from the reference"), "{}", e);
+}
+
+/// The `pos` reference is reachability through positive shares, not the
+/// nonzero terms.  Block 1000's coin is diluted 1e18-fold at each of 30
+/// steps, so its f64 coefficient underflows to 0 although every share on its
+/// path is positive; a zero-amount input (block 3000) is the honest way out
+/// of `pos`.  The exact store's `pos` support is the brute-force one on
+/// every record, and `eval` and `pick`/`pairs` judge the `pos` KMV by it.
+#[test]
+fn an_underflowed_coefficient_stays_in_the_pos_support() {
+    let mut records = record(1000, 0, &[], 1);
+    records += &record(2000, 1, &[], 40);
+    records += &record(3000, 2, &[], 1);
+    let mut prev = 0;
+    for tx in 3..33 {
+        records += &record(4000 + tx, tx, &[(prev, 1), (1, 1_000_000_000_000_000_000)], 1);
+        prev = tx;
+    }
+    records += &record(5000, 33, &[(prev, 1), (2, 0)], 1);
+    let (terms, _) = fold_all(Exact::new(), &records, None, |c, alg| (alg.terms(c), alg.off(c)));
+    let (sets, _) = fold_all(SetAlg { pos: false }, &records, None, |c, _| (**c).clone());
+    let (pos, _) = fold_all(SetAlg { pos: true }, &records, None, |c, _| (**c).clone());
+    for (i, ((t, off), (s, p))) in terms.iter().zip(sets.iter().zip(&pos)).enumerate() {
+        let all: BTreeSet<u32> = t.iter().map(|x| x.0).collect();
+        let reach: BTreeSet<u32> = all.iter().copied().filter(|b| off.binary_search(b).is_err()).collect();
+        assert_eq!((&all, &reach), (s, p), "record {}", i);
+    }
+    // The coefficient did underflow, and the nonzero terms miss block 1000.
+    let (last, off) = &terms[33];
+    assert_eq!(last.iter().find(|x| x.0 == 1000).unwrap().1, 0.0);
+    assert_eq!(*off, vec![3000]);
+    assert_eq!(last.iter().filter(|x| x.1 != 0.0).count(), 1);
+    assert_eq!(pos[33].len(), 2);
+
+    let dir = scratch("underflow");
+    let kspecs = vec![spec(2, 1, Support::Sets), spec(2, 1, Support::Pos), spec(4, 1, Support::Pos)];
+    let o = crate::eval::EvalOpts {
+        configs: vec![],
+        out: format!("{}/eval", dir),
+        limit: u64::MAX,
+        every: 1,
+        metric_threads: 2,
+        check_ref: None,
+        stats: false,
+        perms: count::perms_for(&kspecs),
+        kmv: kspecs.clone(),
+        l1: vec![],
+        l1_every: 1,
+        sets_counts: None,
+    };
+    crate::eval::run(o, input(&records), None, HashMap::new()).unwrap();
+    let rows = std::fs::read_to_string(format!("{}/eval/kmv-rows.tsv", dir)).unwrap();
+    let last: Vec<&str> = rows.lines().filter(|l| l.starts_with("33\t")).collect();
+    assert_eq!(last.len(), 3);
+    for l in last {
+        let c: Vec<&str> = l.split('\t').collect();
+        assert_eq!((c[3], c[4]), ("3", "2"), "n_sets and n_pos: {}", l);
+    }
+
+    let sel = format!("{}/sel.txt", dir);
+    std::fs::write(&sel, "31\n32\n33\n").unwrap();
+    let out = format!("{}/pick", dir);
+    let po = PickOpts {
+        select: sel,
+        out: out.clone(),
+        limit: u64::MAX,
+        configs: vec![],
+        kmv: kspecs.clone(),
+        l1: vec![],
+        exact: true,
+        stats: false,
+    };
+    pick::run(po, input(&records), None, &HashMap::new(), &count::perms_for(&kspecs)).unwrap();
+    let ex = pick::read_exact(std::fs::File::open(format!("{}/exact.bin", out)).unwrap()).unwrap();
+    assert_eq!(ex[2].1, vec![3000]);
+    let pr = format!("{}/pairs", dir);
+    crate::pairs::run(crate::pairs::PairsOpts { input: out, out: pr.clone(), groups: vec![], varopt_text: None, threads: 1 }).unwrap();
+    let rows = std::fs::read_to_string(format!("{}/rows.all.tsv", pr)).unwrap();
+    let h: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+    let (xn, xp) = (h.iter().position(|x| *x == "X_n").unwrap(), h.iter().position(|x| *x == "X_n_pos").unwrap());
+    let r: Vec<&str> = rows.lines().nth(3).unwrap().split('\t').collect();
+    assert_eq!((r[xn], r[xp]), ("3", "2"));
+    let pairs = std::fs::read_to_string(format!("{}/pairs.all.tsv", pr)).unwrap();
+    let h: Vec<&str> = pairs.lines().next().unwrap().split('\t').collect();
+    let jp = h.iter().position(|x| *x == "X_J_pos").unwrap();
+    // Records 32 and 33 have the same pos support, {1000, 2000}.
+    let l = pairs.lines().find(|l| l.starts_with("1\t2\t")).unwrap();
+    assert_eq!(l.split('\t').nth(jp).unwrap(), metrics::fmt(1.0));
 }

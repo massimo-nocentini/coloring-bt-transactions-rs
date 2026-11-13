@@ -31,7 +31,9 @@
 //!   the records of one run share one permutation, so their errors are
 //!   correlated -- within a 10M bucket the error is mostly one shared offset
 //!   -- and a stratum's RMS is about one draw of the theory, not an average
-//!   of many.
+//!   of many.  Over the 31.2M records of the 2022 file at `k = 1024`, one
+//!   seed's RMS/theory in the deepest stratum ranged from 0.36 to 1.85 over
+//!   16 seeds, so a per-run band (say [0.85, 1.2]) is not a test.
 //! - **Across seeds** (`count-seeds.tsv`), the only gates: seeds are the unit.
 //!   For specs that differ only by `seed=`, each seed's stratum mean is one
 //!   draw, and the bias test is Student's `t` over the seeds with the

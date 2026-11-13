@@ -22,9 +22,11 @@
 //! - `varopt.<label>.bin` (any `--config`, whatever its variant): the
 //!   selected records in the `SKETCH01` format, header and trailer included,
 //!   so `decode` reads it as it reads a whole-chain file.
-//! - `exact.bin` (`--exact`): `"EXSEL001" | u32 N`, then per record `u32 n |
-//!   n x (u32 b, f64 w)` -- every term of the exact colour, zero
-//!   coefficients included, so both supports and the colour are in it.
+//! - `exact.bin` (`--exact`): `"EXSEL002" | u32 N`, then per record `u32 n |
+//!   n x (u32 b, f64 w) | u32 z | z x u32 b` -- every term of the exact
+//!   colour, zero coefficients included (the `sets` support and the colour),
+//!   then the blocks among them outside the `pos` support, ascending
+//!   ([`crate::exact::Exact::off`]; almost always none).
 
 use crate::algebra::{Algebra, Config, Sketcher, Variant};
 use crate::chain::snapshot;
@@ -254,6 +256,11 @@ pub fn run(
                     w.write_all(&b.to_le_bytes())?;
                     w.write_all(&x.to_le_bytes())?;
                 }
+                let off = alg.off(c);
+                w.write_all(&(off.len() as u32).to_le_bytes())?;
+                for b in off {
+                    w.write_all(&b.to_le_bytes())?;
+                }
                 Ok(())
             })?;
             w.flush()?;
@@ -284,14 +291,15 @@ pub fn run(
 }
 
 /// `exact.bin`'s magic.
-pub const EXACT_MAGIC: &[u8; 8] = b"EXSEL001";
+pub const EXACT_MAGIC: &[u8; 8] = b"EXSEL002";
 
-/// `exact.bin` read back: each selected record's terms, zeros included.
-pub fn read_exact(mut input: impl io::Read) -> io::Result<Vec<Vec<(u32, f64)>>> {
+/// `exact.bin` read back: each selected record's terms, zeros included, and
+/// the blocks among them outside the `pos` support.
+pub fn read_exact(mut input: impl io::Read) -> io::Result<Vec<(Vec<(u32, f64)>, Vec<u32>)>> {
     let mut h = [0u8; 12];
     input.read_exact(&mut h)?;
     if &h[..8] != EXACT_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "not an EXSEL001 file"));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "not an EXSEL002 file"));
     }
     let n = u32::from_le_bytes(h[8..12].try_into().unwrap()) as usize;
     let mut out = Vec::with_capacity(n);
@@ -306,7 +314,17 @@ pub fn read_exact(mut input: impl io::Read) -> io::Result<Vec<Vec<(u32, f64)>>> 
             input.read_exact(&mut w8)?;
             v.push((u32::from_le_bytes(w4), f64::from_le_bytes(w8)));
         }
-        out.push(v);
+        input.read_exact(&mut w4)?;
+        let z = u32::from_le_bytes(w4) as usize;
+        if z > len {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "more blocks outside pos than terms"));
+        }
+        let mut off = Vec::with_capacity(z);
+        for _ in 0..z {
+            input.read_exact(&mut w4)?;
+            off.push(u32::from_le_bytes(w4));
+        }
+        out.push((v, off));
     }
     Ok(out)
 }

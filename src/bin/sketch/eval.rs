@@ -47,11 +47,12 @@
 //!
 //! - **KMV**: on every sampled record the sketch must *equal* the `k`
 //!   lowest-ranked blocks of the exact support -- every term of the exact
-//!   colour for `support=sets`, zero coefficients included, the nonzero ones
-//!   for `pos` -- with `full` iff the support exceeds `k` (`set_mismatch`,
-//!   which must be 0; T3 says it is).  A coefficient that underflowed to 0
-//!   in f64 along every path would show here as a `pos` mismatch the sketch
-//!   is not to blame for; none has been seen.  Both counts are compared with
+//!   colour for `support=sets`, zero coefficients included, and for `pos`
+//!   the blocks a path of positive shares reaches, which the exact store
+//!   folds by set union ([`crate::exact`]; not the nonzero terms, since a
+//!   coefficient underflows to 0 in f64 at depth) -- with `full` iff the
+//!   support exceeds `k` (`set_mismatch`, which must be 0; T3 says it
+//!   is).  Both counts are compared with
 //!   the exact size (`kmv-rows.tsv`, `kmv-summary.tsv`), and seed replicates
 //!   are tested in `kmv-seeds.tsv` with the seeds as the unit.
 //! - **`--sets-counts`**: the exact support size of every sampled record
@@ -129,7 +130,7 @@ pub struct SketchPayload {
 enum Msg {
     /// The exact colour's estimate (for the configs) and its terms (for the
     /// side stores), each when someone needs it.
-    Exact { rec: u64, tx: usize, p: Option<Arc<Vec<(u32, f64)>>>, terms: Option<Arc<Vec<(u32, f64)>>> },
+    Exact { rec: u64, tx: usize, p: Option<Arc<Vec<(u32, f64)>>>, terms: Option<Arc<ExactTerms>> },
     Sketch { rec: u64, payload: SketchPayload },
     Kmv { rec: u64, payload: KmvPayload },
     L1 { rec: u64, spec: usize, v: Vec<f64> },
@@ -248,7 +249,7 @@ pub fn row(cfg: &Config, cfg_id: usize, keys: Option<&Keys>, rec: u64, tx: usize
 struct Pending {
     tx: usize,
     exact: Option<Arc<Vec<(u32, f64)>>>,
-    terms: Option<Arc<Vec<(u32, f64)>>>,
+    terms: Option<Arc<ExactTerms>>,
     waiting: Vec<Payload>,
     done: usize,
     /// `A . C_exact` and its denominators, per L1 seed, once computed.
@@ -288,6 +289,13 @@ impl Side {
 /// uses the same one.
 fn slot(rec: u64, t: usize) -> usize {
     (hash::splitmix64(rec) % t as u64) as usize
+}
+
+/// A sampled record's exact terms, zeros included (the `sets` support), and
+/// those of their blocks that the `pos` support leaves out ([`Exact::off`]).
+pub struct ExactTerms {
+    pub terms: Vec<(u32, f64)>,
+    pub off: Vec<u32>,
 }
 
 /// One KMV store's sketch of a sampled record and its two counts.
@@ -345,14 +353,15 @@ enum Payload {
 
 /// The KMV check: the bottom-k of the exact support under the spec's
 /// permutation, against the sketch.
-fn kmv_row(side: &Side, rec: u64, tx: usize, terms: &[(u32, f64)], p: &KmvPayload) -> KmvRow {
+fn kmv_row(side: &Side, rec: u64, tx: usize, t: &ExactTerms, p: &KmvPayload) -> KmvRow {
     let spec = &side.kmv[p.spec];
     let perm = &side.perms[p.spec];
-    let n_sets = terms.len();
-    let n_pos = terms.iter().filter(|x| x.1 != 0.0).count();
-    let mut r: Vec<u32> = terms
+    let n_sets = t.terms.len();
+    let n_pos = n_sets - t.off.len();
+    let mut r: Vec<u32> = t
+        .terms
         .iter()
-        .filter(|x| spec.support == Support::Sets || x.1 != 0.0)
+        .filter(|x| spec.support == Support::Sets || t.off.binary_search(&x.0).is_err())
         .map(|x| perm.rank(x.0))
         .collect();
     let n = r.len();
@@ -445,7 +454,7 @@ fn metric_thread(rx: Receiver<Msg>, configs: Arc<Vec<Config>>, keys: Arc<HashMap
                     let s = &side.l1[spec];
                     let terms = e.terms.clone().expect("the terms came with the record");
                     let m_max = m_of[&s.seed];
-                    let truth = e.l1_truth.entry(s.seed).or_insert_with(|| Arc::new(l1_truth(s.seed, m_max, &terms))).clone();
+                    let truth = e.l1_truth.entry(s.seed).or_insert_with(|| Arc::new(l1_truth(s.seed, m_max, &terms.terms))).clone();
                     let (ac, den) = &*truth;
                     let mut worst = 0.0f64;
                     for j in 0..s.m {
@@ -453,7 +462,7 @@ fn metric_thread(rx: Receiver<Msg>, configs: Arc<Vec<Config>>, keys: Arc<HashMap
                         let rel = if den[j] > 0.0 { d / den[j] } else { d };
                         worst = worst.max(rel);
                     }
-                    out.l1.push(L1Row { rec, spec, n: terms.len(), max_rel_dev: worst });
+                    out.l1.push(L1Row { rec, spec, n: terms.terms.len(), max_rel_dev: worst });
                 }
             }
             e.done += 1;
@@ -638,14 +647,14 @@ fn exact_thread(
             if !want_p && !want_terms {
                 return Ok(());
             }
-            let terms = want_terms.then(|| alg.terms(c));
+            let terms = want_terms.then(|| ExactTerms { terms: alg.terms(c), off: alg.off(c) });
             if sampled {
                 if let (Some(cb), Some(t)) = (&cb, &terms) {
                     if let Some(&want) = cb.vals.get((rec - first) as usize) {
                         rc.checked += 1;
-                        if t.len() != want as usize {
+                        if t.terms.len() != want as usize {
                             rc.mismatch += 1;
-                            rc.first_bad.get_or_insert((rec, t.len(), want));
+                            rc.first_bad.get_or_insert((rec, t.terms.len(), want));
                         }
                     }
                 }

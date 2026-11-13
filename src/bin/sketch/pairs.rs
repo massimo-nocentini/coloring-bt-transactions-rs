@@ -75,8 +75,11 @@ struct VoSrc {
 struct ExactRec {
     /// Every block of the `--sets` support, ascending.
     sets: Vec<u32>,
-    /// The colour, normalised, zeros left out: the `pos` support and weights.
-    pos: Vec<(u32, f64)>,
+    /// The blocks a path of positive shares reaches, ascending: the `pos`
+    /// support (a superset of the nonzero terms; see [`crate::exact`]).
+    pos: Vec<u32>,
+    /// The colour, normalised, zeros left out.
+    w: Vec<(u32, f64)>,
 }
 
 /// Every source a `pick` directory holds.
@@ -176,7 +179,11 @@ fn load(opts: &PairsOpts) -> io::Result<Sources> {
             src.exact = Some(
                 terms
                     .into_iter()
-                    .map(|t| ExactRec { sets: t.iter().map(|x| x.0).collect(), pos: normalise(t.into_iter()) })
+                    .map(|(t, off)| ExactRec {
+                        sets: t.iter().map(|x| x.0).collect(),
+                        pos: t.iter().map(|x| x.0).filter(|b| off.binary_search(b).is_err()).collect(),
+                        w: normalise(t.into_iter()),
+                    })
                     .collect(),
             );
         }
@@ -247,8 +254,8 @@ struct XPair {
 
 fn x_pair(a: &ExactRec, b: &ExactRec) -> XPair {
     let (inter, union) = inter_union(&a.sets, &b.sets, |x| *x);
-    let (ip, up) = inter_union(&a.pos, &b.pos, |x| x.0);
-    let (tv, smin, smax) = tv_min_max(&a.pos, &b.pos);
+    let (ip, up) = inter_union(&a.pos, &b.pos, |x| *x);
+    let (tv, smin, smax) = tv_min_max(&a.w, &b.w);
     let ratio = |x: u64, y: usize| if y == 0 { f64::NAN } else { x as f64 / y as f64 };
     XPair {
         j: ratio(inter, union as usize),
