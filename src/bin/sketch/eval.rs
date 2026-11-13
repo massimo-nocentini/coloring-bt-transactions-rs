@@ -15,8 +15,8 @@
 //! exact colour (`varopt` and `prio` at the draw reserved for it,
 //! [`crate::hash::IDEAL_STEP`]; `coord` with the coordinated keys).  Its error
 //! is what a `k`-point sketch costs even with no recursion at all -- KS, for
-//! one, has a floor of about `tau/2` for any `k`-point sketch of a diffuse
-//! colour -- so the paired difference `metric - ideal` estimates the *excess
+//! one, has a floor of about `3*tau/4` for a `varopt` sketch of a diffuse
+//! colour (see [`crate::metrics`]) -- so the paired difference `metric - ideal` estimates the *excess
 //! expected error* of building the sketch up through the DAG.  For `varopt`
 //! and `prio` the IDEAL draw is independent of the recursion's, so the spread
 //! of that difference holds both sampling errors; its mean and paired SE are

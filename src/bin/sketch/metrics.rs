@@ -16,8 +16,13 @@
 //!   `colors.laplace.zst`, so the exact values agree bit for bit.
 //! - **KS** -- the largest gap between the two CDFs.  A `k`-point sketch of a
 //!   diffuse colour has a sawtooth CDF error of amplitude about `1/k` even when
-//!   it is perfect, so KS has a floor of about `tau/2`; the IDEAL columns
-//!   report that floor next to it.
+//!   it is perfect.  For `varopt` the error at a cut is `tau * (floor(U + S) -
+//!   S)`, in `(tau * (U - 1), tau * U]`, where `S` is the light mass up to the
+//!   cut in units of `tau`; over the many cuts of a diffuse colour its largest
+//!   size is about `tau * max(U, 1 - U)`, whose mean over the offset `U` is
+//!   `3*tau/4`.  So KS has a floor of about `3*tau/4` -- measured at 0.741 to
+//!   0.750 `tau` on the exact colours of the first 3M records, `k` = 16 to
+//!   4096 -- and the IDEAL columns report that floor next to it.
 //! - **W1/L** -- the area between the CDFs: how many blocks of history the
 //!   estimate misplaces, as a fraction of the chain.  No `1/k` floor.
 //! - **TV1024** -- total variation after binning both into the 1024 bands of
