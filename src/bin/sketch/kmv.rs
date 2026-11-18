@@ -1369,8 +1369,8 @@ pub mod tests {
     /// T-K7 and T-K8.  (a) Exact when both sketches are whole, including a
     /// union larger than k.  (b) Over 2,000 seeds (one estimate each), the
     /// mean is within 4 SE of J and the SD within 10% of the hypergeometric
-    /// one, for J in {0, 0.05, 0.5, 0.95, 1}.  (c) The union count is
-    /// unbiased.  Containment: NaN exactly when T is empty, and its mean
+    /// one, for |A| = |B| = 2,000 and J in {0, 0.024, 0.2, 0.95, 1}.  (c)
+    /// The union count is unbiased.  Containment: NaN exactly when T is empty, and its mean
     /// within 4 SE of the truth when T is large.
     #[test]
     fn jaccard_and_containment_over_seeds() {
