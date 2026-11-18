@@ -250,6 +250,9 @@ pub fn emit(
 ///   recomputed ([`crate::kmv::CntDecoder`]); `select` filters it the same
 ///   way.  A first comment line names the stream's spec and its support,
 ///   `# kmv-k1024-s1-pos k=1024 seed=1 support=pos bits=20 M=1048576`.
+///   `se` and `se_M` are absolute standard errors, in blocks like the counts
+///   beside them; the relative error is `se / n_hat`, which `summary`
+///   ([`crate::summary`]) reports by depth.
 pub fn decode(mut input: Box<dyn Read + Send>, mut out: Box<dyn Write + Send>, select: Option<&[u64]>) -> io::Result<()> {
     let mut magic = [0u8; 8];
     let mut got = 0;

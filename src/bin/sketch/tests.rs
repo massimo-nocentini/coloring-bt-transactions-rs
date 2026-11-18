@@ -993,6 +993,194 @@ fn count_streams_decode_and_are_deterministic() {
     assert_eq!(recs, vec!["3", "17", "2999"]);
 }
 
+/// numpy's `percentile(v, 100 q)` by a full sort: the reference `summary`'s
+/// selection is checked against.
+fn q7(mut v: Vec<f64>, q: f64) -> f64 {
+    if v.is_empty() {
+        return f64::NAN;
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    let h = (v.len() - 1) as f64 * q;
+    let lo = h.floor() as usize;
+    if lo + 1 >= v.len() {
+        return v[v.len() - 1];
+    }
+    let (a, b, t) = (v[lo], v[lo + 1], h - lo as f64);
+    if t >= 0.5 {
+        b - (b - a) * (1.0 - t)
+    } else {
+        a + (b - a) * t
+    }
+}
+
+/// A `.tsv` with a header, as one map per line.
+fn tsv(path: &str) -> Vec<HashMap<String, String>> {
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut lines = text.lines();
+    let head: Vec<String> = lines.next().unwrap().split('\t').map(String::from).collect();
+    lines.map(|l| head.iter().cloned().zip(l.split('\t').map(String::from)).collect()).collect()
+}
+
+/// `summary` over `count`'s own streams.  Every column is what numpy-style
+/// quantiles of the decoded rows give (`decode`'s text, read back), on every
+/// scope; the reference columns are the brute-force sizes; `--every` is
+/// `count-rows`'s sample exactly; a seed pair is the `mawk` forms over the
+/// records full in both; a `.zst` input summarises the same; and what is not
+/// the streams of one run is refused.
+#[test]
+fn summary_reads_count_streams_back() {
+    use crate::kmv::{CntDecoder, CNT_MAGIC};
+    use crate::summary::{self, Kept, Range, SummaryOpts};
+    let records = stream(3000, 400, 51);
+    let dir = scratch("summary");
+    let refs = format!("{}/sc.txt", dir);
+    sets_counts(&records, &refs);
+    let (sizes, _) = fold_all(SetAlg { pos: false }, &records, None, |c, _| c.len() as f64);
+    let specs = [spec(16, 1, Support::Sets), spec(16, 2, Support::Sets), spec(16, 3, Support::Sets), spec(16, 1, Support::Pos)];
+    let perms = count::perms_for(&specs);
+    let a = format!("{}/a", dir);
+    count::run(count_opts(&specs, &a, Some(refs.clone())), input(&records), None, &perms).unwrap();
+    let path = |s: &KmvSpec| format!("{}/counts.{}.bin", a, s.label());
+    let opts = |inputs: Vec<String>, out: &str, every: u64| SummaryOpts {
+        inputs,
+        out: out.to_string(),
+        limit: u64::MAX,
+        every,
+        bucket: 1000,
+        ranges: vec![Range { first: 500, end: 2100 }, Range { first: 2500, end: u64::MAX }],
+        sets_counts: Some(refs.clone()),
+    };
+    let s = format!("{}/s", dir);
+    summary::run(opts(specs.iter().map(path).collect(), &s, 1)).unwrap();
+    let lines = tsv(&format!("{}/summary.tsv", s));
+    assert_eq!(lines.len(), specs.len() * (1 + 2 + 3), "all, two ranges, three buckets per stream");
+
+    // Every record recomputed from what `Kept` holds is the decoder's row.
+    let bytes = std::fs::read(path(&specs[0])).unwrap();
+    let mut dec = CntDecoder::new(&bytes[8..], *CNT_MAGIC, None).unwrap();
+    while let Some(r) = dec.next().unwrap() {
+        assert_eq!(Kept::of(&r).counts(16, dec.m), [r.n_hat, r.se, r.n_hat_m, r.se_m], "record {}", r.rec);
+    }
+
+    // rec tx block univ full m n_hat se n_hat_M se_M, per stream.
+    let rows = |sp: &KmvSpec| -> Vec<Vec<f64>> {
+        decode_to_string(std::fs::read(path(sp)).unwrap(), None, &dir)
+            .lines()
+            .skip(2)
+            .map(|l| l.split('\t').map(|c| c.parse().unwrap()).collect())
+            .collect()
+    };
+    let f = metrics::fmt;
+    for sp in &specs {
+        let d = rows(sp);
+        for l in lines.iter().filter(|l| l["label"] == sp.label()) {
+            let (lo, hi): (usize, usize) = (l["first"].parse().unwrap(), l["end"].parse().unwrap());
+            let r = &d[lo..hi];
+            let full: Vec<&Vec<f64>> = r.iter().filter(|x| x[4] == 1.0).collect();
+            let col = |c: usize| r.iter().map(|x| x[c]).collect::<Vec<f64>>();
+            let ctx = format!("{} {} {}..{}", sp.label(), l["scope"], lo, hi);
+            assert_eq!(l["records"], (hi - lo).to_string(), "{}", ctx);
+            assert_eq!(l["full"], full.len().to_string(), "{}", ctx);
+            assert_eq!(l["over_univ"], "0", "{}", ctx);
+            assert_eq!(l["beta_last"], (r[r.len() - 1][3] as u64 - 1).to_string(), "{}", ctx);
+            for (name, q) in [("n_p10", 0.1), ("n_p50", 0.5), ("n_p90", 0.9), ("n_p99", 0.99)] {
+                assert_eq!(l[name], f(q7(col(6), q)), "{} {}", ctx, name);
+            }
+            assert_eq!(l["univ_p50"], f(q7(col(3), 0.5)), "{}", ctx);
+            assert_eq!(l["fill_p50"], f(q7(r.iter().map(|x| x[6] / x[3]).collect(), 0.5)), "{}", ctx);
+            for (name, q) in [("rse_p10", 0.1), ("rse_p50", 0.5), ("rse_p90", 0.9)] {
+                assert_eq!(l[name], f(q7(full.iter().map(|x| x[7] / x[6]).collect(), q)), "{} {}", ctx, name);
+            }
+            assert_eq!(l["rse_M_p50"], f(q7(full.iter().map(|x| x[9] / x[8]).collect(), 0.5)), "{}", ctx);
+            assert_eq!(l["ratio_M_p50"], f(q7(full.iter().map(|x| x[8] / x[6]).collect(), 0.5)), "{}", ctx);
+            let whole: Vec<f64> = r.iter().filter(|x| x[4] == 0.0).map(|x| x[6]).collect();
+            assert_eq!(l["whole_max"], f(q7(whole.clone(), 1.0)), "{}", ctx);
+            assert_eq!(l["whole_p90"], f(q7(whole, 0.9)), "{}", ctx);
+            assert_eq!(l["ref_records"], (hi - lo).to_string(), "{}", ctx);
+            assert_eq!(l["ref_p50"], f(q7(sizes[lo..hi].to_vec(), 0.5)), "{}", ctx);
+            assert_eq!(l["ref_bad"], "0", "{}", ctx);
+        }
+    }
+
+    // Seeds against each other: pairs within the sets family only.
+    let disp = tsv(&format!("{}/dispersion.tsv", s));
+    let names: BTreeSet<&str> = disp.iter().map(|l| l["pair"].as_str()).collect();
+    assert_eq!(names, BTreeSet::from(["s1-s2", "s1-s3", "s2-s3"]));
+    let (d1, d2) = (rows(&specs[0]), rows(&specs[1]));
+    for b in 0..3 {
+        let (mut c, mut sxx, mut th) = (0.0, 0.0, 0.0);
+        for (x, y) in d1[b * 1000..(b + 1) * 1000].iter().zip(&d2[b * 1000..(b + 1) * 1000]) {
+            if x[4] == 1.0 && y[4] == 1.0 {
+                let e = (x[6] - y[6]) / ((x[6] + y[6]) / 2.0);
+                c += 1.0;
+                sxx += e * e;
+                th += ((x[7] / x[6]).powi(2) + (y[7] / y[6]).powi(2)) / 2.0;
+            }
+        }
+        let l = disp.iter().find(|l| l["pair"] == "s1-s2" && l["bucket"] == b.to_string()).unwrap();
+        assert_eq!(l["records"], c.to_string());
+        let want = (sxx / c / 2.0).sqrt() / (th / c).sqrt();
+        let got: f64 = l["rms_ratio"].parse().unwrap();
+        assert!((got - want).abs() < 1e-12, "bucket {}: {} against {}", b, got, want);
+    }
+    let all = disp.iter().find(|l| l["pair"] == "s1-s2" && l["bucket"] == "all").unwrap();
+    assert_ne!(all["min_rms_ratio"], "NA");
+
+    // --every 7 is count's --every 7: the rows of count-rows.
+    let e = format!("{}/e", dir);
+    summary::run(opts(vec![path(&specs[0])], &e, 7)).unwrap();
+    let sample: Vec<f64> = tsv(&format!("{}/count-rows.{}.tsv", a, specs[0].label())).iter().map(|l| l["n_hat"].parse().unwrap()).collect();
+    let l = &tsv(&format!("{}/summary.tsv", e))[0];
+    assert_eq!(l["records"], sample.len().to_string());
+    assert_eq!(l["n_p50"], f(q7(sample.clone(), 0.5)));
+    assert_eq!(l["n_p90"], f(q7(sample, 0.9)));
+    assert!(!std::path::Path::new(&format!("{}/dispersion.tsv", e)).exists(), "one stream, no pairs");
+
+    // A .zst input reads the same.
+    let plain = path(&specs[0]);
+    let st = std::process::Command::new("zstd").args(["-q", "-f", &plain, "-o", &format!("{}/s1.bin.zst", dir)]).status().unwrap();
+    assert!(st.success());
+    let (p, z) = (format!("{}/p", dir), format!("{}/z", dir));
+    summary::run(opts(vec![plain.clone()], &p, 1)).unwrap();
+    summary::run(opts(vec![format!("{}/s1.bin.zst", dir)], &z, 1)).unwrap();
+    assert_eq!(std::fs::read(format!("{}/summary.tsv", p)).unwrap(), std::fs::read(format!("{}/summary.tsv", z)).unwrap());
+
+    // Refused: a spec twice, a stream of another run, a shorter one, a
+    // file that is not a count stream, and a reference of other records.
+    let err = |inputs: Vec<String>, sc: Option<String>| {
+        let mut o = opts(inputs, &format!("{}/x", dir), 1);
+        o.sets_counts = sc;
+        summary::run(o).unwrap_err().to_string()
+    };
+    assert!(err(vec![plain.clone(), plain.clone()], None).contains("given twice"));
+    // Another run: seed 2's stream with record 5's tx changed, and the
+    // trailer's checksum patched to match, so only the tx disagrees.
+    let mut b = std::fs::read(path(&specs[1])).unwrap();
+    let o = 48 + 20 * 5;
+    let word = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    let (old, sum_at) = (word(&b, o), b.len() - 8);
+    let (m, rk) = (u32::from_le_bytes(b[o + 12..o + 16].try_into().unwrap()), u32::from_le_bytes(b[o + 16..o + 20].try_into().unwrap()));
+    let check = |tx: u64| tx ^ m as u64 ^ ((rk as u64) << 32);
+    let sum = word(&b, sum_at).wrapping_sub(check(old)).wrapping_add(check(old + 1_000_000));
+    b[o..o + 8].copy_from_slice(&(old + 1_000_000).to_le_bytes());
+    b[sum_at..].copy_from_slice(&sum.to_le_bytes());
+    let other = format!("{}/other.bin", dir);
+    std::fs::write(&other, &b).unwrap();
+    let e = err(vec![plain.clone(), other], None);
+    assert!(e.contains("record 5: tx") && e.contains("one count run"), "{}", e);
+    let other_records = stream(3000, 400, 52);
+    let short = format!("{}/short", dir);
+    let mut o = count_opts(&specs[1..2], &short, None);
+    o.limit = 2000;
+    count::run(o, input(&records), None, &perms).unwrap();
+    let e = err(vec![plain.clone(), format!("{}/counts.{}.bin", short, specs[1].label())], None);
+    assert!(e.contains("different numbers of records"), "{}", e);
+    assert!(err(vec![refs.clone()], None).contains("not a count stream"));
+    let wrong = format!("{}/wrong.txt", dir);
+    sets_counts(&other_records, &wrong);
+    assert!(err(vec![plain], Some(wrong)).contains("disagree with --sets-counts"));
+}
+
 /// A5: what the old modes write does not change.  The SKETCH01 header is
 /// pinned byte for byte, `decode` without a selection is the text `emit`
 /// would write, and `decode --select` prefixes exactly the selected lines.
@@ -1406,11 +1594,16 @@ fn new_modes_refuse_ignored_options_and_repeated_stores() {
         ("count --kmv 64 --exact --out /nonexistent", "--exact"),
         ("pick --select x --kmv 64 --sets-counts y --out /nonexistent", "--sets-counts"),
         ("pairs --in x --kmv 64 --out /nonexistent", "--kmv"),
+        ("pairs --in x --in y --out /nonexistent", "one --in"),
+        ("summary --in x --kmv 64 --out /nonexistent", "--kmv"),
+        ("summary --in x --select y --out /nonexistent", "--select"),
+        ("summary --in x --oracle y --out /nonexistent", "--oracle"),
     ] {
         let e = crate::run(crate::parse(&argv(cmd)).unwrap()).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
         assert!(e.to_string().contains(want), "{}: {}", cmd, e);
     }
+    assert!(crate::parse(&argv("summary --range 9:3 --out /nonexistent")).unwrap_err().contains("--range"));
     let dir = scratch("dup");
     let sel = format!("{}/sel.txt", dir);
     std::fs::write(&sel, "0\n").unwrap();

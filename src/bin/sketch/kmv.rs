@@ -943,16 +943,36 @@ pub struct CntDecoder<R: Read> {
     frontier: Option<u32>,
 }
 
-/// One decoded record with both counts and their SEs.
+/// One decoded record with both counts and their SEs.  `se` and `se_M` are
+/// *absolute*, in blocks, like the counts they go with (0 for a whole
+/// sketch); a relative error is `se / n_hat`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CntRow {
     pub rec: u64,
     pub r: CntRec,
     pub n_univ: u64,
+    /// The restricted rank `R''` of a full sketch, 0 for a whole one: with
+    /// `n_univ` and the record it is all [`stream_counts`] needs, so a
+    /// reader can keep three `u32`s of a record and recompute the rest.
+    pub below: u64,
     pub n_hat: f64,
     pub se: f64,
     pub n_hat_m: f64,
     pub se_m: f64,
+}
+
+/// A count-stream record's two counts and their SEs, `[n_hat, se, n_hat_M,
+/// se_M]`, over the universe `[0, n_univ)` with restricted rank `below`
+/// (only read when `full`) and over `M`.  The one place they are computed
+/// from a stored record: [`CntDecoder::next`] (and so `decode`) and
+/// `summary` both call it, so the two cannot drift apart.
+pub fn stream_counts(k: usize, m: u64, n_univ: u64, full: bool, len: u32, rk: u32, below: u64) -> [f64; 4] {
+    if !full {
+        return [len as f64, 0.0, len as f64, 0.0];
+    }
+    let n_hat = count_full(k, n_univ, below);
+    let n_hat_m = (k as f64 - 1.0) * m as f64 / rk.max(1) as f64;
+    [n_hat, count_se(n_hat, k, n_univ), n_hat_m, count_se(n_hat_m, k, m)]
 }
 
 impl<R: Read> CntDecoder<R> {
@@ -993,14 +1013,9 @@ impl<R: Read> CntDecoder<R> {
         let f = self.frontier.expect("set by next_rec");
         let u = self.universe.as_mut().expect("present");
         u.grow(f as u64 + 1);
-        let k = self.spec.k;
-        let (n_hat, n_hat_m) = if r.full() {
-            (count_full(k, u.size(), u.below(r.rk)), (k as f64 - 1.0) * self.m as f64 / r.rk.max(1) as f64)
-        } else {
-            (r.len() as f64, r.len() as f64)
-        };
-        let (se, se_m) = if r.full() { (count_se(n_hat, k, u.size()), count_se(n_hat_m, k, self.m)) } else { (0.0, 0.0) };
-        Ok(Some(CntRow { rec, r, n_univ: u.size(), n_hat, se, n_hat_m, se_m }))
+        let below = if r.full() { u.below(r.rk) } else { 0 };
+        let [n_hat, se, n_hat_m, se_m] = stream_counts(self.spec.k, self.m, u.size(), r.full(), r.len(), r.rk, below);
+        Ok(Some(CntRow { rec, r, n_univ: u.size(), below, n_hat, se, n_hat_m, se_m }))
     }
 
     /// The next record as it is stored, or `None` at the verified trailer:

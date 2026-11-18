@@ -67,14 +67,16 @@
 //! sketch surface-report --sketched <prefix> [--exact <prefix>] --years <file> --out <dir> [--band 745]
 //! sketch summarize --out <dir> [--chain <dir> ...] [--eval <dir> [--moments <zst>]]
 //!               [--stretch 100000000] [--head 3] [--threads 32]
+//! sketch summary [--in <counts.bin[.zst]>|- ...] --out <dir> [--bucket 10000000] [--range <first>:[<end>] ...]
+//!               [--every 1] [--limit <n>|all] [--sets-counts <path>]
 //! ```
 //!
 //! `eval` also takes `--kmv`, `--l1`, `--sets-counts` and `--l1-every 997`,
 //! and then needs no `--config`; see below.  `count`, `pick`, `pairs`,
-//! `surface`, `surface-report` and `summarize` refuse an option they would
-//! ignore: an L1 store, in particular, runs only under `pick` or `eval`,
-//! never under `count`.  `--exact` is a flag of `pick` and `eval`, and takes
-//! the exact surface's prefix under `surface-report`.
+//! `surface`, `surface-report`, `summarize` and `summary` refuse an option
+//! they would ignore: an L1 store, in particular, runs only under `pick` or
+//! `eval`, never under `count`.  `--exact` is a flag of `pick` and `eval`,
+//! and takes the exact surface's prefix under `surface-report`.
 //!
 //! - **`eval`** ([`eval`]) runs the exact store beside the sketches on a
 //!   prefix and measures every sketch against the whole colour.
@@ -145,7 +147,11 @@
 //! selected records; **`pairs`** ([`pairs`]) computes every pair of a pick;
 //! **`eval --kmv/--l1`** checks both stores against the exact colours on a
 //! prefix; **`decode`** reads a count stream too, and `--select` cuts the
-//! records of a selection out of a production `SKETCH01` file.  Bias and
+//! records of a selection out of a production `SKETCH01` file;
+//! **`summary`** ([`summary`]) reads stored count streams back and writes
+//! what a whole-chain run is judged by once no reference is left -- counts
+//! and relative errors by depth, the records counted exactly, and the seeds
+//! of one spec against each other -- without a new fold.  Bias and
 //! variance are judged across seeds only (`count-seeds.tsv`,
 //! `kmv-seeds.tsv`): one run shares one permutation, so its records' errors
 //! are correlated and their spread says nothing about the estimator's.
@@ -245,6 +251,8 @@ mod pick;
 mod prio;
 #[path = "sketch/summarize.rs"]
 mod summarize;
+#[path = "sketch/summary.rs"]
+mod summary;
 #[path = "sketch/surface.rs"]
 mod surface;
 #[path = "sketch/surface_report.rs"]
@@ -290,7 +298,8 @@ fn allocator() -> &'static str {
     }
 }
 
-const USAGE: &str = "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|surface|surface-report|summarize [options] < input   (see the module docs)";
+const USAGE: &str =
+    "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|surface|surface-report|summarize|summary [options] < input   (see the module docs)";
 
 #[derive(Debug)]
 struct Args {
@@ -315,6 +324,9 @@ struct Args {
     l1_every: u64,
     select: Option<String>,
     input: Option<String>,
+    /// Every `--in`, in order: `pairs` takes one, `summary` any number.
+    inputs: Vec<String>,
+    ranges: Vec<summary::Range>,
     groups: Vec<String>,
     varopt_text: Option<String>,
     threads: usize,
@@ -361,6 +373,8 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         l1_every: 997,
         select: None,
         input: None,
+        inputs: Vec::new(),
+        ranges: Vec::new(),
         groups: Vec::new(),
         varopt_text: None,
         threads: 32,
@@ -433,7 +447,11 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--sets-counts" => a.sets_counts = Some(value(i)?.clone()),
             "--l1-every" => a.l1_every = number(i)?.max(1),
             "--select" => a.select = Some(value(i)?.clone()),
-            "--in" => a.input = Some(value(i)?.clone()),
+            "--in" => {
+                a.input = Some(value(i)?.clone());
+                a.inputs.push(value(i)?.clone());
+            }
+            "--range" => a.ranges.push(summary::Range::parse(value(i)?)?),
             "--group" => a.groups.push(value(i)?.clone()),
             "--varopt-text" => a.varopt_text = Some(value(i)?.clone()),
             "--threads" => a.threads = number(i)?.max(1) as usize,
@@ -468,9 +486,9 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 }
 
 /// Refuse an option the mode would silently ignore.  Only the new modes
-/// (`count`, `pick`, `pairs`, `surface`, `surface-report`, `summarize`)
-/// check; the old ones keep accepting what they always accepted (A5).
-/// `--stats` is every mode's.
+/// (`count`, `pick`, `pairs`, `surface`, `surface-report`, `summarize`,
+/// `summary`) check; the old ones keep accepting what they always accepted
+/// (A5).  `--stats` is every mode's.
 fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
     match a.given.iter().find(|o| o.as_str() != "--stats" && !takes.contains(&o.as_str())) {
         None => Ok(()),
@@ -657,6 +675,9 @@ fn run(a: Args) -> io::Result<()> {
         }
         "pairs" => {
             only(&a, &["--in", "--out", "--group", "--varopt-text", "--threads"]).map_err(invalid)?;
+            if a.inputs.len() > 1 {
+                return Err(invalid("pairs takes one --in <pick dir>".into()));
+            }
             let opts = pairs::PairsOpts {
                 input: a.input.clone().ok_or_else(|| invalid("pairs needs --in <pick dir>".into()))?,
                 out: need_out(&a).map_err(invalid)?,
@@ -723,6 +744,19 @@ fn run(a: Args) -> io::Result<()> {
                 threads: a.threads,
             };
             summarize::run(opts)
+        }
+        "summary" => {
+            only(&a, &["--in", "--out", "--bucket", "--range", "--every", "--limit", "--sets-counts"]).map_err(invalid)?;
+            let opts = summary::SummaryOpts {
+                inputs: a.inputs.clone(),
+                out: need_out(&a).map_err(invalid)?,
+                limit: a.limit.unwrap_or(u64::MAX),
+                every: a.every.unwrap_or(1),
+                bucket: a.bucket,
+                ranges: a.ranges.clone(),
+                sets_counts: a.sets_counts.clone(),
+            };
+            summary::run(opts)
         }
         "check" => {
             let opts = modes::CheckOpts {
