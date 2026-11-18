@@ -872,6 +872,13 @@ pub fn cnt_header(spec: &KmvSpec) -> [u8; CNT_HEADER] {
     h
 }
 
+/// The comment line `decode` puts first in a count stream's text, and
+/// `select` copies into the selections it writes: the spec and its support,
+/// `# kmv-k1024-s1-sets k=1024 seed=1 support=sets bits=20 M=1048576`.
+pub fn cnt_spec_line(s: &KmvSpec, m: u64) -> String {
+    format!("# {} k={} seed={} support={} bits={} M={}", s.label(), s.k, s.seed, s.support.name(), s.bits, m)
+}
+
 /// One record of the count stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CntRec {

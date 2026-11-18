@@ -310,8 +310,7 @@ fn decode_counts(input: Box<dyn Read + Send>, mut out: Box<dyn Write + Send>, ma
     let mut buf = Vec::with_capacity(CHUNK + (1 << 16));
     // The stream's spec first, as a comment line: a sets stream and a pos
     // stream decode to the same columns, and only this line tells them apart.
-    let s = dec.spec;
-    writeln!(buf, "# {} k={} seed={} support={} bits={} M={}", s.label(), s.k, s.seed, s.support.name(), s.bits, dec.m)?;
+    writeln!(buf, "{}", crate::kmv::cnt_spec_line(&dec.spec, dec.m))?;
     writeln!(buf, "rec\ttx\tblock\tuniv\tfull\tm\tn_hat\tse\tn_hat_M\tse_M")?;
     let f = crate::metrics::fmt;
     let mut next = 0usize;

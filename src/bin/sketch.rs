@@ -69,14 +69,19 @@
 //!               [--stretch 100000000] [--head 3] [--threads 32]
 //! sketch summary [--in <counts.bin[.zst]>|- ...] --out <dir> [--bucket 10000000] [--range <first>:[<end>] ...]
 //!               [--every 1] [--limit <n>|all] [--sets-counts <path>]
+//! sketch select prefix --counts <counts.bin[.zst]> --sets-counts <path> --out <dir>
+//!               [--limit 3000000] [--window 256] [--deep 256] [--even 1000]
+//! sketch select chain  --counts <counts.bin[.zst]> --out <dir> [--window 256] [--chain 512]
 //! ```
 //!
 //! `eval` also takes `--kmv`, `--l1`, `--sets-counts` and `--l1-every 997`,
 //! and then needs no `--config`; see below.  `count`, `pick`, `pairs`,
-//! `surface`, `surface-report`, `summarize` and `summary` refuse an option
-//! they would ignore: an L1 store, in particular, runs only under `pick` or
-//! `eval`, never under `count`.  `--exact` is a flag of `pick` and `eval`,
-//! and takes the exact surface's prefix under `surface-report`.
+//! `surface`, `surface-report`, `summarize`, `summary` and `select` refuse
+//! an option they would ignore: an L1 store, in particular, runs only under
+//! `pick` or `eval`, never under `count`.  `--exact` is a flag of `pick` and
+//! `eval`, and takes the exact surface's prefix under `surface-report`;
+//! `--chain` takes a `chain` output dir under `summarize`, and the number of
+//! records to pick under `select chain`.
 //!
 //! - **`eval`** ([`eval`]) runs the exact store beside the sketches on a
 //!   prefix and measures every sketch against the whole colour.
@@ -143,6 +148,9 @@
 //!
 //! The modes over them: **`count`** ([`count`]) writes every record's count
 //! as a fixed-width stream and checks it against the exact sizes on disk;
+//! **`select`** ([`select`]) reads such a stream and chooses the records worth
+//! comparing -- windows of deep records, deep records spread over the blocks,
+//! an even spread -- into the file `pick --select` reads;
 //! **`pick`** ([`pick`]) folds any stores once and dumps the sketches of
 //! selected records; **`pairs`** ([`pairs`]) computes every pair of a pick;
 //! **`eval --kmv/--l1`** checks both stores against the exact colours on a
@@ -249,6 +257,8 @@ mod pairs;
 mod pick;
 #[path = "sketch/prio.rs"]
 mod prio;
+#[path = "sketch/select.rs"]
+mod select;
 #[path = "sketch/summarize.rs"]
 mod summarize;
 #[path = "sketch/summary.rs"]
@@ -299,7 +309,7 @@ fn allocator() -> &'static str {
 }
 
 const USAGE: &str =
-    "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|surface|surface-report|summarize|summary [options] < input   (see the module docs)";
+    "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|surface|surface-report|summarize|summary [options] < input, or sketch select prefix|chain [options]   (see the module docs)";
 
 #[derive(Debug)]
 struct Args {
@@ -345,6 +355,13 @@ struct Args {
     moments: Option<String>,
     stretch: u64,
     head: u64,
+    /// `select`'s word, `prefix` or `chain`.
+    what: Option<String>,
+    window: usize,
+    deep: usize,
+    even: usize,
+    /// `select chain --chain <n>`; under `summarize`, `--chain` is a dir.
+    chain_picks: usize,
     /// Every option given, in order, so a mode can refuse what it ignores.
     given: Vec<String>,
 }
@@ -392,9 +409,24 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         moments: None,
         stretch: 100_000_000,
         head: 3,
+        what: None,
+        window: 256,
+        deep: 256,
+        even: 1000,
+        chain_picks: 512,
         given: Vec::new(),
     };
     let mut i = 1;
+    // `select` takes a word before its options: which selection.
+    if a.mode == "select" {
+        match argv.get(1) {
+            Some(w) if !w.starts_with("--") => {
+                a.what = Some(w.clone());
+                i = 2;
+            }
+            _ => return Err("select needs prefix or chain: sketch select prefix|chain [options]".into()),
+        }
+    }
     let value = |i: usize| -> Result<&String, String> {
         argv.get(i + 1).ok_or_else(|| format!("{} needs a value", argv[i]))
     };
@@ -473,11 +505,15 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--bands" => a.bands = Some(number(i)?),
             "--sketched" => a.sketched = Some(value(i)?.clone()),
             "--years" => a.years = Some(value(i)?.clone()),
+            "--chain" if a.mode == "select" => a.chain_picks = number(i)? as usize,
             "--chain" => a.chain_dirs.push(value(i)?.clone()),
             "--eval" => a.eval_dir = Some(value(i)?.clone()),
             "--moments" => a.moments = Some(value(i)?.clone()),
             "--stretch" => a.stretch = number(i)?.max(1),
             "--head" => a.head = number(i)?,
+            "--window" => a.window = number(i)? as usize,
+            "--deep" => a.deep = number(i)? as usize,
+            "--even" => a.even = number(i)? as usize,
             other => return Err(format!("unknown option {:?}\n{}", other, USAGE)),
         }
         i += if takes { 2 } else { 1 };
@@ -487,8 +523,8 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 
 /// Refuse an option the mode would silently ignore.  Only the new modes
 /// (`count`, `pick`, `pairs`, `surface`, `surface-report`, `summarize`,
-/// `summary`) check; the old ones keep accepting what they always accepted
-/// (A5).  `--stats` is every mode's.
+/// `summary`, `select`) check; the old ones keep accepting what they always
+/// accepted (A5).  `--stats` is every mode's.
 fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
     match a.given.iter().find(|o| o.as_str() != "--stats" && !takes.contains(&o.as_str())) {
         None => Ok(()),
@@ -757,6 +793,32 @@ fn run(a: Args) -> io::Result<()> {
                 sets_counts: a.sets_counts.clone(),
             };
             summary::run(opts)
+        }
+        "select" => {
+            let what = select::What::parse(a.what.as_deref().unwrap_or("")).map_err(invalid)?;
+            match what {
+                select::What::Prefix => {
+                    only(&a, &["--counts", "--sets-counts", "--out", "--limit", "--window", "--deep", "--even"])
+                }
+                select::What::Chain => only(&a, &["--counts", "--out", "--window", "--chain"]),
+            }
+            .map_err(|e| invalid(e.replacen("select", &format!("select {}", what.name()), 1)))?;
+            let limit = a.limit.unwrap_or(3_000_000);
+            if what == select::What::Prefix && limit == u64::MAX {
+                return Err(invalid("select prefix needs a number of records, not --limit all".into()));
+            }
+            let opts = select::SelectOpts {
+                what,
+                counts: a.counts.clone().ok_or_else(|| invalid("select needs --counts <count stream>".into()))?,
+                out: need_out(&a).map_err(invalid)?,
+                sets_counts: a.sets_counts.clone(),
+                limit,
+                window: a.window,
+                deep: a.deep,
+                even: a.even,
+                chain: a.chain_picks,
+            };
+            select::run(opts)
         }
         "check" => {
             let opts = modes::CheckOpts {
