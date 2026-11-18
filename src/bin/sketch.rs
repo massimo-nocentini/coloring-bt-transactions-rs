@@ -60,6 +60,7 @@
 //! sketch pick   --select <file> --out <dir> --oracle <path> [--limit <n>|all] [--config <cfg> ...]
 //!               [--kmv <spec> ...] [--l1 <spec> ...] [--exact [--force-exact]] [--stats] < records.scm
 //! sketch pairs  --in <pick dir> --out <dir> [--group <name> ...] [--varopt-text <file>] [--threads 32]
+//! sketch pairs-stats --in <pairs dir> [--in <pairs dir> ...] --out <dir> [--group <name>[+<name>...] ...]
 //! sketch surface --counts <count stream> --out <prefix> [--band 745] [--bands 1024] [--limit <n>|all]
 //!               < out.bin
 //! sketch surface --counts <count stream> --bands-ref <zst> --out <prefix> [--band 745] [--bands 1024]
@@ -76,12 +77,12 @@
 //!
 //! `eval` also takes `--kmv`, `--l1`, `--sets-counts` and `--l1-every 997`,
 //! and then needs no `--config`; see below.  `count`, `pick`, `pairs`,
-//! `surface`, `surface-report`, `summarize`, `summary` and `select` refuse
-//! an option they would ignore: an L1 store, in particular, runs only under
-//! `pick` or `eval`, never under `count`.  `--exact` is a flag of `pick` and
-//! `eval`, and takes the exact surface's prefix under `surface-report`;
-//! `--chain` takes a `chain` output dir under `summarize`, and the number of
-//! records to pick under `select chain`.
+//! `pairs-stats`, `surface`, `surface-report`, `summarize`, `summary` and
+//! `select` refuse an option they would ignore: an L1 store, in particular,
+//! runs only under `pick` or `eval`, never under `count`.  `--exact` is a
+//! flag of `pick` and `eval`, and takes the exact surface's prefix under
+//! `surface-report`; `--chain` takes a `chain` output dir under `summarize`,
+//! and the number of records to pick under `select chain`.
 //!
 //! - **`eval`** ([`eval`]) runs the exact store beside the sketches on a
 //!   prefix and measures every sketch against the whole colour.
@@ -159,7 +160,10 @@
 //! **`summary`** ([`summary`]) reads stored count streams back and writes
 //! what a whole-chain run is judged by once no reference is left -- counts
 //! and relative errors by depth, the records counted exactly, and the seeds
-//! of one spec against each other -- without a new fold.  Bias and
+//! of one spec against each other -- without a new fold;
+//! **`pairs-stats`** ([`pairstats`]) reduces one or more `pairs` outputs to
+//! the bias, variance, agreement and quantile tables, pooling the seeds of
+//! runs over the same rows.  Bias and
 //! variance are judged across seeds only (`count-seeds.tsv`,
 //! `kmv-seeds.tsv`): one run shares one permutation, so its records' errors
 //! are correlated and their spread says nothing about the estimator's.
@@ -253,6 +257,8 @@ mod metrics;
 mod modes;
 #[path = "sketch/pairs.rs"]
 mod pairs;
+#[path = "sketch/pairstats.rs"]
+mod pairstats;
 #[path = "sketch/pick.rs"]
 mod pick;
 #[path = "sketch/prio.rs"]
@@ -309,7 +315,7 @@ fn allocator() -> &'static str {
 }
 
 const USAGE: &str =
-    "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|surface|surface-report|summarize|summary [options] < input, or sketch select prefix|chain [options]   (see the module docs)";
+    "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|pairs-stats|surface|surface-report|summarize|summary [options] < input, or sketch select prefix|chain [options]   (see the module docs)";
 
 #[derive(Debug)]
 struct Args {
@@ -334,7 +340,8 @@ struct Args {
     l1_every: u64,
     select: Option<String>,
     input: Option<String>,
-    /// Every `--in`, in order: `pairs` takes one, `summary` any number.
+    /// Every `--in`, in order: `pairs` takes one, `summary` and
+    /// `pairs-stats` any number.
     inputs: Vec<String>,
     ranges: Vec<summary::Range>,
     groups: Vec<String>,
@@ -522,9 +529,9 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 }
 
 /// Refuse an option the mode would silently ignore.  Only the new modes
-/// (`count`, `pick`, `pairs`, `surface`, `surface-report`, `summarize`,
-/// `summary`, `select`) check; the old ones keep accepting what they always
-/// accepted (A5).  `--stats` is every mode's.
+/// (`count`, `pick`, `pairs`, `pairs-stats`, `surface`, `surface-report`,
+/// `summarize`, `summary`, `select`) check; the old ones keep accepting what
+/// they always accepted (A5).  `--stats` is every mode's.
 fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
     match a.given.iter().find(|o| o.as_str() != "--stats" && !takes.contains(&o.as_str())) {
         None => Ok(()),
@@ -712,7 +719,7 @@ fn run(a: Args) -> io::Result<()> {
         "pairs" => {
             only(&a, &["--in", "--out", "--group", "--varopt-text", "--threads"]).map_err(invalid)?;
             if a.inputs.len() > 1 {
-                return Err(invalid("pairs takes one --in <pick dir>".into()));
+                return Err(invalid("pairs takes one --in <pick dir>; pairs-stats pools several pairs dirs".into()));
             }
             let opts = pairs::PairsOpts {
                 input: a.input.clone().ok_or_else(|| invalid("pairs needs --in <pick dir>".into()))?,
@@ -722,6 +729,14 @@ fn run(a: Args) -> io::Result<()> {
                 threads: a.threads,
             };
             pairs::run(opts)
+        }
+        "pairs-stats" => {
+            only(&a, &["--in", "--out", "--group"]).map_err(invalid)?;
+            if a.inputs.is_empty() {
+                return Err(invalid("pairs-stats needs --in <pairs dir>".into()));
+            }
+            let opts = pairstats::StatsOpts { inputs: a.inputs.clone(), out: need_out(&a).map_err(invalid)?, groups: a.groups.clone() };
+            pairstats::run(opts)
         }
         "surface" => {
             only(&a, &["--counts", "--out", "--band", "--bands", "--limit", "--bands-ref", "--threads"]).map_err(invalid)?;
