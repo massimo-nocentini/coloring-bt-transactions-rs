@@ -70,8 +70,8 @@
 //! sketch surface --counts <count stream> --bands-ref <zst> --out <prefix> [--band 745] [--bands 1024]
 //!               [--limit <n>|all] [--threads 32]
 //! sketch surface-report --sketched <prefix> [--exact <prefix>] --years <file> --out <dir> [--band 745]
-//! sketch summarize --out <dir> [--chain <dir> ...] [--eval <dir> [--moments <zst>]]
-//!               [--stretch 100000000] [--head 3] [--threads 32]
+//! sketch summarize --out <dir> [--chain <dir> ... [--stretch 100000000] [--head 3] [--threads 32]]
+//!               [--eval <dir> [--moments <zst>]]
 //! sketch summary [--in <counts.bin[.zst]>|- ...] --out <dir> [--bucket 10000000] [--range <first>:[<end>] ...]
 //!               [--every 1] [--limit <n>|all] [--sets-counts <path>]
 //! sketch select prefix --counts <counts.bin[.zst]> --sets-counts <path> --out <dir>
@@ -181,7 +181,8 @@
 //! On the whole chain the exact colours are on disk only binned, in
 //! `colors.bands1024.zst`, and three options read them for a selection:
 //! **`pick --bands-ref`** copies the selected records' lines out of that
-//! file beside the fold; **`pairs --bands`** adds the binned TV of every
+//! file beside the fold (alone, it folds nothing, and refuses `--oracle` and
+//! `--no-oracle`); **`pairs --bands`** adds the binned TV of every
 //! pair, an exact lower bound on the TV the L1 store estimates, and checks
 //! the L1 estimates against it (`bands-check.tsv`); and **`describe`**
 //! ([`describe`]) reads the production varopt sketches that `decode
@@ -769,6 +770,12 @@ fn run(a: Args) -> io::Result<()> {
             if !folds && a.refs.bands.is_none() {
                 return Err(invalid("pick needs at least one --config, --kmv, --l1, --exact or --bands-ref".into()));
             }
+            if a.force_exact && !a.exact {
+                return Err(invalid("pick --force-exact needs --exact: it lifts the exact store's limit on records".into()));
+            }
+            if let Some(o) = a.given.iter().find(|o| !folds && (*o == "--oracle" || *o == "--no-oracle")) {
+                return Err(invalid(format!("pick with --bands-ref alone folds no store and does not take {}", o)));
+            }
             let limit = a.limit.unwrap_or(u64::MAX);
             if a.exact && limit > 3_000_000 && !a.force_exact {
                 return Err(invalid(exact_refusal("pick --exact", limit)));
@@ -851,6 +858,9 @@ fn run(a: Args) -> io::Result<()> {
         }
         "summarize" => {
             only(&a, &["--chain", "--eval", "--moments", "--out", "--stretch", "--head", "--threads"]).map_err(invalid)?;
+            if let Some(o) = a.given.iter().find(|o| a.chain_dirs.is_empty() && ["--stretch", "--head", "--threads"].contains(&o.as_str())) {
+                return Err(invalid(format!("summarize {} needs --chain <dir>: only a chain's rows are cut into stretches and read on threads", o)));
+            }
             if a.chain_dirs.is_empty() && a.eval_dir.is_none() {
                 return Err(invalid("summarize needs at least one --chain <dir> or --eval <dir>".into()));
             }

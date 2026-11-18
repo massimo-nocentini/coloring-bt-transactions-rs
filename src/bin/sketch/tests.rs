@@ -1672,6 +1672,35 @@ fn old_modes_refuse_the_readers_options() {
     assert!(e.to_string().contains("release oracle"), "{}", e);
 }
 
+/// `summarize` without `--chain` and `pick` without the store an option
+/// acts on refuse the option rather than ignore it.
+#[test]
+fn options_without_their_store_or_chain_are_refused() {
+    let argv = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+    for (cmd, want) in [
+        ("summarize --eval x --stretch 5 --out /nonexistent", "summarize --stretch needs --chain <dir>"),
+        ("summarize --eval x --moments m --head 2 --out /nonexistent", "summarize --head needs --chain <dir>"),
+        ("summarize --eval x --threads 4 --out /nonexistent", "summarize --threads needs --chain <dir>"),
+        ("pick --select s --kmv 64 --force-exact --out /nonexistent", "pick --force-exact needs --exact"),
+        ("pick --select s --bands-ref b --oracle o --out /nonexistent", "folds no store and does not take --oracle"),
+        ("pick --select s --bands-ref b --no-oracle --out /nonexistent", "folds no store and does not take --no-oracle"),
+    ] {
+        let e = crate::run(crate::parse(&argv(cmd)).unwrap()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains(want), "{}: {}", cmd, e);
+    }
+    // With what they act on, the same options get past option checking: the
+    // runs fail on the missing files instead.
+    for cmd in [
+        "summarize --chain /nonexistent/c --stretch 5 --head 2 --threads 4 --out /nonexistent/o",
+        "pick --select /nonexistent/s --exact --force-exact --no-oracle --out /nonexistent/o",
+        "pick --select /nonexistent/s --kmv 64 --bands-ref b --oracle /nonexistent/o --out /nonexistent/o",
+    ] {
+        let e = crate::run(crate::parse(&argv(cmd)).unwrap()).unwrap_err();
+        assert!(!e.to_string().contains("needs --") && !e.to_string().contains("does not take"), "{}: {}", cmd, e);
+    }
+}
+
 /// `eval --check-ref` with no `--config` still compares the exact colours
 /// with the Laplace reference: a reference that is wrong on every sampled
 /// record fails the run.  Before, the comparison ran only beside a config.
