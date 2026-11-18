@@ -84,6 +84,9 @@
 //! `pairs-stats`, `describe`, `surface`, `surface-report`, `summarize`,
 //! `summary` and `select` refuse an option they would ignore: an L1 store,
 //! in particular, runs only under `pick` or `eval`, never under `count`.
+//! The old modes (`emit`, `chain`, `eval`, `check`, `decode`) still accept
+//! the options they always ignored, but refuse those of the modes that read
+//! other runs' outputs (`--counts`, `--bands`, `--chain`, `--window`, ...).
 //! Three options depend on the mode.  `--exact` is a flag of `pick` and
 //! `eval`, and takes the exact surface's prefix under `surface-report`;
 //! `--chain` takes a `chain` output dir under `summarize`, and the number of
@@ -565,7 +568,8 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 /// Refuse an option the mode would silently ignore.  Only the new modes
 /// (`count`, `pick`, `pairs`, `pairs-stats`, `describe`, `surface`,
 /// `surface-report`, `summarize`, `summary`, `select`) check; the old ones
-/// keep accepting what they always accepted (A5).  `--stats` is every mode's.
+/// keep accepting what they always accepted (A5), and refuse only the
+/// options of the reading modes ([`not_theirs`]).  `--stats` is every mode's.
 fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
     match a.given.iter().find(|o| o.as_str() != "--stats" && !takes.contains(&o.as_str())) {
         None => Ok(()),
@@ -574,6 +578,35 @@ fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
                 "--l1" | "--l1-every" => "; an L1 store runs under pick or eval",
                 "--config" => "; a varopt or coord store runs under emit, chain, eval or pick",
                 "--exact" | "--force-exact" => "; the exact store runs under eval or pick",
+                _ => "",
+            };
+            Err(format!("{} does not take {}{}", a.mode, o, hint))
+        }
+    }
+}
+
+/// The modes that were here before the new ones, which do not call [`only`].
+const OLD_MODES: &[&str] = &["emit", "chain", "eval", "check", "decode"];
+
+/// Options that only the modes reading what other runs wrote take (`surface`,
+/// `surface-report`, `summarize`, `summary`, `select`, `pairs-stats`,
+/// `describe`).  They are parsed for every mode, and an old mode would
+/// silently ignore them: `check --bands x`, a slip for `--bands-ref`, would
+/// check nothing against the bands.  Before those modes the options were
+/// unknown and refused, so refusing them keeps A5.
+const READERS_ONLY: &[&str] = &[
+    "--counts", "--band", "--bands", "--sketched", "--years", "--chain", "--eval", "--moments", "--stretch", "--head", "--range",
+    "--window", "--deep", "--even", "--records",
+];
+
+/// Refuse, under an old mode, an option of [`READERS_ONLY`].
+fn not_theirs(a: &Args) -> Result<(), String> {
+    match a.given.iter().find(|o| READERS_ONLY.contains(&o.as_str())) {
+        None => Ok(()),
+        Some(o) => {
+            let hint = match o.as_str() {
+                "--bands" => "; the binned reference is --bands-ref",
+                "--moments" => "; the moments reference is --moments-ref",
                 _ => "",
             };
             Err(format!("{} does not take {}{}", a.mode, o, hint))
@@ -634,6 +667,9 @@ fn run(a: Args) -> io::Result<()> {
     let invalid = |m: String| io::Error::new(io::ErrorKind::InvalidInput, m);
     if a.stats {
         eprintln!("sketch {}: allocator {}", a.mode, allocator());
+    }
+    if OLD_MODES.contains(&a.mode.as_str()) {
+        not_theirs(&a).map_err(invalid)?;
     }
     let keys = keys_for(&a.configs);
     match a.mode.as_str() {

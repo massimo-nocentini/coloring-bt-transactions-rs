@@ -1648,6 +1648,30 @@ fn new_modes_refuse_ignored_options_and_repeated_stores() {
     assert!(!std::path::Path::new(&format!("{}/pick", dir)).exists(), "refused before any output");
 }
 
+/// The old modes refuse the options of the modes that read other runs'
+/// outputs, which they would otherwise ignore, and still accept the ones
+/// they always ignored.
+#[test]
+fn old_modes_refuse_the_readers_options() {
+    let argv = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+    for (cmd, want) in [
+        ("chain --config varopt:16 --chain 5 --out /nonexistent", "chain does not take --chain"),
+        ("check --bands x --out /nonexistent", "check does not take --bands; the binned reference is --bands-ref"),
+        ("eval --kmv 64 --counts x --out /nonexistent", "eval does not take --counts"),
+        ("emit --config varopt:16 --window 3", "emit does not take --window"),
+        ("decode --records 1,2", "decode does not take --records"),
+        ("eval --kmv 64 --moments x --out /nonexistent", "--moments-ref"),
+    ] {
+        let e = crate::run(crate::parse(&argv(cmd)).unwrap()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains(want), "{}: {}", cmd, e);
+    }
+    // A5: an option an old mode always ignored is still accepted; this run
+    // gets past option checking and fails on the missing oracle instead.
+    let e = crate::run(crate::parse(&argv("chain --config varopt:16 --select x --out /nonexistent")).unwrap()).unwrap_err();
+    assert!(e.to_string().contains("release oracle"), "{}", e);
+}
+
 /// `eval --check-ref` with no `--config` still compares the exact colours
 /// with the Laplace reference: a reference that is wrong on every sampled
 /// record fails the run.  Before, the comparison ran only beside a config.
