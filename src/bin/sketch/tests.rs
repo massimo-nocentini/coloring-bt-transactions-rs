@@ -1254,6 +1254,7 @@ fn pick_and_pairs_agree_with_the_pure_functions() {
         kmv: kspecs.to_vec(),
         l1: lspecs.to_vec(),
         exact: true,
+        bands: None,
         stats: false,
     };
     pick::run(opts(&out, &sel_path), input(&records), None, &HashMap::new(), &perms).unwrap();
@@ -1312,7 +1313,7 @@ fn pick_and_pairs_agree_with_the_pure_functions() {
     let (all_pos, _) = fold_all(SetAlg { pos: true }, &records, None, |c, _| (**c).clone());
     let (one, eight) = (format!("{}/pairs1", dir), format!("{}/pairs8", dir));
     for (o, t) in [(&one, 1), (&eight, 8)] {
-        crate::pairs::run(crate::pairs::PairsOpts { input: out.clone(), out: o.clone(), groups: vec![], varopt_text: None, threads: t })
+        crate::pairs::run(crate::pairs::PairsOpts { input: out.clone(), out: o.clone(), groups: vec![], varopt_text: None, bands: None, threads: t })
             .unwrap();
     }
     let mut names: Vec<String> = std::fs::read_dir(&one).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
@@ -1618,6 +1619,7 @@ fn new_modes_refuse_ignored_options_and_repeated_stores() {
         kmv: kmv.to_vec(),
         l1: l1.to_vec(),
         exact: false,
+        bands: None,
         stats: false,
     };
     let v = Config::parse("varopt:16").unwrap();
@@ -1751,13 +1753,14 @@ fn an_underflowed_coefficient_stays_in_the_pos_support() {
         kmv: kspecs.clone(),
         l1: vec![],
         exact: true,
+        bands: None,
         stats: false,
     };
     pick::run(po, input(&records), None, &HashMap::new(), &count::perms_for(&kspecs)).unwrap();
     let ex = pick::read_exact(std::fs::File::open(format!("{}/exact.bin", out)).unwrap()).unwrap();
     assert_eq!(ex[2].1, vec![3000]);
     let pr = format!("{}/pairs", dir);
-    crate::pairs::run(crate::pairs::PairsOpts { input: out, out: pr.clone(), groups: vec![], varopt_text: None, threads: 1 }).unwrap();
+    crate::pairs::run(crate::pairs::PairsOpts { input: out, out: pr.clone(), groups: vec![], varopt_text: None, bands: None, threads: 1 }).unwrap();
     let rows = std::fs::read_to_string(format!("{}/rows.all.tsv", pr)).unwrap();
     let h: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
     let (xn, xp) = (h.iter().position(|x| *x == "X_n").unwrap(), h.iter().position(|x| *x == "X_n_pos").unwrap());
@@ -1769,4 +1772,162 @@ fn an_underflowed_coefficient_stays_in_the_pos_support() {
     // Records 32 and 33 have the same pos support, {1000, 2000}.
     let l = pairs.lines().find(|l| l.starts_with("1\t2\t")).unwrap();
     assert_eq!(l.split('\t').nth(jp).unwrap(), metrics::fmt(1.0));
+}
+
+/// `pick --bands-ref`, `pairs --bands` and `describe`, end to end, against a
+/// binned reference made from the exact colours: the dump is the selected
+/// lines of the reference, verbatim, from a plain file and through `zstd`
+/// alike, with or without a store beside it; a misaligned or short reference
+/// fails, naming the record; `B_tv1024` is the binned TV of the normalised
+/// lines and `bands-check.tsv` its check; `describe` reads `decode --select`
+/// and the dump back, finds a sketch with `k` above every support equal to
+/// its binned colour, and refuses a dump of other transactions.
+#[test]
+fn bands_dump_pairs_and_describe() {
+    use crate::describe;
+    let records = stream(2000, 300, 71);
+    let dir = scratch("bands");
+    // The reference: each exact colour binned, bands decreasing, as
+    // `colors.bands1024.zst` is written; masses scaled by 3 so that they
+    // must be normalised.
+    let (exact, _) = colours(Exact::new(), &records, None);
+    let line = |r: usize| {
+        let (tx, p, _) = &exact[r];
+        let v = metrics::bin(p);
+        let terms: Vec<String> =
+            (0..v.len()).rev().filter(|&b| v[b] != 0.0).map(|b| format!("{}:{}", (3.0 * v[b]) as f32, b)).collect();
+        format!("{}\t{}\n", tx, terms.join(","))
+    };
+    let reference: String = (0..exact.len()).map(line).collect();
+    let plain = format!("{}/bands.txt", dir);
+    std::fs::write(&plain, &reference).unwrap();
+    let sel_path = format!("{}/sel.txt", dir);
+    let chosen = [3u64, 40, 41, 500, 1200, 1999];
+    let text: String =
+        chosen.iter().enumerate().map(|(i, r)| format!("{}\t{}\n", r, if i % 2 == 0 { "a" } else { "b" })).collect();
+    std::fs::write(&sel_path, text).unwrap();
+    let opts = |out: &str, bands: &str, configs: Vec<Config>, l1: Vec<L1Spec>| PickOpts {
+        select: sel_path.clone(),
+        out: out.to_string(),
+        limit: u64::MAX,
+        configs,
+        kmv: vec![],
+        l1,
+        exact: false,
+        bands: Some(bands.to_string()),
+        stats: false,
+    };
+    let want: String = chosen.iter().map(|&r| format!("{}\t{}", r, line(r as usize))).collect();
+    let none = HashMap::new();
+    let run = |o: PickOpts| pick::run(o, input(&records), None, &HashMap::new(), &none);
+
+    // The dump alone, from a plain file and through zstd.
+    let only = format!("{}/only", dir);
+    run(opts(&only, &plain, vec![], vec![])).unwrap();
+    assert_eq!(std::fs::read_to_string(format!("{}/bands.sel.txt", only)).unwrap(), want);
+    let zst = format!("{}.zst", plain);
+    let zipped = std::process::Command::new("zstd").args(["-q", "-f", &plain, "-o", &zst]).status().is_ok_and(|s| s.success());
+    if zipped {
+        let z = format!("{}/zst", dir);
+        run(opts(&z, &zst, vec![], vec![])).unwrap();
+        assert_eq!(std::fs::read_to_string(format!("{}/bands.sel.txt", z)).unwrap(), want);
+    }
+    // A reference one line off, and one too short.
+    let shifted = format!("{}/shifted.txt", dir);
+    std::fs::write(&shifted, (1..exact.len()).map(line).collect::<String>()).unwrap();
+    let e = run(opts(&format!("{}/s", dir), &shifted, vec![], vec![])).unwrap_err();
+    assert!(e.to_string().contains("misaligned at record 0"), "{}", e);
+    let short = format!("{}/short.txt", dir);
+    std::fs::write(&short, (0..100).map(line).collect::<String>()).unwrap();
+    let e = run(opts(&format!("{}/t", dir), &short, vec![], vec![])).unwrap_err();
+    assert!(e.to_string().contains("ended at record 100"), "{}", e);
+
+    // Beside two stores, then pairs against the dump.
+    let out = format!("{}/pick", dir);
+    let l1 = vec![L1Spec::parse("64").unwrap()];
+    run(opts(&out, &plain, vec![Config::parse("varopt:16").unwrap()], l1)).unwrap();
+    assert_eq!(std::fs::read_to_string(format!("{}/bands.sel.txt", out)).unwrap(), want);
+    let pr = format!("{}/pairs", dir);
+    let po = |bands: &str| crate::pairs::PairsOpts {
+        input: out.clone(),
+        out: pr.clone(),
+        groups: vec![],
+        varopt_text: None,
+        bands: Some(bands.to_string()),
+        threads: 2,
+    };
+    crate::pairs::run(po(&format!("{}/bands.sel.txt", out))).unwrap();
+    let b = describe::read_bands(&format!("{}/bands.sel.txt", out)).unwrap();
+    let tsv = std::fs::read_to_string(format!("{}/pairs.a.tsv", pr)).unwrap();
+    let mut lines = tsv.lines();
+    let h: Vec<&str> = lines.next().unwrap().split('\t').collect();
+    let col = |n: &str| h.iter().position(|x| *x == n).unwrap();
+    let mut seen = 0;
+    for l in lines {
+        let c: Vec<&str> = l.split('\t').collect();
+        let (ra, rb): (u64, u64) = (c[col("rec_i")].parse().unwrap(), c[col("rec_j")].parse().unwrap());
+        assert_eq!(c[col("B_tv1024")], metrics::fmt(metrics::tv_bins(&b[&ra].p, &b[&rb].p)));
+        seen += 1;
+    }
+    assert_eq!(seen, 3);
+    let check = std::fs::read_to_string(format!("{}/bands-check.tsv", pr)).unwrap();
+    let rows: Vec<&str> = check.lines().collect();
+    assert_eq!(rows.len(), 3, "{}", check);
+    assert!(rows[1].starts_with("a\tl1-m64-s1-f32\t64\t3\t") && rows[2].starts_with("b\tl1-m64-s1-f32\t64\t3\t"), "{}", check);
+    // A dump that is not there: refused, naming it.
+    let e = crate::pairs::run(po(&format!("{}/none/bands.sel.txt", dir))).unwrap_err();
+    assert!(e.to_string().contains("bands.sel.txt"), "{}", e);
+
+    // describe: the production-style sketches of the selection, by emit and
+    // decode --select, at a k that holds every support whole.
+    let emitted = format!("{}/emit.bin", dir);
+    let cfg = Config::parse("varopt:4096").unwrap();
+    let w: Box<dyn std::io::Write + Send> = Box::new(std::fs::File::create(&emitted).unwrap());
+    crate::modes::emit(cfg, crate::modes::Format::Bin, input(&records), u64::MAX, None, &HashMap::new(), false, w).unwrap();
+    let decoded = format!("{}/sel.sketches.txt", dir);
+    let w: Box<dyn std::io::Write + Send> = Box::new(std::fs::File::create(&decoded).unwrap());
+    crate::modes::decode(Box::new(std::fs::File::open(&emitted).unwrap()), w, Some(&chosen)).unwrap();
+    let d = format!("{}/describe", dir);
+    let dopts = |bands: &str, records: Vec<u64>| describe::DescribeOpts {
+        input: decoded.clone(),
+        out: d.clone(),
+        bands: Some(bands.to_string()),
+        counts: None,
+        select: Some(sel_path.clone()),
+        records,
+    };
+    describe::run(dopts(&format!("{}/bands.sel.txt", out), vec![1999, 3])).unwrap();
+    let t = std::fs::read_to_string(format!("{}/describe.tsv", d)).unwrap();
+    assert!(t.starts_with("# tv1024, ks_edges and w1_edges compare"), "{}", t);
+    let mut lines = t.lines().skip(1);
+    let h: Vec<&str> = lines.next().unwrap().split('\t').collect();
+    let col = |n: &str| h.iter().position(|x| *x == n).unwrap();
+    let mut n = 0;
+    for (l, &r) in lines.zip(&chosen) {
+        let c: Vec<&str> = l.split('\t').collect();
+        assert_eq!(c[col("rec")], r.to_string());
+        assert_eq!(c[col("group")], if n % 2 == 0 { "a" } else { "b" });
+        assert_eq!((c[col("reduced")], c[col("flat")]), ("0", "0"));
+        assert_eq!(c[col("terms")], exact[r as usize].1.iter().filter(|x| x.1 != 0.0).count().to_string());
+        // Unreduced, the sketch is the colour up to f32.
+        for k in ["tv1024", "ks_edges"] {
+            let v: f64 = c[col(k)].parse().unwrap();
+            assert!(v < 1e-6, "record {}: {} {}", r, k, v);
+        }
+        n += 1;
+    }
+    assert_eq!(n, chosen.len());
+    let table = std::fs::read_to_string(format!("{}/table.md", d)).unwrap();
+    let rows: Vec<&str> = table.lines().skip(2).collect();
+    assert!(rows.len() == 2 && rows[0].starts_with("| 1,999 |") && rows[1].starts_with("| 3 |"), "{}", table);
+    let txt = std::fs::read_to_string(format!("{}/colours.txt", d)).unwrap();
+    assert!(txt.find("record 1999,").unwrap() < txt.find("record 3,").unwrap());
+    assert!(txt.lines().last().unwrap().starts_with("C(x) = ") && !txt.ends_with("\n\n"));
+    // Another transaction's line, and a record not described: refused.
+    let wrong = format!("{}/wrong.txt", dir);
+    std::fs::write(&wrong, want.replacen(&format!("3\t{}\t", exact[3].0), "3\t999999\t", 1)).unwrap();
+    let e = describe::run(dopts(&wrong, vec![])).unwrap_err();
+    assert!(e.to_string().contains("record 3 is tx 999999"), "{}", e);
+    let e = describe::run(dopts(&format!("{}/bands.sel.txt", out), vec![4])).unwrap_err();
+    assert!(e.to_string().contains("--records names 4"), "{}", e);
 }

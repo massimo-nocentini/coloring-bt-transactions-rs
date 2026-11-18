@@ -54,12 +54,16 @@
 //! sketch check  --out <dir> [--every 16] [--rows-every 4001] [--bucket 10000000]
 //!               [--laplace-ref <zst>] [--moments-ref <zst>] [--bands-ref <zst>] < out.bin
 //! sketch decode [--select <file>] < out.bin|counts.bin > out.txt
+//! sketch describe --in <decode --select text> --out <dir> [--bands <file>] [--counts <tsv>]
+//!               [--select <file>] [--records <rec>,<rec>,...]
 //! sketch count  --kmv <spec> [--kmv <spec> ...] --oracle <path> --out <dir> [--limit <n>|all]
 //!               [--sets-counts <path>] [--every <n>] [--bucket 10000000] [--no-stream] [--zstd] [--stats]
 //!               < records.scm
 //! sketch pick   --select <file> --out <dir> --oracle <path> [--limit <n>|all] [--config <cfg> ...]
-//!               [--kmv <spec> ...] [--l1 <spec> ...] [--exact [--force-exact]] [--stats] < records.scm
-//! sketch pairs  --in <pick dir> --out <dir> [--group <name> ...] [--varopt-text <file>] [--threads 32]
+//!               [--kmv <spec> ...] [--l1 <spec> ...] [--exact [--force-exact]] [--bands-ref <zst>]
+//!               [--stats] < records.scm
+//! sketch pairs  --in <pick dir> --out <dir> [--group <name> ...] [--varopt-text <file>] [--bands <file>]
+//!               [--threads 32]
 //! sketch pairs-stats --in <pairs dir> [--in <pairs dir> ...] --out <dir> [--group <name>[+<name>...] ...]
 //! sketch surface --counts <count stream> --out <prefix> [--band 745] [--bands 1024] [--limit <n>|all]
 //!               < out.bin
@@ -77,12 +81,15 @@
 //!
 //! `eval` also takes `--kmv`, `--l1`, `--sets-counts` and `--l1-every 997`,
 //! and then needs no `--config`; see below.  `count`, `pick`, `pairs`,
-//! `pairs-stats`, `surface`, `surface-report`, `summarize`, `summary` and
-//! `select` refuse an option they would ignore: an L1 store, in particular,
-//! runs only under `pick` or `eval`, never under `count`.  `--exact` is a
-//! flag of `pick` and `eval`, and takes the exact surface's prefix under
-//! `surface-report`; `--chain` takes a `chain` output dir under `summarize`,
-//! and the number of records to pick under `select chain`.
+//! `pairs-stats`, `describe`, `surface`, `surface-report`, `summarize`,
+//! `summary` and `select` refuse an option they would ignore: an L1 store,
+//! in particular, runs only under `pick` or `eval`, never under `count`.
+//! Three options depend on the mode.  `--exact` is a flag of `pick` and
+//! `eval`, and takes the exact surface's prefix under `surface-report`;
+//! `--chain` takes a `chain` output dir under `summarize`, and the number of
+//! records to pick under `select chain`; `--bands` is the number of bands
+//! under `surface`, and a file of binned colours under `pairs` and
+//! `describe`.
 //!
 //! - **`eval`** ([`eval`]) runs the exact store beside the sketches on a
 //!   prefix and measures every sketch against the whole colour.
@@ -168,6 +175,19 @@
 //! `kmv-seeds.tsv`): one run shares one permutation, so its records' errors
 //! are correlated and their spread says nothing about the estimator's.
 //!
+//! On the whole chain the exact colours are on disk only binned, in
+//! `colors.bands1024.zst`, and three options read them for a selection:
+//! **`pick --bands-ref`** copies the selected records' lines out of that
+//! file beside the fold; **`pairs --bands`** adds the binned TV of every
+//! pair, an exact lower bound on the TV the L1 store estimates, and checks
+//! the L1 estimates against it (`bands-check.tsv`); and **`describe`**
+//! ([`describe`]) reads the production varopt sketches that `decode
+//! --select` cut out, says what each one is -- terms, distinct coefficients,
+//! heavy entries, mean and newest block -- and compares it with its binned
+//! colour.  Those comparisons are made at the 1024 band edges only, and say
+//! so: the binned TV, band-edge KS and binned W1 are lower bounds on their
+//! block-level counterparts.
+//!
 //! ## The colour surface
 //!
 //! Every colour is a distribution over minting blocks, so the colours of the
@@ -235,6 +255,8 @@ mod chain;
 mod coord;
 #[path = "sketch/count.rs"]
 mod count;
+#[path = "sketch/describe.rs"]
+mod describe;
 #[path = "sketch/driver.rs"]
 mod driver;
 #[path = "sketch/encode.rs"]
@@ -315,7 +337,7 @@ fn allocator() -> &'static str {
 }
 
 const USAGE: &str =
-    "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|pairs-stats|surface|surface-report|summarize|summary [options] < input, or sketch select prefix|chain [options]   (see the module docs)";
+    "usage: sketch emit|chain|eval|check|decode|describe|count|pick|pairs|pairs-stats|surface|surface-report|summarize|summary [options] < input, or sketch select prefix|chain [options]   (see the module docs)";
 
 #[derive(Debug)]
 struct Args {
@@ -352,7 +374,9 @@ struct Args {
     zstd: bool,
     counts: Option<String>,
     band: Option<u64>,
-    bands: Option<u64>,
+    /// `surface --bands <n>`; under `pairs` and `describe`, `--bands` is a
+    /// file (`bands`).
+    n_bands: Option<u64>,
     sketched: Option<String>,
     /// `surface-report --exact <prefix>`; elsewhere `--exact` is a flag.
     exact_surface: Option<String>,
@@ -369,6 +393,8 @@ struct Args {
     even: usize,
     /// `select chain --chain <n>`; under `summarize`, `--chain` is a dir.
     chain_picks: usize,
+    bands: Option<String>,
+    records: Vec<u64>,
     /// Every option given, in order, so a mode can refuse what it ignores.
     given: Vec<String>,
 }
@@ -407,7 +433,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         zstd: false,
         counts: None,
         band: None,
-        bands: None,
+        n_bands: None,
         sketched: None,
         exact_surface: None,
         years: None,
@@ -421,6 +447,8 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         deep: 256,
         even: 1000,
         chain_picks: 512,
+        bands: None,
+        records: Vec::new(),
         given: Vec::new(),
     };
     let mut i = 1;
@@ -509,7 +537,8 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             }
             "--counts" => a.counts = Some(value(i)?.clone()),
             "--band" => a.band = Some(number(i)?),
-            "--bands" => a.bands = Some(number(i)?),
+            "--bands" if a.mode == "surface" => a.n_bands = Some(number(i)?),
+            "--bands" => a.bands = Some(value(i)?.clone()),
             "--sketched" => a.sketched = Some(value(i)?.clone()),
             "--years" => a.years = Some(value(i)?.clone()),
             "--chain" if a.mode == "select" => a.chain_picks = number(i)? as usize,
@@ -521,6 +550,11 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--window" => a.window = number(i)? as usize,
             "--deep" => a.deep = number(i)? as usize,
             "--even" => a.even = number(i)? as usize,
+            "--records" => {
+                for r in value(i)?.split(',').map(str::trim).filter(|r| !r.is_empty()) {
+                    a.records.push(r.parse().map_err(|_| format!("--records wants record indices, not {:?}", r))?);
+                }
+            }
             other => return Err(format!("unknown option {:?}\n{}", other, USAGE)),
         }
         i += if takes { 2 } else { 1 };
@@ -529,9 +563,9 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 }
 
 /// Refuse an option the mode would silently ignore.  Only the new modes
-/// (`count`, `pick`, `pairs`, `pairs-stats`, `surface`, `surface-report`,
-/// `summarize`, `summary`, `select`) check; the old ones keep accepting what
-/// they always accepted (A5).  `--stats` is every mode's.
+/// (`count`, `pick`, `pairs`, `pairs-stats`, `describe`, `surface`,
+/// `surface-report`, `summarize`, `summary`, `select`) check; the old ones
+/// keep accepting what they always accepted (A5).  `--stats` is every mode's.
 fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
     match a.given.iter().find(|o| o.as_str() != "--stats" && !takes.contains(&o.as_str())) {
         None => Ok(()),
@@ -690,19 +724,21 @@ fn run(a: Args) -> io::Result<()> {
                 &a,
                 &[
                     "--select", "--out", "--oracle", "--no-oracle", "--limit", "--config", "--kmv", "--l1", "--exact",
-                    "--force-exact",
+                    "--force-exact", "--bands-ref",
                 ],
             )
             .map_err(invalid)?;
             let select = a.select.clone().ok_or_else(|| invalid("pick needs --select <file>".into()))?;
-            if a.configs.is_empty() && a.kmv.is_empty() && a.l1.is_empty() && !a.exact {
-                return Err(invalid("pick needs at least one --config, --kmv, --l1 or --exact".into()));
+            let folds = !(a.configs.is_empty() && a.kmv.is_empty() && a.l1.is_empty() && !a.exact);
+            if !folds && a.refs.bands.is_none() {
+                return Err(invalid("pick needs at least one --config, --kmv, --l1, --exact or --bands-ref".into()));
             }
             let limit = a.limit.unwrap_or(u64::MAX);
             if a.exact && limit > 3_000_000 && !a.force_exact {
                 return Err(invalid(exact_refusal("pick --exact", limit)));
             }
-            let o = oracle_for(&a, limit, true)?;
+            // A dump of the bands alone folds nothing and needs no oracle.
+            let o = oracle_for(&a, limit, folds)?;
             let perms = count::perms_for(&a.kmv);
             let opts = pick::PickOpts {
                 select,
@@ -712,12 +748,13 @@ fn run(a: Args) -> io::Result<()> {
                 kmv: a.kmv.clone(),
                 l1: a.l1.clone(),
                 exact: a.exact,
+                bands: a.refs.bands.clone(),
                 stats: a.stats,
             };
             pick::run(opts, stdin(), o, &keys, &perms)
         }
         "pairs" => {
-            only(&a, &["--in", "--out", "--group", "--varopt-text", "--threads"]).map_err(invalid)?;
+            only(&a, &["--in", "--out", "--group", "--varopt-text", "--bands", "--threads"]).map_err(invalid)?;
             if a.inputs.len() > 1 {
                 return Err(invalid("pairs takes one --in <pick dir>; pairs-stats pools several pairs dirs".into()));
             }
@@ -726,6 +763,7 @@ fn run(a: Args) -> io::Result<()> {
                 out: need_out(&a).map_err(invalid)?,
                 groups: a.groups.clone(),
                 varopt_text: a.varopt_text.clone(),
+                bands: a.bands.clone(),
                 threads: a.threads,
             };
             pairs::run(opts)
@@ -744,7 +782,7 @@ fn run(a: Args) -> io::Result<()> {
                 return Err(invalid("surface takes --threads only with --bands-ref: a SKETCH01 stream is read on one thread".into()));
             }
             let width = a.band.unwrap_or(745);
-            let bands = a.bands.unwrap_or(1024);
+            let bands = a.n_bands.unwrap_or(1024);
             if width == 0 || width > u32::MAX as u64 || bands == 0 || bands > u16::MAX as u64 + 1 {
                 return Err(invalid(format!("surface wants --band in 1..2^32 and --bands in 1..65536, not {} and {}", width, bands)));
             }
@@ -834,6 +872,21 @@ fn run(a: Args) -> io::Result<()> {
                 chain: a.chain_picks,
             };
             select::run(opts)
+        }
+        "describe" => {
+            only(&a, &["--in", "--out", "--bands", "--counts", "--select", "--records"]).map_err(invalid)?;
+            if a.inputs.len() > 1 {
+                return Err(invalid("describe takes one --in <decode --select output>".into()));
+            }
+            let opts = describe::DescribeOpts {
+                input: a.input.clone().ok_or_else(|| invalid("describe needs --in <decode --select output>".into()))?,
+                out: need_out(&a).map_err(invalid)?,
+                bands: a.bands.clone(),
+                counts: a.counts.clone(),
+                select: a.select.clone(),
+                records: a.records.clone(),
+            };
+            describe::run(opts)
         }
         "check" => {
             let opts = modes::CheckOpts {

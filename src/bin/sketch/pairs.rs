@@ -21,11 +21,27 @@
 //! Work is split by pair index over `--threads` scoped threads and gathered
 //! in order, so the output is byte-identical at any thread count.
 //!
+//! ## Against the binned colours: `--bands`
+//!
+//! On the whole chain there is no `exact.bin` -- an exact fold of the chain
+//! does not fit -- but `colors.bands1024.zst` holds every record's exact
+//! colour binned into 1024 bands of 745 blocks, and `pick --bands-ref` cuts
+//! the selected records' lines out of it ([`crate::pick`]; the format is
+//! [`crate::describe::parse_bands_line`]'s).  Binning two colours into the
+//! same bands can only lower their total variation, so the binned TV,
+//! `B_tv1024`, is an exact *lower bound* on the TV the L1 projection
+//! estimates, and the check is one-sided: for each L1 source at `m`,
+//! `TV-hat >= TV1024 - 3 sqrt(2/m) TV-hat` should hold in at least 99% of the
+//! pairs, `sqrt(2/m)` being about the RSE of the median estimator
+//! ([`crate::l1`]).  It is a check that passes, not a reference: the bound is
+//! far from tight when two colours differ mostly inside the bands.  A band
+//! line's tx must be the selected record's, or the run fails.
+//!
 //! ## Outputs, per group
 //!
 //! - `pairs.<group>.tsv`: `i j rec_i rec_j block_i block_j` and, per source,
 //!   its columns prefixed by its label (`kmv-k1024-s1-sets:J`, ...); the
-//!   exact ones are `X_*`.
+//!   exact ones are `X_*`, the binned one (with `--bands`) `B_tv1024`.
 //! - `m.<group>.<label>.<col>.f32`: `N x N` row-major little-endian matrices
 //!   of `J` and `cont` (KMV), `jw` (L1), `w1` (varopt) and `X_J`, `X_cont`,
 //!   `X_jw`, `X_J_pos`.  `cont` is not symmetric: cell `(a, b)` is the
@@ -34,6 +50,11 @@
 //! - `n.<group>.<label>.f32`: the count of every row.
 //! - `rows.<group>.tsv`: the row order (selection order) with rec, block and
 //!   the counts.  Seriation is the plotting script's business, not this.
+//! - `bands-check.tsv` (with `--bands`): per group and L1 source, the pairs,
+//!   the median `TV1024`, how many pairs and what share satisfy the bound,
+//!   and the median of `TV-hat / TV1024` over the pairs with `TV1024 > 0.01`.
+//!   Medians are numpy's ([`metrics::median_mid`]), as `r7_checks.py` took
+//!   them.
 
 use crate::encode::Decoder;
 use crate::hash::Perm;
@@ -50,6 +71,8 @@ pub struct PairsOpts {
     pub out: String,
     pub groups: Vec<String>,
     pub varopt_text: Option<String>,
+    /// `rec tx w:band,...` lines of the selected records' binned colours.
+    pub bands: Option<String>,
     pub threads: usize,
 }
 
@@ -89,6 +112,8 @@ struct Sources {
     l1: Vec<L1Src>,
     vo: Vec<VoSrc>,
     exact: Option<Vec<ExactRec>>,
+    /// Per selected record, its exact colour binned and normalised.
+    bands: Option<Vec<Vec<f64>>>,
 }
 
 fn bad(m: String) -> io::Error {
@@ -143,7 +168,7 @@ fn load(opts: &PairsOpts) -> io::Result<Sources> {
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
     names.sort();
-    let mut src = Sources { sel, kmv: Vec::new(), l1: Vec::new(), vo: Vec::new(), exact: None };
+    let mut src = Sources { sel, kmv: Vec::new(), l1: Vec::new(), vo: Vec::new(), exact: None, bands: None };
     let open = |name: &str| -> io::Result<BufReader<File>> { Ok(BufReader::with_capacity(1 << 20, File::open(format!("{}/{}", dir, name))?)) };
     for name in &names {
         let Some(stem) = name.strip_suffix(".bin") else { continue };
@@ -190,6 +215,18 @@ fn load(opts: &PairsOpts) -> io::Result<Sources> {
     }
     if let Some(p) = &opts.varopt_text {
         src.vo.push(read_varopt_text(p, &src.sel)?);
+    }
+    if let Some(p) = &opts.bands {
+        let mut b = crate::describe::read_bands(p)?;
+        let mut v = Vec::with_capacity(n);
+        for r in &src.sel {
+            let x = b.remove(&r.rec).ok_or_else(|| bad(format!("{}: no line for record {}", p, r.rec)))?;
+            if x.tx != r.tx {
+                return Err(bad(format!("{}: record {} is tx {} there but tx {} in sel.tsv", p, r.rec, x.tx, r.tx)));
+            }
+            v.push(x.p);
+        }
+        src.bands = Some(v);
     }
     Ok(src)
 }
@@ -274,6 +311,8 @@ struct PairOut {
     /// `(ks, w1/L, TV)` per varopt source.
     vo: Vec<(f64, f64, f64)>,
     x: Option<XPair>,
+    /// The binned colours' TV.
+    b: Option<f64>,
 }
 
 fn one_pair(src: &Sources, a: usize, b: usize) -> PairOut {
@@ -290,6 +329,7 @@ fn one_pair(src: &Sources, a: usize, b: usize) -> PairOut {
             })
             .collect(),
         x: src.exact.as_ref().map(|e| x_pair(&e[a], &e[b])),
+        b: src.bands.as_ref().map(|v| metrics::tv_bins(&v[a], &v[b])),
     }
 }
 
@@ -325,6 +365,7 @@ pub fn run(opts: PairsOpts) -> io::Result<()> {
         groups.retain(|g| opts.groups.contains(g));
     }
     let threads = opts.threads.max(1);
+    let mut checks: Vec<BandsCheck> = Vec::new();
     for g in &groups {
         let rows: Vec<usize> = (0..src.sel.len()).filter(|&i| &src.sel[i].group == g).collect();
         let n = rows.len();
@@ -388,6 +429,9 @@ pub fn run(opts: PairsOpts) -> io::Result<()> {
         }
         if src.exact.is_some() {
             write!(w, "\tX_n_i\tX_n_j\tX_J\tX_cont_ij\tX_cont_ji\tX_tv\tX_jw\tX_n_i_pos\tX_n_j_pos\tX_J_pos")?;
+        }
+        if src.bands.is_some() {
+            write!(w, "\tB_tv1024")?;
         }
         writeln!(w)?;
         // Matrices filled as the pairs are written.
@@ -475,6 +519,9 @@ pub fn run(opts: PairsOpts) -> io::Result<()> {
                 mat_x[1][a * n + b] = x.cont_ab;
                 mat_x[1][b * n + a] = x.cont_ba;
             }
+            if let Some(tv) = o.b {
+                write!(w, "\t{}", f(tv))?;
+            }
             writeln!(w)?;
         }
         w.flush()?;
@@ -527,9 +574,77 @@ pub fn run(opts: PairsOpts) -> io::Result<()> {
             writeln!(w)?;
         }
         w.flush()?;
+        if src.bands.is_some() {
+            let tvb: Vec<f64> = outs.iter().map(|o| o.b.unwrap_or(f64::NAN)).collect();
+            for (si, s) in src.l1.iter().enumerate() {
+                let t: Vec<f64> = outs.iter().map(|o| o.tv[si]).collect();
+                checks.push(bands_check(g, &s.label, s.m, &t, &tvb));
+            }
+        }
         eprintln!("sketch pairs: group {}: {} rows, {} pairs", g, n, pairs.len());
     }
+    if src.bands.is_some() {
+        write_bands_checks(&format!("{}/bands-check.tsv", opts.out), &checks)?;
+    }
     Ok(())
+}
+
+/// One row of `bands-check.tsv`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandsCheck {
+    pub group: String,
+    pub label: String,
+    pub m: usize,
+    pub pairs: usize,
+    pub median_tv1024: f64,
+    /// Pairs with `TV-hat >= TV1024 - 3 sqrt(2/m) TV-hat`.
+    pub holds: usize,
+    /// Pairs with `TV1024 > 0.01`, over which the ratio's median is taken.
+    pub over: usize,
+    pub median_ratio: f64,
+}
+
+/// The lower-bound check of one L1 source over one group's pairs: `t` the
+/// L1 estimates, `tvb` the binned exact TVs, pair by pair.  A `NaN`
+/// estimate fails the bound, as it does in numpy.
+pub fn bands_check(group: &str, label: &str, m: usize, t: &[f64], tvb: &[f64]) -> BandsCheck {
+    let slack = 3.0 * (2.0 / m as f64).sqrt();
+    let holds = t.iter().zip(tvb).filter(|&(&t, &b)| t >= b - slack * t).count();
+    let ratios: Vec<f64> = t.iter().zip(tvb).filter(|x| *x.1 > 0.01).map(|(t, b)| t / b).collect();
+    BandsCheck {
+        group: group.to_string(),
+        label: label.to_string(),
+        m,
+        pairs: t.len(),
+        median_tv1024: metrics::median_mid(tvb),
+        holds,
+        over: ratios.len(),
+        median_ratio: metrics::median_mid(&ratios),
+    }
+}
+
+fn write_bands_checks(path: &str, rows: &[BandsCheck]) -> io::Result<()> {
+    let f = metrics::fmt;
+    let mut w = BufWriter::new(File::create(path)?);
+    writeln!(w, "group\tlabel\tm\tpairs\tmedian_tv1024\tholds\tshare_holds\tpass\tpairs_tv1024_over_0.01\tmedian_ratio")?;
+    for r in rows {
+        let share = if r.pairs > 0 { r.holds as f64 / r.pairs as f64 } else { f64::NAN };
+        writeln!(
+            w,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            r.group,
+            r.label,
+            r.m,
+            r.pairs,
+            f(r.median_tv1024),
+            r.holds,
+            f(share),
+            (share >= 0.99) as u8,
+            r.over,
+            f(r.median_ratio)
+        )?;
+    }
+    w.flush()
 }
 
 /// Tab-prefixed columns, no newline.

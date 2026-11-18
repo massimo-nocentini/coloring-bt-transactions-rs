@@ -286,6 +286,24 @@ pub fn quantile_sorted(v: &[f64], q: f64) -> f64 {
     v[i]
 }
 
+/// The median as numpy's `median` takes it: the middle value, or the mean of
+/// the two middle values when the count is even; `NaN` if the sample is empty
+/// or holds one.  Not [`quantile_sorted`]`(v, 0.5)`, which is nearest rank and
+/// answers the lower of the two middle values.
+pub fn median_mid(v: &[f64]) -> f64 {
+    if v.is_empty() || v.iter().any(|x| x.is_nan()) {
+        return f64::NAN;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(f64::total_cmp);
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
+}
+
 /// `(mean, SE)` of a sample.
 pub fn mean_se(v: &[f64]) -> (f64, f64) {
     let n = v.len() as f64;
@@ -628,6 +646,14 @@ mod tests {
         assert_eq!(band(762_260), 1023);
         assert_eq!(band(744), 0);
         assert_eq!(band(745), 1);
+    }
+
+    #[test]
+    fn the_median_is_numpys() {
+        assert_eq!(median_mid(&[3.0, 1.0, 2.0]), 2.0);
+        assert_eq!(median_mid(&[4.0, 1.0, 3.0, 2.0]), 2.5);
+        assert_eq!(quantile_sorted(&[1.0, 2.0, 3.0, 4.0], 0.5), 2.0);
+        assert!(median_mid(&[]).is_nan() && median_mid(&[1.0, f64::NAN]).is_nan());
     }
 
     #[test]

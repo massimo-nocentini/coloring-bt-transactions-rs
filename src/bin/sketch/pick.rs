@@ -27,6 +27,24 @@
 //!   colour, zero coefficients included (the `sets` support and the colour),
 //!   then the blocks among them outside the `pos` support, ascending
 //!   ([`crate::exact::Exact::off`]; almost always none).
+//! - `bands.sel.txt` (`--bands-ref <file>`): the selected records' lines of a
+//!   binned-colour reference such as `colors.bands1024.zst`, each prefixed
+//!   by its record index: `rec<TAB>tx<TAB>w:band,...`, what `pairs --bands`
+//!   and `describe --bands` read.
+//!
+//! ## `--bands-ref`: the exact binned colours beside the sketches
+//!
+//! On the whole chain an exact fold does not fit, but the binned colour of
+//! every record is on disk, one line per record in record order.  With
+//! `--bands-ref` a thread of its own reads that file (`zstd -dc --long=31`
+//! when it ends in `.zst`, as is otherwise) in lock-step with the records,
+//! checks every line's tx against the record's, and copies the selected
+//! lines out, verbatim; it stops reading, and kills the `zstd`, after the
+//! last selected record.  The file is 1.67 TB of zstd for the 2022 chain,
+//! so the dump costs a full decompression up to the last selected record,
+//! but no second pass: before this option, a separate script read it for
+//! 3 h 42 min.  `pick` can run with `--bands-ref` and no store,
+//! for the dump alone; it then needs no oracle either.
 
 use crate::algebra::{Algebra, Config, Sketcher, Variant};
 use crate::chain::snapshot;
@@ -53,6 +71,8 @@ pub struct PickOpts {
     pub kmv: Vec<KmvSpec>,
     pub l1: Vec<L1Spec>,
     pub exact: bool,
+    /// A binned-colour reference to copy the selected lines out of.
+    pub bands: Option<String>,
     pub stats: bool,
 }
 
@@ -170,6 +190,86 @@ fn sel_thread(rx: Receiver<Arc<Batch>>, sel: Arc<Selection>, path: String) -> io
     w.flush()
 }
 
+/// Copy the selected records' lines of `src`, one line per record in record
+/// order, to `out` as `rec<TAB>line`, checking each line's tx (its first
+/// field) against the record's.  Stops after the last selected record.
+/// Answers how many lines were copied.
+pub fn dump_ref_lines<B: BufRead>(
+    src: &mut B,
+    batches: impl Iterator<Item = Arc<Batch>>,
+    sel: &Selection,
+    out: &mut impl Write,
+) -> io::Result<usize> {
+    let mut next = 0usize;
+    let mut line = Vec::with_capacity(1 << 16);
+    let mut records = 0u64;
+    for batch in batches {
+        for (i, r) in batch.recs.iter().enumerate() {
+            if next == sel.len() {
+                return Ok(next);
+            }
+            let rec = batch.first + i as u64;
+            line.clear();
+            if src.read_until(b'\n', &mut line)? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!("the bands reference ended at record {}, before the records did", rec),
+                ));
+            }
+            let body = line.strip_suffix(b"\n").unwrap_or(&line);
+            let tab = body.iter().position(|&c| c == b'\t').unwrap_or(body.len());
+            let tx = std::str::from_utf8(&body[..tab]).ok().and_then(|s| s.parse::<u64>().ok());
+            if tx != Some(r.tx as u64) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "the bands reference is misaligned at record {}: its line names tx {:?} but the record is tx {}",
+                        rec,
+                        String::from_utf8_lossy(&body[..tab]),
+                        r.tx
+                    ),
+                ));
+            }
+            if sel.recs[next] == rec {
+                write!(out, "{}\t", rec)?;
+                out.write_all(body)?;
+                out.write_all(b"\n")?;
+                next += 1;
+            }
+        }
+        records = batch.first + batch.len() as u64;
+    }
+    all_seen(sel, next, records)?;
+    Ok(next)
+}
+
+/// [`dump_ref_lines`] on its own thread, from `src` (through `zstd -dc
+/// --long=31` when it ends in `.zst`) to `path`.
+fn bands_thread(rx: Receiver<Arc<Batch>>, sel: Arc<Selection>, src: String, path: String) -> io::Result<()> {
+    let named = |e: io::Error| io::Error::new(e.kind(), format!("{}: {}", src, e));
+    let mut w = BufWriter::new(File::create(&path)?);
+    let result = if src.ends_with(".zst") {
+        let mut child = std::process::Command::new("zstd")
+            .args(["-dc", "--long=31", "--", &src])
+            .stdout(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| io::Error::new(e.kind(), format!("cannot run zstd -dc {}: {}", src, e)))?;
+        let mut out = BufReader::with_capacity(1 << 22, child.stdout.take().expect("piped"));
+        let r = dump_ref_lines(&mut out, rx.iter(), &sel, &mut w);
+        // Stopped early on purpose or on an error: either way, no need for
+        // the rest of the file.  A zstd that failed shows up as an early end.
+        let _ = child.kill();
+        let _ = child.wait();
+        r
+    } else {
+        let mut f = BufReader::with_capacity(1 << 22, File::open(&src).map_err(named)?);
+        dump_ref_lines(&mut f, rx.iter(), &sel, &mut w)
+    };
+    result.map_err(named)?;
+    w.flush()
+}
+
 pub fn run(
     opts: PickOpts,
     input: Box<dyn io::Read + Send>,
@@ -193,6 +293,14 @@ pub fn run(
     let rx = channel();
     let (s, path) = (sel.clone(), format!("{}/sel.tsv", opts.out));
     let sel_handle = std::thread::Builder::new().name("sel".into()).spawn(move || sel_thread(rx, s, path))?;
+    let bands_handle = match &opts.bands {
+        None => None,
+        Some(src) => {
+            let rx = channel();
+            let (s, src, path) = (sel.clone(), src.clone(), format!("{}/bands.sel.txt", opts.out));
+            Some(std::thread::Builder::new().name("bands".into()).spawn(move || bands_thread(rx, s, src, path))?)
+        }
+    };
 
     for cfg in &opts.configs {
         let rx = channel();
@@ -279,11 +387,13 @@ pub fn run(
         }
     }
     let sel_result = sel_handle.join().expect("the selection writer panicked");
+    let bands_result = bands_handle.map(|h| h.join().expect("the bands writer panicked"));
     let read = reader.join().expect("the reader panicked");
     if let Some(e) = first_err {
         return Err(e);
     }
     sel_result?;
+    bands_result.transpose()?;
     let records = read?;
     write_cost(&format!("{}/cost.tsv", opts.out), &costs)?;
     eprintln!("sketch pick: {} records read, {} selected, {} stores, written to {}", records, sel.len(), costs.len(), opts.out);
