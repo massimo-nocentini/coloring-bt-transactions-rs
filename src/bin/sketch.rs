@@ -65,14 +65,16 @@
 //! sketch surface --counts <count stream> --bands-ref <zst> --out <prefix> [--band 745] [--bands 1024]
 //!               [--limit <n>|all] [--threads 32]
 //! sketch surface-report --sketched <prefix> [--exact <prefix>] --years <file> --out <dir> [--band 745]
+//! sketch summarize --out <dir> [--chain <dir> ...] [--eval <dir> [--moments <zst>]]
+//!               [--stretch 100000000] [--head 3] [--threads 32]
 //! ```
 //!
 //! `eval` also takes `--kmv`, `--l1`, `--sets-counts` and `--l1-every 997`,
 //! and then needs no `--config`; see below.  `count`, `pick`, `pairs`,
-//! `surface` and `surface-report` refuse an option they would ignore: an L1
-//! store, in particular, runs only under `pick` or `eval`, never under
-//! `count`.  `--exact` is a flag of `pick` and `eval`, and takes the exact
-//! surface's prefix under `surface-report`.
+//! `surface`, `surface-report` and `summarize` refuse an option they would
+//! ignore: an L1 store, in particular, runs only under `pick` or `eval`,
+//! never under `count`.  `--exact` is a flag of `pick` and `eval`, and takes
+//! the exact surface's prefix under `surface-report`.
 //!
 //! - **`eval`** ([`eval`]) runs the exact store beside the sketches on a
 //!   prefix and measures every sketch against the whole colour.
@@ -83,6 +85,12 @@
 //!   `sketch emit ... | zstd -T16 -12 > colors.sketch.zst`.
 //! - **`check`** recomputes `chain`'s metric columns from what `emit` wrote,
 //!   so a stored file can be validated after the fact.
+//! - **`summarize`** ([`summarize`]) reads what `chain` and `eval` wrote and
+//!   computes the tables of the results from it -- error against `k` and
+//!   depth, slopes, the bias tests across seeds, step against record mode,
+//!   the recursion against one reduction, and (with `--moments`) the floors
+//!   of the band metrics -- with the conventions the published tables used.
+//!   It reads files only; no fold is rerun.
 //!
 //! Nothing here picks `k`.  The modes write tables of error against cost per
 //! config, bucket and support stratum; a person reads them and decides.
@@ -235,6 +243,8 @@ mod pairs;
 mod pick;
 #[path = "sketch/prio.rs"]
 mod prio;
+#[path = "sketch/summarize.rs"]
+mod summarize;
 #[path = "sketch/surface.rs"]
 mod surface;
 #[path = "sketch/surface_report.rs"]
@@ -280,8 +290,7 @@ fn allocator() -> &'static str {
     }
 }
 
-const USAGE: &str =
-    "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|surface|surface-report [options] < input   (see the module docs)";
+const USAGE: &str = "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|surface|surface-report|summarize [options] < input   (see the module docs)";
 
 #[derive(Debug)]
 struct Args {
@@ -319,6 +328,11 @@ struct Args {
     /// `surface-report --exact <prefix>`; elsewhere `--exact` is a flag.
     exact_surface: Option<String>,
     years: Option<String>,
+    chain_dirs: Vec<String>,
+    eval_dir: Option<String>,
+    moments: Option<String>,
+    stretch: u64,
+    head: u64,
     /// Every option given, in order, so a mode can refuse what it ignores.
     given: Vec<String>,
 }
@@ -359,6 +373,11 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         sketched: None,
         exact_surface: None,
         years: None,
+        chain_dirs: Vec::new(),
+        eval_dir: None,
+        moments: None,
+        stretch: 100_000_000,
+        head: 3,
         given: Vec::new(),
     };
     let mut i = 1;
@@ -436,6 +455,11 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--bands" => a.bands = Some(number(i)?),
             "--sketched" => a.sketched = Some(value(i)?.clone()),
             "--years" => a.years = Some(value(i)?.clone()),
+            "--chain" => a.chain_dirs.push(value(i)?.clone()),
+            "--eval" => a.eval_dir = Some(value(i)?.clone()),
+            "--moments" => a.moments = Some(value(i)?.clone()),
+            "--stretch" => a.stretch = number(i)?.max(1),
+            "--head" => a.head = number(i)?,
             other => return Err(format!("unknown option {:?}\n{}", other, USAGE)),
         }
         i += if takes { 2 } else { 1 };
@@ -444,9 +468,9 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 }
 
 /// Refuse an option the mode would silently ignore.  Only the new modes
-/// (`count`, `pick`, `pairs`, `surface`, `surface-report`) check; the old
-/// ones keep accepting what they always accepted (A5).  `--stats` is every
-/// mode's.
+/// (`count`, `pick`, `pairs`, `surface`, `surface-report`, `summarize`)
+/// check; the old ones keep accepting what they always accepted (A5).
+/// `--stats` is every mode's.
 fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
     match a.given.iter().find(|o| o.as_str() != "--stats" && !takes.contains(&o.as_str())) {
         None => Ok(()),
@@ -678,6 +702,27 @@ fn run(a: Args) -> io::Result<()> {
                 width: width as u32,
             };
             surface_report::run(opts)
+        }
+        "summarize" => {
+            only(&a, &["--chain", "--eval", "--moments", "--out", "--stretch", "--head", "--threads"]).map_err(invalid)?;
+            if a.chain_dirs.is_empty() && a.eval_dir.is_none() {
+                return Err(invalid("summarize needs at least one --chain <dir> or --eval <dir>".into()));
+            }
+            if a.moments.is_some() && a.eval_dir.is_none() {
+                return Err(invalid(
+                    "summarize --moments needs --eval <dir>: the floors are calibrated on eval's single-shot sketches".into(),
+                ));
+            }
+            let opts = summarize::SummarizeOpts {
+                chain: a.chain_dirs.clone(),
+                eval: a.eval_dir.clone(),
+                moments: a.moments.clone(),
+                out: need_out(&a).map_err(invalid)?,
+                stretch: a.stretch,
+                head: a.head,
+                threads: a.threads,
+            };
+            summarize::run(opts)
         }
         "check" => {
             let opts = modes::CheckOpts {
