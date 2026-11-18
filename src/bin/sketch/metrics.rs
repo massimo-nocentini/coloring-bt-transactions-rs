@@ -633,7 +633,6 @@ mod tests {
         (a - b).abs() <= 1e-12 * (1.0 + a.abs() + b.abs())
     }
 
-    /// T13: hand-computed tiny distributions.
     /// The shared sum is numpy's beyond its 8,192-value buffer too: 1e16 and
     /// 9,999 ones, whose sum by one pairwise tree is 3 ulps off numpy's.
     #[test]
@@ -646,6 +645,7 @@ mod tests {
         assert_eq!(np_sum(&[]), 0.0);
     }
 
+    /// T13: hand-computed tiny distributions.
     #[test]
     fn distances_on_tiny_distributions() {
         let p = vec![(0u32, 0.5), (10, 0.5)];
