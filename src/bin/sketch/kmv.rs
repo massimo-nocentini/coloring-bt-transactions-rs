@@ -985,6 +985,29 @@ impl<R: Read> CntDecoder<R> {
 
     /// The next record, or `None` at the verified trailer.
     pub fn next(&mut self) -> io::Result<Option<CntRow>> {
+        let r = match self.next_rec()? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let rec = self.records - 1;
+        let f = self.frontier.expect("set by next_rec");
+        let u = self.universe.as_mut().expect("present");
+        u.grow(f as u64 + 1);
+        let k = self.spec.k;
+        let (n_hat, n_hat_m) = if r.full() {
+            (count_full(k, u.size(), u.below(r.rk)), (k as f64 - 1.0) * self.m as f64 / r.rk.max(1) as f64)
+        } else {
+            (r.len() as f64, r.len() as f64)
+        };
+        let (se, se_m) = if r.full() { (count_se(n_hat, k, u.size()), count_se(n_hat_m, k, self.m)) } else { (0.0, 0.0) };
+        Ok(Some(CntRow { rec, r, n_univ: u.size(), n_hat, se, n_hat_m, se_m }))
+    }
+
+    /// The next record as it is stored, or `None` at the verified trailer:
+    /// what a reader that wants only `tx` and `block` calls (`surface`), at
+    /// the cost of the read and the checksum.  The counts are not computed,
+    /// but the frontier is kept, so [`CntDecoder::next`] can follow it.
+    pub fn next_rec(&mut self) -> io::Result<Option<CntRec>> {
         let mut b = [0u8; CNT_RECORD];
         let mut got = 0;
         while got < CNT_RECORD {
@@ -1028,18 +1051,8 @@ impl<R: Read> CntDecoder<R> {
         if r.block as u64 >= self.m {
             return Err(corrupt(format!("record {}: block {} is past the 2^{} blocks of the header", rec, r.block, self.spec.bits)));
         }
-        let f = self.frontier.map_or(r.block, |f| f.max(r.block));
-        self.frontier = Some(f);
-        let u = self.universe.as_mut().expect("present");
-        u.grow(f as u64 + 1);
-        let k = self.spec.k;
-        let (n_hat, n_hat_m) = if r.full() {
-            (count_full(k, u.size(), u.below(r.rk)), (k as f64 - 1.0) * self.m as f64 / r.rk.max(1) as f64)
-        } else {
-            (r.len() as f64, r.len() as f64)
-        };
-        let (se, se_m) = if r.full() { (count_se(n_hat, k, u.size()), count_se(n_hat_m, k, self.m)) } else { (0.0, 0.0) };
-        Ok(Some(CntRow { rec, r, n_univ: u.size(), n_hat, se, n_hat_m, se_m }))
+        self.frontier = Some(self.frontier.map_or(r.block, |f| f.max(r.block)));
+        Ok(Some(r))
     }
 }
 

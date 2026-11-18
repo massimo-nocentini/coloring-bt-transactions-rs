@@ -160,7 +160,10 @@ fn bad(kind: RefKind, rec: u64, what: &str) -> io::Error {
     )
 }
 
-fn parse_line(kind: RefKind, rec: u64, line: &[u8], sampled: bool) -> io::Result<(u64, Option<RefVal>)> {
+/// One reference line: its tx id, and its numbers when `sampled`.  `rec`
+/// only names the line in errors.  Public for `surface`, whose parser threads
+/// call it on lines they were handed whole.
+pub fn parse_line(kind: RefKind, rec: u64, line: &[u8], sampled: bool) -> io::Result<(u64, Option<RefVal>)> {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     let tab = line.iter().position(|&c| c == b'\t').unwrap_or(line.len());
     let tx = std::str::from_utf8(&line[..tab])
@@ -238,7 +241,7 @@ pub fn read_refs<B: BufRead>(
 }
 
 /// A `zstd -dc <path>` child whose stdout is the reference text.
-fn decompress(path: &str) -> io::Result<Child> {
+pub fn decompress(path: &str) -> io::Result<Child> {
     Command::new("zstd")
         .args(["-dc", "--", path])
         .stdout(Stdio::piped())

@@ -60,12 +60,19 @@
 //! sketch pick   --select <file> --out <dir> --oracle <path> [--limit <n>|all] [--config <cfg> ...]
 //!               [--kmv <spec> ...] [--l1 <spec> ...] [--exact [--force-exact]] [--stats] < records.scm
 //! sketch pairs  --in <pick dir> --out <dir> [--group <name> ...] [--varopt-text <file>] [--threads 32]
+//! sketch surface --counts <count stream> --out <prefix> [--band 745] [--bands 1024] [--limit <n>|all]
+//!               < out.bin
+//! sketch surface --counts <count stream> --bands-ref <zst> --out <prefix> [--band 745] [--bands 1024]
+//!               [--limit <n>|all] [--threads 32]
+//! sketch surface-report --sketched <prefix> [--exact <prefix>] --years <file> --out <dir> [--band 745]
 //! ```
 //!
 //! `eval` also takes `--kmv`, `--l1`, `--sets-counts` and `--l1-every 997`,
-//! and then needs no `--config`; see below.  `count`, `pick` and `pairs`
-//! refuse an option they would ignore: an L1 store, in particular, runs
-//! only under `pick` or `eval`, never under `count`.
+//! and then needs no `--config`; see below.  `count`, `pick`, `pairs`,
+//! `surface` and `surface-report` refuse an option they would ignore: an L1
+//! store, in particular, runs only under `pick` or `eval`, never under
+//! `count`.  `--exact` is a flag of `pick` and `eval`, and takes the exact
+//! surface's prefix under `surface-report`.
 //!
 //! - **`eval`** ([`eval`]) runs the exact store beside the sketches on a
 //!   prefix and measures every sketch against the whole colour.
@@ -134,6 +141,24 @@
 //! variance are judged across seeds only (`count-seeds.tsv`,
 //! `kmv-seeds.tsv`): one run shares one permutation, so its records' errors
 //! are correlated and their spread says nothing about the estimator's.
+//!
+//! ## The colour surface
+//!
+//! Every colour is a distribution over minting blocks, so the colours of the
+//! chain, averaged over the transactions of each band of spending blocks,
+//! make a surface over spending time and minting time (§12 of the post).
+//! **`surface`** ([`surface`]) reads it off the production `SKETCH01` file
+//! on stdin -- or, with `--bands-ref`, off the exact colours binned in
+//! `colors.bands1024.zst`, parsed on `--threads` -- beside a count stream of
+//! `count`, which says each record's block; coinbases are left out.  It
+//! writes the sum matrices by minting band and by age band and the records
+//! per row, as `<prefix>.{mint,age,rows}.f64`, and its counters as
+//! `<prefix>.surface.tsv`.  **`surface-report`** ([`surface_report`]) turns
+//! a sketched surface and, optionally, the exact one into every table and
+//! number the post's §12 states -- the age of the coins spent per year, what
+//! moves against what exists, the sketched-against-exact checks -- and the
+//! series its figures draw; the calendar comes from `--years`, a TSV of each
+//! year's first block.
 //!
 //! ## What it costs
 //!
@@ -210,6 +235,10 @@ mod pairs;
 mod pick;
 #[path = "sketch/prio.rs"]
 mod prio;
+#[path = "sketch/surface.rs"]
+mod surface;
+#[path = "sketch/surface_report.rs"]
+mod surface_report;
 #[path = "sketch/varopt.rs"]
 mod varopt;
 
@@ -251,7 +280,8 @@ fn allocator() -> &'static str {
     }
 }
 
-const USAGE: &str = "usage: sketch emit|chain|eval|check|decode|count|pick|pairs [options] < input   (see the module docs)";
+const USAGE: &str =
+    "usage: sketch emit|chain|eval|check|decode|count|pick|pairs|surface|surface-report [options] < input   (see the module docs)";
 
 #[derive(Debug)]
 struct Args {
@@ -282,6 +312,13 @@ struct Args {
     exact: bool,
     no_stream: bool,
     zstd: bool,
+    counts: Option<String>,
+    band: Option<u64>,
+    bands: Option<u64>,
+    sketched: Option<String>,
+    /// `surface-report --exact <prefix>`; elsewhere `--exact` is a flag.
+    exact_surface: Option<String>,
+    years: Option<String>,
     /// Every option given, in order, so a mode can refuse what it ignores.
     given: Vec<String>,
 }
@@ -316,6 +353,12 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         exact: false,
         no_stream: false,
         zstd: false,
+        counts: None,
+        band: None,
+        bands: None,
+        sketched: None,
+        exact_surface: None,
+        years: None,
         given: Vec::new(),
     };
     let mut i = 1;
@@ -375,6 +418,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--group" => a.groups.push(value(i)?.clone()),
             "--varopt-text" => a.varopt_text = Some(value(i)?.clone()),
             "--threads" => a.threads = number(i)?.max(1) as usize,
+            "--exact" if a.mode == "surface-report" => a.exact_surface = Some(value(i)?.clone()),
             "--exact" => {
                 a.exact = true;
                 takes = false;
@@ -387,6 +431,11 @@ fn parse(argv: &[String]) -> Result<Args, String> {
                 a.zstd = true;
                 takes = false;
             }
+            "--counts" => a.counts = Some(value(i)?.clone()),
+            "--band" => a.band = Some(number(i)?),
+            "--bands" => a.bands = Some(number(i)?),
+            "--sketched" => a.sketched = Some(value(i)?.clone()),
+            "--years" => a.years = Some(value(i)?.clone()),
             other => return Err(format!("unknown option {:?}\n{}", other, USAGE)),
         }
         i += if takes { 2 } else { 1 };
@@ -395,8 +444,9 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 }
 
 /// Refuse an option the mode would silently ignore.  Only the new modes
-/// (`count`, `pick`, `pairs`) check; the old ones keep accepting what they
-/// always accepted (A5).  `--stats` is every mode's.
+/// (`count`, `pick`, `pairs`, `surface`, `surface-report`) check; the old
+/// ones keep accepting what they always accepted (A5).  `--stats` is every
+/// mode's.
 fn only(a: &Args, takes: &[&str]) -> Result<(), String> {
     match a.given.iter().find(|o| o.as_str() != "--stats" && !takes.contains(&o.as_str())) {
         None => Ok(()),
@@ -591,6 +641,43 @@ fn run(a: Args) -> io::Result<()> {
                 threads: a.threads,
             };
             pairs::run(opts)
+        }
+        "surface" => {
+            only(&a, &["--counts", "--out", "--band", "--bands", "--limit", "--bands-ref", "--threads"]).map_err(invalid)?;
+            if a.refs.bands.is_none() && a.given.iter().any(|o| o == "--threads") {
+                return Err(invalid("surface takes --threads only with --bands-ref: a SKETCH01 stream is read on one thread".into()));
+            }
+            let width = a.band.unwrap_or(745);
+            let bands = a.bands.unwrap_or(1024);
+            if width == 0 || width > u32::MAX as u64 || bands == 0 || bands > u16::MAX as u64 + 1 {
+                return Err(invalid(format!("surface wants --band in 1..2^32 and --bands in 1..65536, not {} and {}", width, bands)));
+            }
+            let opts = surface::SurfaceOpts {
+                counts: a.counts.clone().ok_or_else(|| invalid("surface needs --counts <count stream>".into()))?,
+                bands_ref: a.refs.bands.clone(),
+                out: a.out.clone().ok_or_else(|| invalid("surface needs --out <prefix>".into()))?,
+                width: width as u32,
+                bands: bands as usize,
+                limit: a.limit.unwrap_or(u64::MAX),
+                threads: a.threads,
+                stats: a.stats,
+            };
+            surface::run(opts, stdin())
+        }
+        "surface-report" => {
+            only(&a, &["--sketched", "--exact", "--years", "--out", "--band"]).map_err(invalid)?;
+            let width = a.band.unwrap_or(745);
+            if width == 0 || width > u32::MAX as u64 {
+                return Err(invalid(format!("surface-report wants --band in 1..2^32, not {}", width)));
+            }
+            let opts = surface_report::ReportOpts {
+                sketched: a.sketched.clone().ok_or_else(|| invalid("surface-report needs --sketched <prefix>".into()))?,
+                exact: a.exact_surface.clone(),
+                years: a.years.clone().ok_or_else(|| invalid("surface-report needs --years <file>".into()))?,
+                out: need_out(&a).map_err(invalid)?,
+                width: width as u32,
+            };
+            surface_report::run(opts)
         }
         "check" => {
             let opts = modes::CheckOpts {
