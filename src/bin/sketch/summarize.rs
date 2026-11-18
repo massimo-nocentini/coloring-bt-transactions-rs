@@ -101,7 +101,7 @@
 //! is gathered in that order.
 
 use crate::bands::CHAIN_BLOCKS;
-use crate::metrics::{self, fmt, inc_beta, t_quantile};
+use crate::metrics::{self, fmt, inc_beta, np_sum, t_quantile};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
@@ -131,44 +131,6 @@ fn bad(m: String) -> io::Error {
 
 // ------------------------------------------------------------------ numerics
 
-/// NumPy's `np.add.reduce` of a contiguous `f64` array: pairwise sums of
-/// blocks of 8,192 values (its buffer), added left to right.
-pub fn np_sum(a: &[f64]) -> f64 {
-    a.chunks(8192).fold(0.0, |r, c| r + pairwise(c))
-}
-
-/// NumPy's `pairwise_sum`: eight accumulators below 128 values, halves above.
-fn pairwise(a: &[f64]) -> f64 {
-    let n = a.len();
-    if n < 8 {
-        let mut r = 0.0;
-        for x in a {
-            r += x;
-        }
-        r
-    } else if n <= 128 {
-        let mut r = [0.0f64; 8];
-        r.copy_from_slice(&a[..8]);
-        let mut i = 8;
-        while i < n - n % 8 {
-            for (j, rj) in r.iter_mut().enumerate() {
-                *rj += a[i + j];
-            }
-            i += 8;
-        }
-        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
-        while i < n {
-            res += a[i];
-            i += 1;
-        }
-        res
-    } else {
-        let mut n2 = n / 2;
-        n2 -= n2 % 8;
-        pairwise(&a[..n2]) + pairwise(&a[n2..])
-    }
-}
-
 pub fn np_mean(a: &[f64]) -> f64 {
     if a.is_empty() {
         f64::NAN
@@ -185,10 +147,10 @@ fn nan_mean(a: impl Iterator<Item = f64>) -> f64 {
 
 /// NumPy's default quantile (`method='linear'`): the virtual index `(n - 1) q`,
 /// and its two neighbours interpolated as `_lerp` does, from the nearer end.
-/// Permutes `v`; NaN-free input.
+/// Permutes `v`; NaN for an empty `v`, a NaN `q` or a NaN in `v`, as numpy.
 pub fn quantile_linear(v: &mut [f64], q: f64) -> f64 {
     let n = v.len();
-    if n == 0 {
+    if n == 0 || q.is_nan() || v.iter().any(|x| x.is_nan()) {
         return f64::NAN;
     }
     let virt = (n - 1) as f64 * q;
@@ -211,10 +173,11 @@ pub fn quantile_linear(v: &mut [f64], q: f64) -> f64 {
     }
 }
 
-/// `np.median`: the middle value, or the mean of the two middle ones.
+/// `np.median`: the middle value, or the mean of the two middle ones; NaN
+/// for an empty `v` or one holding a NaN.
 pub fn np_median(v: &mut [f64]) -> f64 {
     let n = v.len();
-    if n == 0 {
+    if n == 0 || v.iter().any(|x| x.is_nan()) {
         return f64::NAN;
     }
     let a = *v.select_nth_unstable_by(n / 2, f64::total_cmp).1;
@@ -1758,6 +1721,10 @@ mod tests {
         assert_eq!(np_median(&mut e), 2.5);
         let mut o = vec![4.0, 1.0, 3.0];
         assert_eq!(np_median(&mut o), 3.0);
+        // A NaN value or a NaN q gives NaN, as numpy.
+        assert!(quantile_linear(&mut [1.0, f64::NAN, 3.0], 0.0).is_nan());
+        assert!(quantile_linear(&mut [1.0, 2.0], f64::NAN).is_nan());
+        assert!(np_median(&mut [f64::NAN, 1.0, 2.0]).is_nan());
     }
 
     #[test]

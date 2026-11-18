@@ -277,6 +277,46 @@ impl Agg {
     }
 }
 
+/// NumPy's `np.sum` (`np.add.reduce`) of a contiguous `f64` array: pairwise
+/// sums of blocks of 8,192 values (its buffer), added left to right.  What
+/// `summarize` and `surface-report` sum with, so that a mean or a share is
+/// the same `f64` as the scripts'.
+pub fn np_sum(a: &[f64]) -> f64 {
+    a.chunks(8192).fold(0.0, |r, c| r + pairwise(c))
+}
+
+/// NumPy's `pairwise_sum`: eight accumulators below 128 values, halves above.
+fn pairwise(a: &[f64]) -> f64 {
+    let n = a.len();
+    if n < 8 {
+        let mut r = 0.0;
+        for x in a {
+            r += x;
+        }
+        r
+    } else if n <= 128 {
+        let mut r = [0.0f64; 8];
+        r.copy_from_slice(&a[..8]);
+        let mut i = 8;
+        while i < n - n % 8 {
+            for (j, rj) in r.iter_mut().enumerate() {
+                *rj += a[i + j];
+            }
+            i += 8;
+        }
+        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        while i < n {
+            res += a[i];
+            i += 1;
+        }
+        res
+    } else {
+        let mut n2 = n / 2;
+        n2 -= n2 % 8;
+        pairwise(&a[..n2]) + pairwise(&a[n2..])
+    }
+}
+
 /// Exact quantile of a sorted slice (nearest rank).
 pub fn quantile_sorted(v: &[f64], q: f64) -> f64 {
     if v.is_empty() {
@@ -288,7 +328,7 @@ pub fn quantile_sorted(v: &[f64], q: f64) -> f64 {
 
 /// The median as numpy's `median` takes it: the middle value, or the mean of
 /// the two middle values when the count is even; `NaN` if the sample is empty
-/// or holds one.  Not [`quantile_sorted`]`(v, 0.5)`, which is nearest rank and
+/// or holds a NaN.  Not [`quantile_sorted`]`(v, 0.5)`, which is nearest rank and
 /// answers the lower of the two middle values.
 pub fn median_mid(v: &[f64]) -> f64 {
     if v.is_empty() || v.iter().any(|x| x.is_nan()) {
@@ -594,6 +634,18 @@ mod tests {
     }
 
     /// T13: hand-computed tiny distributions.
+    /// The shared sum is numpy's beyond its 8,192-value buffer too: 1e16 and
+    /// 9,999 ones, whose sum by one pairwise tree is 3 ulps off numpy's.
+    #[test]
+    fn the_sum_is_chunked_like_numpys() {
+        let mut a = vec![1e16];
+        a.extend(std::iter::repeat_n(1.0, 9999));
+        // NumPy 1.26: np.sum(a), as its bits.
+        assert_eq!(np_sum(&a).to_bits(), 0x4341c37937e09380, "{:x}", np_sum(&a).to_bits());
+        assert_eq!(pairwise(&a).to_bits(), 0x4341c37937e09383, "one tree over all the values is not numpy's sum");
+        assert_eq!(np_sum(&[]), 0.0);
+    }
+
     #[test]
     fn distances_on_tiny_distributions() {
         let p = vec![(0u32, 0.5), (10, 0.5)];

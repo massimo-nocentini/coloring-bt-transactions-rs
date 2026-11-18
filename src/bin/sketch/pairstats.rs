@@ -106,8 +106,8 @@
 //!   below the floor; and the varopt plug-in `J_w` of every varopt label
 //!   whose `jw_plugin` column was read.
 //! - `jw-bins.tsv` (exact needed): mean `J_w^` in 11 bins of the exact `J_w`
-//!   (edges 0, 1e-3, 3e-3, .01, .03, .1, .2, .3, .4, .5, .7, 1; left-closed),
-//!   with SE across seeds and RMS, and the mean plug-in per bin.
+//!   (edges 0, 1e-3, 3e-3, .01, .03, .1, .2, .3, .4, .5, .7, 1; left-closed,
+//!   the last, `[0.7, 1]`, closed at 1), with SE across seeds and RMS, and the mean plug-in per bin.
 //! - `seed-agreement.tsv` (`n_union` and `exact` needed, no exact values):
 //!   per KMV family with at least two seeds, per cell the across-seed SD `s`
 //!   of `J^` against the hypergeometric `sigma` at the seed means: the share
@@ -204,6 +204,11 @@ pub fn quantile_linear(sorted: &[f64], p: f64) -> f64 {
     let lo = h.floor() as usize;
     let hi = (lo + 1).min(sorted.len() - 1);
     sorted[lo] + (h - lo as f64) * (sorted[hi] - sorted[lo])
+}
+
+/// The first and last of an ascending slice; NaN for an empty one.
+fn ends(sorted: &[f64]) -> (f64, f64) {
+    (sorted.first().copied().unwrap_or(f64::NAN), sorted.last().copied().unwrap_or(f64::NAN))
 }
 
 /// The finite values of `v`, ascending.
@@ -430,6 +435,9 @@ fn read_rows(path: &str) -> io::Result<Rows> {
         for (slot, &i) in cols.iter_mut().zip(&counts) {
             slot.1.push(num(c[i], path)?);
         }
+    }
+    if rec.is_empty() {
+        return Err(bad(format!("{}: no rows, only the header", path)));
     }
     Ok((rec, block, cols))
 }
@@ -1014,10 +1022,13 @@ fn groups_and_sources(g: &Group, t: &mut Tables) -> io::Result<()> {
                 }
             }
         }
-        let rec = sorted_finite(p.rec.iter().map(|&x| x as f64));
-        let blk = sorted_finite(p.block.iter().map(|&x| x as f64));
+        // read_rows refuses a group without rows; a count column may still
+        // be all NA, and then its sizes are NA.
+        let rec = ends(&sorted_finite(p.rec.iter().map(|&x| x as f64)));
+        let blk = ends(&sorted_finite(p.block.iter().map(|&x| x as f64)));
         for (name, v) in sources {
             let sv = sorted_finite(v.into_iter());
+            let (lo, hi) = ends(&sv);
             let mut distinct = sv.clone();
             distinct.dedup();
             t.groups.row(&[
@@ -1025,17 +1036,17 @@ fn groups_and_sources(g: &Group, t: &mut Tables) -> io::Result<()> {
                 s(&p.name),
                 s(p.n),
                 s(p.npairs()),
-                f(rec[0]),
-                f(*rec.last().unwrap()),
-                f(blk[0]),
-                f(*blk.last().unwrap()),
+                f(rec.0),
+                f(rec.1),
+                f(blk.0),
+                f(blk.1),
                 name,
-                f(sv[0]),
+                f(lo),
                 f(quantile_linear(&sv, 0.5)),
-                f(*sv.last().unwrap()),
+                f(hi),
                 s(distinct.len()),
-                f(sv[0].log10()),
-                f(sv.last().unwrap().log10()),
+                f(lo.log10()),
+                f(hi.log10()),
             ])?;
         }
         for src in &p.srcs {
@@ -1953,8 +1964,8 @@ mod tests {
 
     /// A fake `pairs` output: `n` rows, two KMV seeds in `a` (TSV and
     /// matrices) and a third in `b` (matrices only), and the exact columns.
-    fn fake(n: usize) -> (std::path::PathBuf, String, String) {
-        let root = std::env::temp_dir().join(format!("sketch-pairstats-test-{}", std::process::id()));
+    fn fake(n: usize, name: &str) -> (std::path::PathBuf, String, String) {
+        let root = std::env::temp_dir().join(format!("sketch-pairstats-test-{}-{}", std::process::id(), name));
         let (a, b) = (root.join("a"), root.join("b"));
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
@@ -2012,7 +2023,7 @@ mod tests {
     #[test]
     fn a_fake_pairs_run_reduces_as_by_hand() {
         let n = 6;
-        let (root, a, b) = fake(n);
+        let (root, a, b) = fake(n, "reduce");
         let out = root.join("out").to_string_lossy().to_string();
         run(StatsOpts { inputs: vec![a.clone(), b.clone()], out: out.clone(), groups: vec![] }).unwrap();
         let read = |name: &str| std::fs::read_to_string(format!("{}/{}", out, name)).unwrap();
@@ -2073,6 +2084,41 @@ mod tests {
         run(StatsOpts { inputs: vec![a, b], out: out2.clone(), groups: vec!["g+g".into()] }).unwrap();
         let pooled = std::fs::read_to_string(format!("{}/jaccard-seeds.tsv", out2)).unwrap();
         assert!(pooled.lines().nth(1).unwrap().starts_with("g+g\t"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A group whose rows file has only its header is an error, and a count
+    /// column that is all NA gives NA sizes; neither panics.
+    #[test]
+    fn an_empty_group_or_an_all_na_count_does_not_panic() {
+        let (root, a, b) = fake(4, "empty");
+        let rows = format!("{}/rows.g.tsv", a);
+        let full = std::fs::read_to_string(&rows).unwrap();
+        // All NA in X_n (column 5).
+        let na: String = full
+            .lines()
+            .enumerate()
+            .map(|(i, l)| {
+                let mut c: Vec<&str> = l.split('\t').collect();
+                if i > 0 {
+                    c[5] = "NA";
+                }
+                c.join("\t") + "\n"
+            })
+            .collect();
+        std::fs::write(&rows, &na).unwrap();
+        std::fs::write(format!("{}/rows.g.tsv", b), &na).unwrap();
+        let out = root.join("out").to_string_lossy().to_string();
+        run(StatsOpts { inputs: vec![a.clone(), b.clone()], out: out.clone(), groups: vec![] }).unwrap();
+        let groups = std::fs::read_to_string(format!("{}/groups.tsv", out)).unwrap();
+        let xn = groups.lines().find(|l| l.split('\t').nth(8) == Some("X_n")).unwrap();
+        let c: Vec<&str> = xn.split('\t').collect();
+        assert_eq!(&c[9..], ["NA", "NA", "NA", "0", "NA", "NA"], "{}", xn);
+        // Header only.
+        let head = full.lines().next().unwrap().to_string() + "\n";
+        std::fs::write(&rows, &head).unwrap();
+        let e = run(StatsOpts { inputs: vec![a], out, groups: vec![] }).unwrap_err();
+        assert!(e.to_string().contains("no rows"), "{}", e);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

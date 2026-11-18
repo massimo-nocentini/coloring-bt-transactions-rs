@@ -554,11 +554,12 @@ pub fn fmt0(x: f64) -> String {
     format!("{:.0}", x.round_ties_even())
 }
 
-/// The median as numpy takes it: the middle value, or the mean of the two.
+/// The median as numpy takes it: the middle value, or the mean of the two;
+/// NaN for an empty `v` or one holding a NaN.
 pub fn median(v: &mut [f64]) -> f64 {
     v.sort_by(|a, b| a.total_cmp(b));
     let n = v.len();
-    if n == 0 {
+    if n == 0 || v.iter().any(|x| x.is_nan()) {
         f64::NAN
     } else if n % 2 == 1 {
         v[n / 2]
@@ -741,7 +742,8 @@ impl Source {
     }
 }
 
-/// The first `n` exact sizes, one per line (plain, or `.zst`).
+/// The first `n` exact sizes, one per line (plain, or `.zst`: a `zstd` that
+/// fails is an error of its own, not a short file).
 fn read_sizes(path: &str, n: u64) -> io::Result<Vec<u32>> {
     let mut out = Vec::with_capacity(n as usize);
     let push = |b: std::sync::Arc<feed::CountBatch>| {
@@ -749,16 +751,7 @@ fn read_sizes(path: &str, n: u64) -> io::Result<Vec<u32>> {
         true
     };
     let r = if path.ends_with(".zst") {
-        let mut c = Command::new("zstd")
-            .args(["-dc", "--", path])
-            .stdout(Stdio::piped())
-            .stdin(Stdio::null())
-            .spawn()
-            .map_err(|e| io::Error::new(e.kind(), format!("cannot run zstd -dc {}: {}", path, e)))?;
-        let r = feed::read_counts(BufReader::with_capacity(1 << 22, c.stdout.take().expect("piped")), n, push);
-        let _ = c.kill();
-        let _ = c.wait();
-        r
+        feed::read_counts_zst(path, n, push)
     } else {
         let f = File::open(path).map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path, e)))?;
         feed::read_counts(BufReader::with_capacity(1 << 22, f), n, push)
@@ -1084,6 +1077,31 @@ mod tests {
         assert_eq!(fmt0(354640.5), "354640");
         assert_eq!(median(&mut [3.0, 1.0, 2.0, 10.0]), 2.5);
         assert_eq!(median(&mut [3.0, 1.0, 2.0]), 2.0);
+        // numpy: a NaN anywhere makes the median NaN.
+        assert!(median(&mut [3.0, f64::NAN, 2.0]).is_nan());
+        assert!(median(&mut []).is_nan());
+    }
+
+    /// A `.zst` of sizes that zstd cannot read is said to be one, not a file
+    /// with too few sizes.
+    #[test]
+    fn unreadable_sizes_are_a_zstd_error() {
+        let dir = std::env::temp_dir().join(format!("sketch-select-sizes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("s.txt");
+        std::fs::write(&good, "5\n6\n7\n").unwrap();
+        assert!(Command::new("zstd").args(["-q", "-f"]).arg(&good).status().unwrap().success());
+        let good = format!("{}.zst", good.to_str().unwrap());
+        assert_eq!(read_sizes(&good, 2).unwrap(), vec![5, 6]);
+        assert!(read_sizes(&good, 4).unwrap_err().to_string().contains("has 3 sizes for 4 records"));
+        let bad = dir.join("bad.zst").to_str().unwrap().to_string();
+        std::fs::write(&bad, b"garbage").unwrap();
+        let missing = dir.join("missing.zst").to_str().unwrap().to_string();
+        for p in [&bad, &missing] {
+            let e = read_sizes(p, 3).unwrap_err().to_string();
+            assert!(e.contains(p.as_str()) && e.contains("zstd -dc exited"), "{}", e);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The `.txt` is what `pick --select` reads, groups and all.

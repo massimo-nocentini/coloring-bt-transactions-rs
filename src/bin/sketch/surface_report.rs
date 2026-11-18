@@ -97,8 +97,9 @@
 //!
 //! ## numpy's conventions, followed here
 //!
-//! - `np.sum` of a contiguous vector (and of a row, `axis=1`) is pairwise
-//!   ([`np_sum`]); a sum over rows (`axis=0`) and `cumsum` are sequential.
+//! - `np.sum` of a contiguous vector (and of a row, `axis=1`) is pairwise, in
+//!   blocks of 8,192 ([`np_sum`]); a sum over rows (`axis=0`) and `cumsum`
+//!   are sequential.
 //! - `np.interp(x, xp, fp)` ([`np_interp`]): `fp[0]` below the range, `fp[-1]`
 //!   above, else the segment `[xp[j], xp[j+1])` holding `x`.
 //! - `np.median` and `np.quantile` with the default `linear` method
@@ -106,7 +107,7 @@
 //!   `a + (b - a) g` below `g = 1/2` and `b - (b - a)(1 - g)` from it).
 //! - `np.searchsorted(c, q)` (side left) for the quantiles of a column.
 
-use crate::metrics::fmt;
+use crate::metrics::{fmt, np_sum};
 use crate::surface::Surface;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -133,39 +134,6 @@ pub fn window_bands(width: u32) -> usize {
 
 // ------------------------------------------------------------------ numpy
 
-/// `np.sum` of a contiguous `float64` vector: pairwise, in blocks of up to
-/// 128 with eight accumulators, as numpy's `pairwise_sum`.
-pub fn np_sum(a: &[f64]) -> f64 {
-    let n = a.len();
-    if n < 8 {
-        let mut r = 0.0;
-        for &x in a {
-            r += x;
-        }
-        r
-    } else if n <= 128 {
-        let mut r = [0f64; 8];
-        r.copy_from_slice(&a[..8]);
-        let mut i = 8;
-        while i < n - (n % 8) {
-            for j in 0..8 {
-                r[j] += a[i + j];
-            }
-            i += 8;
-        }
-        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
-        while i < n {
-            res += a[i];
-            i += 1;
-        }
-        res
-    } else {
-        let mut n2 = n / 2;
-        n2 -= n2 % 8;
-        np_sum(&a[..n2]) + np_sum(&a[n2..])
-    }
-}
-
 /// `np.interp(x, xp, fp)` for a scalar `x` and a nondecreasing `xp`.
 pub fn np_interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
     let n = xp.len();
@@ -184,9 +152,10 @@ pub fn np_interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
     slope * (x - xp[j]) + fp[j]
 }
 
-/// `np.quantile(v, q)`, method `linear`.  NaN for an empty `v`.
+/// `np.quantile(v, q)`, method `linear`.  NaN for an empty `v`, a NaN `q`
+/// or a NaN in `v`, as numpy.
 pub fn np_quantile(v: &[f64], q: f64) -> f64 {
-    if v.is_empty() {
+    if v.is_empty() || q.is_nan() || v.iter().any(|x| x.is_nan()) {
         return f64::NAN;
     }
     let mut s = v.to_vec();
@@ -210,9 +179,10 @@ pub fn np_quantile(v: &[f64], q: f64) -> f64 {
     }
 }
 
-/// `np.median(v)`: the middle value, or the mean of the two middle ones.
+/// `np.median(v)`: the middle value, or the mean of the two middle ones; NaN
+/// for an empty `v` or one holding a NaN.
 pub fn np_median(v: &[f64]) -> f64 {
-    if v.is_empty() {
+    if v.is_empty() || v.iter().any(|x| x.is_nan()) {
         return f64::NAN;
     }
     let mut s = v.to_vec();
@@ -1035,6 +1005,10 @@ mod tests {
         assert_eq!(np_quantile(&v, 1.0), 16.0);
         assert_eq!(np_quantile(&v, 0.3), 2.4);
         assert!(np_quantile(&[], 0.5).is_nan());
+        // A NaN value or a NaN q gives NaN, as numpy (not the NaN sorted last).
+        assert!(np_quantile(&[1.0, f64::NAN, 3.0], 0.0).is_nan());
+        assert!(np_quantile(&v, f64::NAN).is_nan());
+        assert!(np_median(&[1.0, 2.0, f64::NAN]).is_nan());
         assert_eq!(window_bands(745), 70);
     }
 

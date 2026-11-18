@@ -440,6 +440,30 @@ pub fn read_counts<B: BufRead>(mut src: B, limit: u64, mut f: impl FnMut(Arc<Cou
     }
 }
 
+/// [`read_counts`] of a `.zst`, through `zstd -dc`.  The child is killed when
+/// `f` stops the reading or `limit` lines are in; when the text ran out
+/// first, `zstd`'s exit status is checked, as [`spawn_ref`] does, so that a
+/// missing or corrupt file is an error and not a file of fewer lines.
+pub fn read_counts_zst(path: &str, limit: u64, mut f: impl FnMut(Arc<CountBatch>) -> bool) -> io::Result<u64> {
+    let mut child = decompress(path)?;
+    let out = child.stdout.take().expect("piped");
+    let mut stopped = false;
+    let result = read_counts(BufReader::with_capacity(1 << 22, out), limit, |b| {
+        let go = f(b);
+        stopped |= !go;
+        go
+    });
+    let ran_out = matches!(result, Ok(n) if n < limit) && !stopped;
+    if !ran_out {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    match (result, status) {
+        (Ok(_), Ok(st)) if ran_out && !st.success() => Err(io::Error::other(format!("zstd -dc exited with {}", st))),
+        (r, _) => r,
+    }
+}
+
 /// [`read_counts`] on a thread of its own, broadcasting to `to`: plain text,
 /// or through `zstd -dc` when the path ends in `.zst`.  The thread ends at
 /// the file's end; a consumer then finds the channel closed and stops
@@ -457,12 +481,7 @@ pub fn spawn_counts(path: String, limit: u64, to: Vec<SyncSender<Arc<CountBatch>
                 any
             };
             let result = if path.ends_with(".zst") {
-                let mut child = decompress(&path)?;
-                let out = child.stdout.take().expect("piped");
-                let r = read_counts(BufReader::with_capacity(1 << 22, out), limit, send);
-                let _ = child.kill();
-                let _ = child.wait();
-                r
+                read_counts_zst(&path, limit, send)
             } else {
                 let f = std::fs::File::open(&path)?;
                 read_counts(BufReader::with_capacity(1 << 22, f), limit, send)
@@ -572,6 +591,36 @@ mod tests {
         assert!(rx.recv().is_err());
         let e = h.join().unwrap().unwrap_err().to_string();
         assert!(e.contains("/nonexistent/sketch-test.zst") && e.contains("zstd"), "{}", e);
+    }
+
+    /// A `.zst` of sets-counts that zstd cannot read is an error, not a file
+    /// of no lines; a short one that zstd reads whole is its lines.
+    #[test]
+    fn a_missing_or_corrupt_sets_counts_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("sketch-feed-counts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.txt");
+        std::fs::write(&good, "3\n1\n4\n").unwrap();
+        let st = std::process::Command::new("zstd").args(["-q", "-f"]).arg(&good).status().unwrap();
+        assert!(st.success());
+        let good = format!("{}.zst", good.to_str().unwrap());
+        let corrupt = dir.join("corrupt.zst").to_str().unwrap().to_string();
+        std::fs::write(&corrupt, b"not a zstd frame at all").unwrap();
+        let missing = dir.join("missing.zst").to_str().unwrap().to_string();
+        let run = |p: &str| {
+            let (tx, rx) = std::sync::mpsc::sync_channel(8);
+            let h = spawn_counts(p.to_string(), u64::MAX, vec![tx]);
+            let got: Vec<u32> = rx.iter().flat_map(|b: Arc<CountBatch>| b.vals.clone()).collect();
+            (got, h.join().unwrap())
+        };
+        let (got, r) = run(&good);
+        assert_eq!((got, r.unwrap()), (vec![3, 1, 4], 3));
+        assert_eq!(read_counts_zst(&good, 2, |_| true).unwrap(), 2);
+        for p in [&corrupt, &missing] {
+            let e = run(p).1.unwrap_err().to_string();
+            assert!(e.contains(p.as_str()) && e.contains("zstd -dc exited"), "{}", e);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

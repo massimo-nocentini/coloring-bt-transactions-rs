@@ -167,11 +167,11 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 /// The `q`-quantile of `v` by linear interpolation at `h = (n - 1) q`,
 /// numpy's default (`method="linear"`, type 7), computed the way numpy does
 /// it: the order statistics `floor(h)` and the next, and [`lerp`] at the
-/// fractional part.  Reorders `v`; NaN for an empty slice.  Values are
-/// compared by `total_cmp`, and none here is NaN.
+/// fractional part.  Reorders `v`; NaN for an empty slice, a NaN `q` or a
+/// NaN in `v`, as numpy.  Values are compared by `total_cmp`.
 pub fn quantile(v: &mut [f64], q: f64) -> f64 {
     let n = v.len();
-    if n == 0 {
+    if n == 0 || q.is_nan() || v.iter().any(|x| x.is_nan()) {
         return f64::NAN;
     }
     let h = (n - 1) as f64 * q;
@@ -719,6 +719,8 @@ mod tests {
         assert_eq!(got, vec![1.6, 4.0, 7.800000000000001, 8.879999999999999]);
         assert!(quantile(&mut [], 0.5).is_nan());
         assert_eq!(quantile(&mut [7.0], 0.9), 7.0);
+        assert!(quantile(&mut [7.0, f64::NAN], 0.0).is_nan());
+        assert!(quantile(&mut [7.0, 8.0], f64::NAN).is_nan());
     }
 
     /// Selection gives what a full sort gives, at every size and quantile.

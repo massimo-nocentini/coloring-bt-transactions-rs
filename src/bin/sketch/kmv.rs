@@ -1073,6 +1073,13 @@ impl<R: Read> CntDecoder<R> {
         if r.block as u64 >= self.m {
             return Err(corrupt(format!("record {}: block {} is past the 2^{} blocks of the header", rec, r.block, self.spec.bits)));
         }
+        // A sketch keeps at most k ranks, and a full one exactly k (T3: it
+        // is K_k of a support larger than k).
+        let (len, k) = (r.len() as usize, self.spec.k);
+        if len > k || (r.full() && len != k) {
+            let what = if r.full() { "a full sketch" } else { "a whole sketch" };
+            return Err(corrupt(format!("record {}: {} of {} ranks at k = {}", rec, what, len, k)));
+        }
         self.frontier = Some(self.frontier.map_or(r.block, |f| f.max(r.block)));
         Ok(Some(r))
     }
@@ -1607,6 +1614,31 @@ pub mod tests {
             res = dec.next();
         }
         assert!(res.is_err(), "a missing trailer is caught");
+    }
+
+    /// A record longer than `k`, or full with other than `k` ranks, is not a
+    /// sketch any fold writes: every reader of the stream refuses it.
+    #[test]
+    fn a_record_of_the_wrong_length_is_refused() {
+        let spec = KmvSpec::parse("3:seed=4:bits=12").unwrap();
+        let perm = Arc::new(Perm::new(4, 12));
+        let read = |r: CntRec| {
+            let mut bytes = cnt_header(&spec).to_vec();
+            let mut enc = CntEncoder::default();
+            enc.record(&mut bytes, &r).unwrap();
+            enc.trailer(&mut bytes).unwrap();
+            let mut dec = CntDecoder::new(&bytes[8..], *CNT_MAGIC, Some(perm.clone())).unwrap();
+            dec.next().map(|x| x.map(|x| x.r))
+        };
+        let rec = |m: u32, rk: u32| CntRec { tx: 1, block: 5, m, rk };
+        // What a fold writes: whole with at most k ranks, full with k.
+        for r in [rec(0, 0), rec(2, 0), rec(3, 0), rec(3 | FULL_BIT, 9)] {
+            assert_eq!(read(r).unwrap(), Some(r));
+        }
+        for (r, what) in [(rec(4, 0), "a whole sketch of 4"), (rec(2 | FULL_BIT, 9), "a full sketch of 2"), (rec(4 | FULL_BIT, 9), "a full sketch of 4")] {
+            let e = read(r).unwrap_err();
+            assert!(e.to_string().contains(what), "{}", e);
+        }
     }
 
     #[test]
