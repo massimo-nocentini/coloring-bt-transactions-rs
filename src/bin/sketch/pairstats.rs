@@ -137,6 +137,22 @@
 //! - `spearman.tsv`: Spearman's rank correlation, ties at their mean rank,
 //!   of the lowest-seed varopt `W1` with the block gap and with `1 - J^`, and
 //!   of `1 - J^` with the block gap.
+//! - `similarity.tsv` (exact values needed): the other similarities the
+//!   same sketches give, against their exact values, per stratum (`all` and
+//!   the strata of `jaccard-seeds.tsv` for the set measures, of
+//!   `jw-strata.tsv` for Bray-Curtis): defined share, mean exact value, bias
+//!   test with seeds as the unit, RMS.  From a KMV `sets` family, as
+//!   functions of the counts `n^`, `J^` and `n_union` (so of the seeds read
+//!   from a TSV): Sørensen-Dice `2J/(1+J)`, cosine (Ochiai)
+//!   `I/sqrt(n_i n_j)`, overlap (Szymkiewicz-Simpson) `I/min(n_i, n_j)` with
+//!   `I = J^ n_union`, the same overlap as the containment estimate of the
+//!   smaller support (`overlap_cont`, the better one), Kulczynski and the
+//!   symmetric difference (relative error).  From an L1 family, Bray-Curtis,
+//!   which for two distributions is their TV, as `min(TV^, 1)`; histogram
+//!   intersection, Czekanowski and the weighted Sørensen index are `1 - TV`.
+//! - `similarity-quantiles.tsv`: the same measures, as `quantiles.tsv`
+//!   writes them, for the lowest seed of every family and the exact values,
+//!   and the KS distance between two varopt sketches (`pairs`' `ks`).
 //!
 //! Every number is written in full (`metrics::fmt`), rows in a fixed order:
 //! the output is a function of the inputs alone.
@@ -375,7 +391,7 @@ struct Src {
 /// The columns read from a TSV, per kind; anything else is ignored.
 const KMV_COLS: [&str; 10] = ["n_i", "n_j", "exact", "J", "se", "n_union", "cont_ij", "cont_ji", "cont_ij_fb", "cont_ji_fb"];
 const L1_COLS: [&str; 3] = ["tv", "jw", "jw_se"];
-const VO_COLS: [&str; 2] = ["w1", "jw_plugin"];
+const VO_COLS: [&str; 3] = ["w1", "jw_plugin", "ks"];
 const X_COLS: [&str; 10] = ["X_n_i", "X_n_j", "X_J", "X_cont_ij", "X_cont_ji", "X_tv", "X_jw", "X_n_i_pos", "X_n_j_pos", "X_J_pos"];
 
 fn bad(m: String) -> io::Error {
@@ -896,6 +912,8 @@ struct Tables {
     support: Table,
     cont_rows: Table,
     spearman: Table,
+    sim: Table,
+    simq: Table,
 }
 
 impl Tables {
@@ -979,6 +997,15 @@ impl Tables {
                 ],
             )?,
             spearman: Table::create(out, "spearman.tsv", &["group", "x", "y", "n", "rho"])?,
+            sim: Table::create(
+                out,
+                "similarity.tsv",
+                &[
+                    "group", "family", "k_or_m", "seeds", "measure", "error", "stratum", "pairs", "defined", "x_mean", "bias", "se", "t",
+                    "t_crit", "bias_ok", "rms",
+                ],
+            )?,
+            simq: Table::create(out, "similarity-quantiles.tsv", &qh)?,
         })
     }
 
@@ -999,6 +1026,8 @@ impl Tables {
             &mut self.support,
             &mut self.cont_rows,
             &mut self.spearman,
+            &mut self.sim,
+            &mut self.simq,
         ] {
             t.w.flush()?;
         }
@@ -1079,6 +1108,11 @@ fn groups_and_sources(g: &Group, t: &mut Tables) -> io::Result<()> {
 
 /// One `quantiles.tsv` row.
 fn quantile_row(t: &mut Tables, g: &str, stratum: &str, measure: &str, label: &str, v: &[f64], floor: Option<f64>) -> io::Result<()> {
+    quantile_row_to(&mut t.quantiles, g, stratum, measure, label, v, floor)
+}
+
+/// A `quantiles.tsv`-shaped row into any table with that header.
+fn quantile_row_to(table: &mut Table, g: &str, stratum: &str, measure: &str, label: &str, v: &[f64], floor: Option<f64>) -> io::Result<()> {
     let sv = sorted_finite(v.iter().copied());
     let mut row = vec![s(g), s(stratum), s(measure), s(label), s(sv.len()), s(v.len() - sv.len()), f(mean(&sv))];
     row.extend(QS.iter().map(|&p| f(quantile_linear(&sv, p))));
@@ -1090,7 +1124,7 @@ fn quantile_row(t: &mut Tables, g: &str, stratum: &str, measure: &str, label: &s
         Some(fl) => f(share(&sv, |x| x < fl)),
         None => s("NA"),
     });
-    t.quantiles.row(&row)
+    table.row(&row)
 }
 
 fn log10_1m(v: &[f64], below: f64) -> Vec<f64> {
@@ -1802,6 +1836,262 @@ fn correlations(g: &Group, t: &mut Tables) -> io::Result<()> {
     Ok(())
 }
 
+// ------------------------------------------------------------------ similarities
+
+/// The set similarities `similarity.tsv` derives from a KMV pair, in order.
+/// Each is a function of the two supports' sizes `a`, `b` and their
+/// intersection `I`: Sørensen-Dice `2I/(a+b) = 2J/(1+J)`, cosine (Ochiai)
+/// `I/sqrt(ab)`, overlap (Szymkiewicz-Simpson) `I/min(a,b)`, the same overlap
+/// read from the smaller side's containment estimate, Kulczynski
+/// `(I/a + I/b)/2`, and the symmetric difference `a + b - 2I`.
+pub const SET_MEASURES: [&str; 6] = ["dice", "cosine", "overlap", "overlap_cont", "kulczynski", "symdiff"];
+
+/// The exact measures of two supports of sizes `a`, `b` with intersection
+/// `i`, in the order of [`SET_MEASURES`]; NaN where a size is 0.
+pub fn set_measures(a: f64, b: f64, i: f64) -> [f64; 6] {
+    if !(a > 0.0 && b > 0.0) || i.is_nan() {
+        return [f64::NAN; 6];
+    }
+    let overlap = i / a.min(b);
+    [2.0 * i / (a + b), i / (a * b).sqrt(), overlap, overlap, 0.5 * (i / a + i / b), a + b - 2.0 * i]
+}
+
+/// The estimates of the same measures from one KMV pair: the counts `na`,
+/// `nb`, the Jaccard `j`, the union count `nu` and the two containments.
+/// The intersection is `J nu`, as `pairs` writes it (`inter`); Dice is
+/// `2J/(1+J)`, a function of `J` alone; the bounded ones are clipped to
+/// `[0, 1]`; `overlap_cont` is the containment of the smaller support (by
+/// its count) in the larger, NaN where `pairs` left it undefined.
+pub fn set_estimates(na: f64, nb: f64, j: f64, nu: f64, cont_ab: f64, cont_ba: f64) -> [f64; 6] {
+    let clip = |x: f64| if x.is_nan() { x } else { x.clamp(0.0, 1.0) };
+    let i = j * nu;
+    [
+        2.0 * j / (1.0 + j),
+        clip(i / (na * nb).sqrt()),
+        clip(i / na.min(nb)),
+        if na <= nb { cont_ab } else { cont_ba },
+        clip(0.5 * i * (1.0 / na + 1.0 / nb)),
+        nu * (1.0 - j),
+    ]
+}
+
+/// The error of an estimate of `measure`: absolute, except the symmetric
+/// difference, a count, whose error is relative (0 where both are 0).
+fn sim_err(measure: &str, est: f64, x: f64) -> f64 {
+    if measure != "symdiff" {
+        return est - x;
+    }
+    if x > 0.0 {
+        est / x - 1.0
+    } else if est == 0.0 {
+        0.0
+    } else {
+        f64::NAN
+    }
+}
+
+/// Per pair, the derived estimates of a KMV label, by measure; `None` if
+/// a column is missing (`n_union` is in the TSV only, so a label read from
+/// the f32 matrices has none).
+fn kmv_derived(g: &Group, label: &str) -> io::Result<Option<Vec<Vec<f64>>>> {
+    let c = |x: &str| g.col(&format!("{}:{}", label, x));
+    let (Some(na), Some(nb), Some(j), Some(nu)) = (c("n_i")?, c("n_j")?, c("J")?, c("n_union")?) else { return Ok(None) };
+    let (ci, cj) = (c("cont_ij")?, c("cont_ji")?);
+    let mut out = vec![Vec::with_capacity(j.len()); SET_MEASURES.len()];
+    for p in 0..j.len() {
+        let (a, b) = (ci.as_ref().map_or(f64::NAN, |v| v[p]), cj.as_ref().map_or(f64::NAN, |v| v[p]));
+        for (m, v) in set_estimates(na[p], nb[p], j[p], nu[p], a, b).into_iter().enumerate() {
+            out[m].push(v);
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Per pair, the exact measures, from `X_J` and the exact counts; the
+/// intersection `n_i + n_j - U` is an integer and is rounded to one.
+fn exact_derived(g: &Group) -> io::Result<Option<Vec<Vec<f64>>>> {
+    let Some((_, u, ni, nj)) = g.exact_union()? else { return Ok(None) };
+    let mut out = vec![Vec::with_capacity(u.len()); SET_MEASURES.len()];
+    for p in 0..u.len() {
+        let i = (ni[p] + nj[p] - u[p]).round();
+        for (m, v) in set_measures(ni[p], nj[p], i).into_iter().enumerate() {
+            out[m].push(v);
+        }
+    }
+    Ok(Some(out))
+}
+
+/// The rows of `similarity.tsv` for one family and measure: per stratum,
+/// the share of pairs where the estimate is defined, the mean exact value,
+/// the bias test with seeds as the unit, and the RMS (root of the seeds'
+/// mean squares).
+#[allow(clippy::too_many_arguments)]
+fn sim_rows(
+    t: &mut Tables,
+    g: &str,
+    fam: &str,
+    k_or_m: usize,
+    measure: &str,
+    strata: &[(String, Vec<bool>)],
+    x: &[f64],
+    errs: &[Vec<f64>],
+) -> io::Result<()> {
+    let sn = errs.len();
+    let tc = t_crit(sn, strata.len());
+    for (name, m) in strata {
+        let idx: Vec<usize> = (0..x.len()).filter(|&p| m[p]).collect();
+        let mut mu = Vec::new();
+        let mut ms = Vec::new();
+        let mut def = Vec::new();
+        for e in errs {
+            let v: Vec<f64> = idx.iter().map(|&p| e[p]).filter(|v| !v.is_nan()).collect();
+            def.push(v.len() as f64 / idx.len() as f64);
+            mu.push(mean(&v));
+            ms.push(mean(&v.iter().map(|v| v * v).collect::<Vec<_>>()));
+        }
+        let (b, se, tt) = seed_test(&mu);
+        t.sim.row(&[
+            s(g),
+            s(fam),
+            s(k_or_m),
+            s(sn),
+            s(measure),
+            s(if measure == "symdiff" { "relative" } else { "absolute" }),
+            s(name),
+            s(idx.len()),
+            f(mean(&def)),
+            f(mean(&defined(&idx.iter().map(|&p| x[p]).collect::<Vec<_>>()))),
+            f(b),
+            f(se),
+            f(tt),
+            f(tc),
+            if tt.is_nan() { s("NA") } else { s(tt.abs() < tc) },
+            f(mean(&defined(&ms)).sqrt()),
+        ])?;
+    }
+    Ok(())
+}
+
+/// `similarity.tsv` (exact values needed): the derived set similarities of
+/// every KMV `sets` family against their exact values, by stratum of the
+/// exact `J` (as `jaccard-seeds.tsv`, and `all`); and Bray-Curtis, which for
+/// two distributions is their TV, from every L1 family as `min(TV^, 1)`
+/// against `X_tv`, by stratum of the exact `J_w` (as `jw-strata.tsv`).
+/// Histogram intersection, Czekanowski and the weighted Sørensen index are
+/// all `1 - TV` and need no row of their own.
+fn similarity(g: &Group, t: &mut Tables) -> io::Result<()> {
+    if !g.has_exact() {
+        return Ok(());
+    }
+    if let (Some(xs), Some(xj)) = (exact_derived(g)?, g.col("X_J")?) {
+        let mut strata: Vec<(String, Vec<bool>)> = vec![("all".into(), vec![true; xj.len()])];
+        for &(lo, hi) in &J_STRATA {
+            let name = format!("({},{}{}", lo, hi, if hi == 1.0 { ")" } else { "]" });
+            strata.push((name, xj.iter().map(|&j| j > lo && j <= hi && j < 1.0).collect()));
+        }
+        strata.retain(|(_, m)| m.iter().any(|&b| b));
+        for (fam, srcs) in g.families() {
+            let Kind::Kmv { k, support, .. } = &srcs[0].kind else { continue };
+            if support != "sets" {
+                continue;
+            }
+            let mut seeds = Vec::new();
+            for src in &srcs {
+                if let Some(d) = kmv_derived(g, &src.label)? {
+                    seeds.push(d);
+                }
+            }
+            if seeds.is_empty() {
+                continue;
+            }
+            for (mi, measure) in SET_MEASURES.iter().enumerate() {
+                let x = &xs[mi];
+                let errs: Vec<Vec<f64>> =
+                    seeds.iter().map(|d| d[mi].iter().zip(x).map(|(&e, &v)| sim_err(measure, e, v)).collect()).collect();
+                sim_rows(t, &g.name, &fam, *k, measure, &strata, x, &errs)?;
+            }
+        }
+    }
+    if let (Some(xtv), Some(xjw)) = (g.col("X_tv")?, g.col("X_jw")?) {
+        let mut strata: Vec<(String, Vec<bool>)> = vec![("all".into(), vec![true; xtv.len()])];
+        for &(name, lo, hi) in &JW_STRATA {
+            strata.push((name.to_string(), xjw.iter().map(|&v| v >= lo && v < hi).collect()));
+        }
+        strata.retain(|(_, m)| m.iter().any(|&b| b));
+        for (fam, srcs) in g.families() {
+            let Kind::L1 { m, .. } = srcs[0].kind else { continue };
+            let mut errs = Vec::new();
+            for src in &srcs {
+                if let Some(tv) = g.col(&format!("{}:tv", src.label))? {
+                    errs.push(tv.iter().zip(&xtv).map(|(&e, &v)| e.min(1.0) - v).collect::<Vec<f64>>());
+                }
+            }
+            if !errs.is_empty() {
+                sim_rows(t, &g.name, &fam, m, "bray_curtis", &strata, &xtv, &errs)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `similarity-quantiles.tsv`: the derived similarities' quantiles, as
+/// `quantiles.tsv` (strata `all` and the block gaps), for the lowest seed of
+/// every family -- the set measures of every KMV family, Bray-Curtis
+/// `min(TV^, 1)` of every L1 family, and the KS distance between the two
+/// varopt sketches of every varopt label -- and the exact values beside them.
+fn similarity_quantiles(g: &Group, t: &mut Tables) -> io::Result<()> {
+    let mut ms: Vec<(String, String, Vec<f64>)> = Vec::new();
+    if g.has_exact() {
+        if let Some(xs) = exact_derived(g)? {
+            for (mi, measure) in SET_MEASURES.iter().enumerate() {
+                if *measure != "overlap_cont" {
+                    ms.push((measure.to_string(), "X".into(), xs[mi].clone()));
+                }
+            }
+        }
+        if let Some(tv) = g.col("X_tv")? {
+            ms.push(("bray_curtis".into(), "X".into(), tv));
+        }
+    }
+    for (_, srcs) in g.families() {
+        let l = &srcs[0].label;
+        match srcs[0].kind {
+            Kind::Kmv { .. } => {
+                if let Some(d) = kmv_derived(g, l)? {
+                    for (mi, measure) in SET_MEASURES.iter().enumerate() {
+                        ms.push((measure.to_string(), l.clone(), d[mi].clone()));
+                    }
+                }
+            }
+            Kind::L1 { .. } => {
+                if let Some(tv) = g.col(&format!("{}:tv", l))? {
+                    ms.push(("bray_curtis".into(), l.clone(), tv.iter().map(|x| x.min(1.0)).collect()));
+                }
+            }
+            Kind::Varopt { .. } => {
+                if let Some(ks) = g.col(&format!("{}:ks", l))? {
+                    ms.push(("ks".into(), l.clone(), ks));
+                }
+            }
+        }
+    }
+    let gaps = g.gaps();
+    for (measure, label, v) in &ms {
+        quantile_row_to(&mut t.simq, &g.name, "all", measure, label, v, None)?;
+    }
+    for &(lo, hi) in &GAPS {
+        let m: Vec<bool> = gaps.iter().map(|&x| x >= lo && x < hi).collect();
+        if !m.iter().any(|&x| x) {
+            continue;
+        }
+        let name = format!("gap [{},{})", lo, if hi.is_finite() { hi.to_string() } else { "inf".into() });
+        for (measure, label, v) in &ms {
+            quantile_row_to(&mut t.simq, &g.name, &name, measure, label, &masked(v, &m), None)?;
+        }
+    }
+    Ok(())
+}
+
 /// The groups of the first `--in`, from its `rows.<g>.tsv`, in name order.
 fn default_groups(dir: &str) -> io::Result<Vec<String>> {
     let mut out: Vec<String> = std::fs::read_dir(dir)
@@ -1845,6 +2135,8 @@ pub fn run(opts: StatsOpts) -> io::Result<()> {
         support(&g, &mut t)?;
         cont_rows(&g, &mut t)?;
         correlations(&g, &mut t)?;
+        similarity(&g, &mut t)?;
+        similarity_quantiles(&g, &mut t)?;
         eprintln!(
             "sketch pairs-stats: group {}: {} rows, {} pairs, {} labels, exact {}, {:.1} s",
             g.name,
@@ -1864,6 +2156,41 @@ mod tests {
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() <= tol * (1.0 + a.abs() + b.abs())
+    }
+
+    #[test]
+    fn set_measures_from_sizes_and_intersection() {
+        // |A| = 30, |B| = 50, |A n B| = 20: J = 20/60, Dice 40/80, cosine 20/sqrt(1500),
+        // overlap 20/30, Kulczynski (20/30 + 20/50)/2, symmetric difference 40.
+        let m = set_measures(30.0, 50.0, 20.0);
+        assert!(close(m[0], 0.5, 1e-15));
+        assert!(close(m[1], 20.0 / 1500f64.sqrt(), 1e-15));
+        assert!(close(m[2], 2.0 / 3.0, 1e-15) && m[3] == m[2]);
+        assert!(close(m[4], 0.5 * (2.0 / 3.0 + 0.4), 1e-15));
+        assert_eq!(m[5], 40.0);
+        // Dice is 2J/(1 + J) of the exact J.
+        let j = 20.0 / 60.0;
+        assert!(close(m[0], 2.0 * j / (1.0 + j), 1e-15));
+        assert!(set_measures(0.0, 5.0, 0.0)[0].is_nan());
+    }
+
+    #[test]
+    fn set_estimates_agree_with_exact_counts() {
+        // With the exact counts and J the estimates are the exact measures.
+        let (a, b, i) = (30.0, 50.0, 20.0);
+        let (j, u) = (i / (a + b - i), a + b - i);
+        let e = set_estimates(a, b, j, u, i / a, i / b);
+        let x = set_measures(a, b, i);
+        for m in 0..6 {
+            assert!(close(e[m], x[m], 1e-12), "{} {} {}", SET_MEASURES[m], e[m], x[m]);
+        }
+        // The smaller side's containment, and the clip of an estimate above 1.
+        assert_eq!(set_estimates(50.0, 30.0, j, u, 0.4, 0.7)[3], 0.7);
+        assert_eq!(set_estimates(10.0, 10.0, 0.9, 30.0, 1.0, 1.0)[2], 1.0);
+        // The symmetric difference's error is relative, 0 where both are 0.
+        assert_eq!(sim_err("symdiff", 0.0, 0.0), 0.0);
+        assert!(close(sim_err("symdiff", 44.0, 40.0), 0.1, 1e-12));
+        assert_eq!(sim_err("dice", 0.6, 0.5), 0.6 - 0.5);
     }
 
     #[test]
